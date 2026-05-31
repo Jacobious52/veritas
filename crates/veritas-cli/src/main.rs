@@ -10,9 +10,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use veritas_core::{
-    accept_findings, accepted_finding_ids, cleanup_generated_artifacts, config::VeritasConfig,
-    promote_repros, read_saved_report, strategy_from_kind, BaselineSummary, CleanupSummary,
-    CoreEngine, PluginRegistry, PromotionSummary,
+    accept_findings, accepted_finding_ids, cleanup_generated_artifacts, confidence_score,
+    config::VeritasConfig, promote_repros, read_saved_report, strategy_from_kind, BaselineSummary,
+    CleanupSummary, CoreEngine, PluginRegistry, PromotionSummary,
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
@@ -70,6 +70,10 @@ enum Command {
         lang: Option<String>,
     },
     Report {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
+    Score {
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
     },
@@ -148,6 +152,9 @@ struct BenchCase {
     min_mutation_score: Option<u8>,
     max_surviving_mutants: Option<usize>,
     min_generated_test_failures: Option<usize>,
+    min_assertion_candidates: Option<usize>,
+    min_corpus_entries: Option<usize>,
+    min_replay_cases: Option<usize>,
     max_duration_ms: Option<u64>,
 }
 
@@ -192,6 +199,11 @@ struct BenchMetrics {
     fuzz_targets_executed: usize,
     fuzz_failures: usize,
     persisted_repros: usize,
+    assertion_candidates: usize,
+    corpus_entries: usize,
+    replay_cases: usize,
+    budget_skipped_commands: usize,
+    budget_timed_out_commands: usize,
 }
 
 fn main() -> Result<()> {
@@ -289,6 +301,10 @@ fn main() -> Result<()> {
         Command::Report { format } => {
             let report = read_saved_report(&root)?;
             print_report(&report, format)?;
+        }
+        Command::Score { format } => {
+            let report = read_saved_report(&root)?;
+            print_score(&report, format)?;
         }
         Command::Explain { id } => {
             let report = read_saved_report(&root)?;
@@ -543,6 +559,11 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         fuzz_targets_executed: report.quality.fuzz.targets_executed,
         fuzz_failures: report.quality.fuzz.failures,
         persisted_repros: report.quality.fuzz.persisted_repros,
+        assertion_candidates: report.quality.regression.assertion_candidates,
+        corpus_entries: report.quality.regression.corpus_entries,
+        replay_cases: report.quality.replay.cases,
+        budget_skipped_commands: report.quality.budget.skipped_commands,
+        budget_timed_out_commands: report.quality.budget.timed_out_commands,
     }
 }
 
@@ -603,6 +624,30 @@ fn bench_threshold_failures(
             failures.push(format!(
                 "generated_test_failures {} < min_generated_test_failures {min_generated_test_failures}",
                 metrics.generated_test_failures
+            ));
+        }
+    }
+    if let Some(min_assertion_candidates) = case.min_assertion_candidates {
+        if metrics.assertion_candidates < min_assertion_candidates {
+            failures.push(format!(
+                "assertion_candidates {} < min_assertion_candidates {min_assertion_candidates}",
+                metrics.assertion_candidates
+            ));
+        }
+    }
+    if let Some(min_corpus_entries) = case.min_corpus_entries {
+        if metrics.corpus_entries < min_corpus_entries {
+            failures.push(format!(
+                "corpus_entries {} < min_corpus_entries {min_corpus_entries}",
+                metrics.corpus_entries
+            ));
+        }
+    }
+    if let Some(min_replay_cases) = case.min_replay_cases {
+        if metrics.replay_cases < min_replay_cases {
+            failures.push(format!(
+                "replay_cases {} < min_replay_cases {min_replay_cases}",
+                metrics.replay_cases
             ));
         }
     }
@@ -672,6 +717,16 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 );
                 println!("- Fuzz failures: `{}`", case.metrics.fuzz_failures);
                 println!("- Persisted repros: `{}`", case.metrics.persisted_repros);
+                println!(
+                    "- Assertion candidates: `{}`",
+                    case.metrics.assertion_candidates
+                );
+                println!("- Corpus entries: `{}`", case.metrics.corpus_entries);
+                println!("- Replay cases: `{}`", case.metrics.replay_cases);
+                println!(
+                    "- Budget skips/timeouts: `{}/{}`",
+                    case.metrics.budget_skipped_commands, case.metrics.budget_timed_out_commands
+                );
                 if !case.metrics.findings_by_severity.is_empty() {
                     println!(
                         "- Findings by severity: `{}`",
@@ -859,6 +914,39 @@ fn print_report(report: &VerificationReport, format: OutputFormat) -> Result<()>
         }
         OutputFormat::Junit => {
             println!("{}", render_junit(report));
+        }
+    }
+    Ok(())
+}
+
+fn print_score(report: &VerificationReport, format: OutputFormat) -> Result<()> {
+    let score = confidence_score(report);
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&score)?),
+        OutputFormat::Markdown => {
+            println!("# veritas score\n");
+            println!("- Score: `{}`", score.score);
+            println!("- Grade: `{:?}`", score.grade);
+            println!("- Summary: {}", score.summary);
+            if !score.positive_signals.is_empty() {
+                println!("\n## Positive Signals\n");
+                for signal in &score.positive_signals {
+                    println!("- {signal}");
+                }
+            }
+            if !score.risks.is_empty() {
+                println!("\n## Risks\n");
+                for risk in &score.risks {
+                    println!("- {risk}");
+                }
+            }
+            println!("\n## Next Steps\n");
+            for step in &score.recommended_next_steps {
+                println!("- {step}");
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("score supports --format markdown or --format json")
         }
     }
     Ok(())

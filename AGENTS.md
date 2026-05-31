@@ -94,6 +94,7 @@ Dogfood `veritas` on itself safely:
 
 ```bash
 cargo run -p veritas-cli -- verify --root /home/jacob/veritas --lang rust --target .
+cargo run -p veritas-cli -- score --root /home/jacob/veritas
 cargo run -p veritas-cli -- report --root /home/jacob/veritas --format markdown
 cargo run -p veritas-cli -- report --root /home/jacob/veritas --format sarif
 cargo run -p veritas-cli -- report --root /home/jacob/veritas --format junit
@@ -117,6 +118,8 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, and AST-scoped mutation probes.
 - `veritas bench` runs seeded examples in temporary copies and scores expected finding, artifact, command, threshold, and metric detections from `veritas-bench.toml`.
 - Reports include first-class quality metrics for mutation score, property artifacts, generated-test failures, fuzz execution, and persisted repros.
+- `veritas score` reads `.veritas/report.json` and summarizes confidence from mutation score, findings, assertion candidates, corpus entries, replay cases, and budget health.
+- Observation artifacts now include structured `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/differential/*_result.json`, and `.veritas/budgets/*.json` to help AI agents close the verification loop.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
@@ -136,7 +139,10 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/report.json`
 - `.veritas/ai/*.md`
 - `.veritas/baselines/*.json`
+- `.veritas/assertions/*.json`
+- `.veritas/corpus/*.json`
 - `.veritas/differential/*.json`
+- `.veritas/budgets/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
 - `.veritas/package_graph/*.json`

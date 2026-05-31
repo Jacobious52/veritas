@@ -16,9 +16,9 @@ use tree_sitter::{Node, Parser};
 use veritas_core::{config::GoPluginConfig, run_parallel_jobs};
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
-    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase,
-    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
-    VerificationReport, VerificationStrategy, VerificationTarget,
+    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, PluginCapability, ProjectInfo,
+    ReproCase, RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan,
+    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -195,6 +195,22 @@ impl LanguagePlugin for GoPlugin {
 
     fn display_name(&self) -> &'static str {
         "Go"
+    }
+
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![
+            PluginCapability::TargetDiscovery,
+            PluginCapability::SymbolGraph,
+            PluginCapability::GeneratedTests,
+            PluginCapability::ExistingTests,
+            PluginCapability::Fuzzing,
+            PluginCapability::MutationChecks,
+            PluginCapability::Coverage,
+            PluginCapability::DifferentialReplay,
+            PluginCapability::CorpusReplay,
+            PluginCapability::RegressionPromotion,
+            PluginCapability::ResourceBudgets,
+        ]
     }
 
     fn detect_project(&self, root: &Path) -> Result<ProjectInfo> {
@@ -1972,6 +1988,18 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("json")
     {
         Some("serialization")
+    } else if lowered.contains("error")
+        || lowered.contains("err")
+        || lowered.contains("result")
+        || lowered.contains("valid")
+    {
+        Some("error handling")
+    } else if lowered.contains("limit")
+        || lowered.contains("threshold")
+        || lowered.contains("min")
+        || lowered.contains("max")
+    {
+        Some("boundary")
     } else {
         None
     };
@@ -2471,11 +2499,40 @@ fn render_go_regression_scaffold(
     out.push_str(&format!(
         "func TestVeritasRegression{index}{name}(t *testing.T) {{\n"
     ));
+    if let Some(function) = function {
+        if function.receiver.is_none() {
+            let args = go_regression_seed_args(function).join(", ");
+            out.push_str("\t// Candidate assertion seed synthesized by veritas:\n");
+            out.push_str(&format!("\t// actual := {}({args})\n", function.name));
+            out.push_str("\t// if actual != /* reviewed expected value */ {\n");
+            out.push_str("\t// \tt.Fatalf(\"unexpected result: %v\", actual)\n");
+            out.push_str("\t// }\n");
+        } else {
+            out.push_str("\t// Construct the receiver state, call the method, and assert the reviewed expected value.\n");
+        }
+    }
     out.push_str(
         "\tt.Skip(\"review and replace the veritas placeholder with a real assertion\")\n",
     );
     out.push_str("}\n");
     out
+}
+
+fn go_regression_seed_args(function: &GoFunction) -> Vec<String> {
+    function
+        .params
+        .iter()
+        .map(|param| match param.type_name.as_str() {
+            "string" => "\"veritas-seed\"".to_string(),
+            "[]byte" => "[]byte(\"veritas-seed\")".to_string(),
+            "bool" => "true".to_string(),
+            "int" | "int8" | "int16" | "int32" | "int64" => "1".to_string(),
+            "uint" | "uint8" | "uint16" | "uint32" | "uint64" => "1".to_string(),
+            "float32" => "float32(1)".to_string(),
+            "float64" => "float64(1)".to_string(),
+            _ => format!("{}{{}}", param.type_name),
+        })
+        .collect()
 }
 
 fn push_go_comment(out: &mut String, line: &str) {

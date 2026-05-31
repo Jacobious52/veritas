@@ -15,10 +15,11 @@ use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
-    LineRange, ProjectInfo, ReproCase, RunStatus, TargetKind, VerificationPlan,
-    VerificationPlanner, VerificationQuality, VerificationReport, VerificationStrategy,
-    VerificationTarget,
+    ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
+    CommandBudget, ConfidenceGrade, ConfidenceScore, CorpusEntry, Failure, FailureSeverity,
+    GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase, RunStatus, TargetKind,
+    VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -348,6 +349,7 @@ impl CoreEngine {
             quality: VerificationQuality::default(),
             suggested_next_steps: suggested_next_steps(language),
         };
+        assign_finding_ids(&mut report);
         self.add_observation_artifacts(
             root,
             language,
@@ -479,6 +481,7 @@ impl CoreEngine {
                 .iter()
                 .any(|strategy| matches!(strategy, VerificationStrategy::DifferentialTests))
         });
+        assign_finding_ids(&mut report);
         self.add_observation_artifacts(
             root,
             language.unwrap_or("changed"),
@@ -643,9 +646,13 @@ impl CoreEngine {
 
         artifacts.extend(feedback_artifacts(language, report));
         artifacts.extend(repro_artifacts(language, &report.findings));
+        artifacts.extend(assertion_candidate_artifacts(language, &report.findings)?);
+        artifacts.extend(corpus_entry_artifacts(language, &report.findings)?);
         artifacts.extend(candidate_patch_artifacts(language, &report.findings));
         artifacts.extend(regression_artifacts(language, &report.findings));
         artifacts.extend(evolution_artifacts(language, report));
+        artifacts.extend(replay_result_artifacts(language, report, &artifacts)?);
+        artifacts.extend(budget_plan_artifacts(language, report)?);
 
         if artifacts.is_empty() {
             return Ok(());
@@ -1580,6 +1587,247 @@ fn repro_artifacts(language: &str, findings: &[Failure]) -> Vec<GeneratedArtifac
         .collect()
 }
 
+fn assertion_candidate_artifacts(
+    language: &str,
+    findings: &[Failure],
+) -> Result<Vec<GeneratedArtifact>> {
+    findings
+        .iter()
+        .enumerate()
+        .filter(|(_, finding)| should_generate_regression_artifact(finding))
+        .map(|(index, finding)| {
+            let candidate = assertion_candidate(language, finding);
+            let contents = serde_json::to_string_pretty(&candidate)?;
+            Ok(GeneratedArtifact {
+                id: format!("{language}-assertion-candidate-{index}"),
+                language: language.to_string(),
+                kind: ArtifactKind::AssertionCandidate,
+                target_id: candidate.target_id.clone(),
+                path: Utf8PathBuf::from(format!(".veritas/assertions/{language}_{index}.json")),
+                contents,
+                description: "Structured assertion candidate for AI or human regression promotion"
+                    .to_string(),
+                status: ArtifactStatus::Planned,
+            })
+        })
+        .collect()
+}
+
+fn assertion_candidate(language: &str, finding: &Failure) -> AssertionCandidate {
+    let source = assertion_source(finding);
+    let domain = assertion_domain(finding);
+    let target_id = finding
+        .target_id
+        .clone()
+        .unwrap_or_else(|| format!("{language}:unknown"));
+    let seed_inputs = assertion_seed_inputs(finding, &domain);
+    let replay_command = finding
+        .repro
+        .as_ref()
+        .map(|repro| repro.command.clone())
+        .or_else(|| Some(finding.command.clone()));
+
+    AssertionCandidate {
+        language: language.to_string(),
+        target_id,
+        finding_id: finding.id.clone(),
+        source,
+        domain,
+        title: finding.message.clone(),
+        seed_inputs,
+        expected_behavior: expected_behavior_text(language, finding, &domain),
+        replay_command,
+    }
+}
+
+fn assertion_source(finding: &Failure) -> AssertionSource {
+    if finding.message.contains("mutation survived") {
+        AssertionSource::MutationSurvivor
+    } else if finding.message.contains("fuzz") || finding.command.contains("-fuzz=") {
+        AssertionSource::FuzzRepro
+    } else if finding.message.contains("cargo test failed")
+        || finding.message.contains("go test failed")
+    {
+        AssertionSource::GeneratedTestFailure
+    } else if finding.message.contains("differential") || finding.message.contains("replay") {
+        AssertionSource::DifferentialReplay
+    } else {
+        AssertionSource::CoverageGap
+    }
+}
+
+fn assertion_domain(finding: &Failure) -> AssertionDomain {
+    let text = format!(
+        "{} {} {}",
+        finding.message,
+        finding.target_id.as_deref().unwrap_or_default(),
+        finding.command
+    )
+    .to_ascii_lowercase();
+    if text.contains("auth")
+        || text.contains("permission")
+        || text.contains("token")
+        || text.contains("principal")
+    {
+        AssertionDomain::AuthPermission
+    } else if text.contains("money")
+        || text.contains("price")
+        || text.contains("invoice")
+        || text.contains("total")
+        || text.contains("refund")
+        || text.contains("discount")
+    {
+        AssertionDomain::Money
+    } else if text.contains("parse")
+        || text.contains("format")
+        || text.contains("normalize")
+        || text.contains("trim")
+    {
+        AssertionDomain::Parsing
+    } else if text.contains("json")
+        || text.contains("serial")
+        || text.contains("marshal")
+        || text.contains("deserialize")
+    {
+        AssertionDomain::Serialization
+    } else if text.contains("error")
+        || text.contains("err")
+        || text.contains("none")
+        || text.contains("nil")
+        || text.contains("null")
+    {
+        AssertionDomain::ErrorHandling
+    } else if text.contains("boundary")
+        || text.contains("comparison")
+        || text.contains("<")
+        || text.contains(">")
+        || text.contains("zero")
+    {
+        AssertionDomain::Boundary
+    } else {
+        AssertionDomain::General
+    }
+}
+
+fn assertion_seed_inputs(finding: &Failure, domain: &AssertionDomain) -> Vec<String> {
+    if let Some(input) = finding
+        .repro
+        .as_ref()
+        .and_then(|repro| repro.input.clone())
+        .or_else(|| extract_minimized_input(&finding.stdout_excerpt))
+        .or_else(|| extract_minimized_input(&finding.stderr_excerpt))
+    {
+        return vec![input.trim().to_string()];
+    }
+
+    match domain {
+        AssertionDomain::AuthPermission => vec![
+            "principal=admin".to_string(),
+            "principal=support".to_string(),
+            "principal=guest".to_string(),
+        ],
+        AssertionDomain::Money => vec![
+            "amount=0".to_string(),
+            "amount=1".to_string(),
+            "amount=100".to_string(),
+            "amount=101".to_string(),
+        ],
+        AssertionDomain::Parsing => vec![
+            "input=".to_string(),
+            "input=  veritas-seed  ".to_string(),
+            "input=not-a-valid-value".to_string(),
+        ],
+        AssertionDomain::Serialization => {
+            vec!["{}".to_string(), "{\"id\":\"veritas\"}".to_string()]
+        }
+        AssertionDomain::ErrorHandling => vec!["missing".to_string(), "invalid".to_string()],
+        AssertionDomain::Boundary => vec!["0".to_string(), "1".to_string(), "-1".to_string()],
+        AssertionDomain::General => vec!["veritas-seed".to_string()],
+    }
+}
+
+fn expected_behavior_text(language: &str, finding: &Failure, domain: &AssertionDomain) -> String {
+    let mutation = finding
+        .repro
+        .as_ref()
+        .and_then(|repro| parse_replacement(&repro.command));
+    if let Some((from, to)) = mutation {
+        return format!(
+            "Assert the intended {language} behavior at the smallest seed that distinguishes `{from}` from `{to}`."
+        );
+    }
+
+    match domain {
+        AssertionDomain::AuthPermission => {
+            "Assert allowed, delegated, and denied principals explicitly.".to_string()
+        }
+        AssertionDomain::Money => {
+            "Assert exact cents/rounding/refund behavior at zero and threshold boundaries."
+                .to_string()
+        }
+        AssertionDomain::Parsing => {
+            "Assert accepted, trimmed, and invalid input behavior explicitly.".to_string()
+        }
+        AssertionDomain::Serialization => {
+            "Assert stable round-trip and missing-field behavior explicitly.".to_string()
+        }
+        AssertionDomain::ErrorHandling => {
+            "Assert the error/empty/nil path, not only that the call returns.".to_string()
+        }
+        AssertionDomain::Boundary => {
+            "Assert the exact value on both sides of the changed boundary.".to_string()
+        }
+        AssertionDomain::General => {
+            "Assert the expected output or state transition for the recorded repro.".to_string()
+        }
+    }
+}
+
+fn corpus_entry_artifacts(language: &str, findings: &[Failure]) -> Result<Vec<GeneratedArtifact>> {
+    findings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, finding)| {
+            let repro = finding.repro.as_ref()?;
+            let input = repro
+                .input
+                .clone()
+                .or_else(|| extract_minimized_input(&finding.stdout_excerpt))
+                .or_else(|| extract_minimized_input(&finding.stderr_excerpt));
+            if input.is_none() && repro.path.is_none() {
+                return None;
+            }
+            Some((index, finding, repro, input))
+        })
+        .map(|(index, finding, repro, input)| {
+            let target_id = finding
+                .target_id
+                .clone()
+                .unwrap_or_else(|| format!("{language}:unknown"));
+            let entry = CorpusEntry {
+                language: language.to_string(),
+                target_id: target_id.clone(),
+                finding_id: finding.id.clone(),
+                source: assertion_source(finding),
+                input,
+                path: repro.path.clone(),
+                replay_command: repro.command.clone(),
+            };
+            Ok(GeneratedArtifact {
+                id: format!("{language}-corpus-entry-{index}"),
+                language: language.to_string(),
+                kind: ArtifactKind::CorpusEntry,
+                target_id,
+                path: Utf8PathBuf::from(format!(".veritas/corpus/{language}_{index}.json")),
+                contents: serde_json::to_string_pretty(&entry)?,
+                description: "Persistent corpus seed metadata for replaying a discovered repro"
+                    .to_string(),
+                status: ArtifactStatus::Planned,
+            })
+        })
+        .collect()
+}
+
 fn candidate_patch_artifacts(language: &str, findings: &[Failure]) -> Vec<GeneratedArtifact> {
     findings
         .iter()
@@ -1753,6 +2001,113 @@ fn evolution_artifacts(language: &str, report: &VerificationReport) -> Vec<Gener
     }]
 }
 
+fn replay_result_artifacts(
+    language: &str,
+    report: &VerificationReport,
+    pending_artifacts: &[GeneratedArtifact],
+) -> Result<Vec<GeneratedArtifact>> {
+    let replay_artifacts = report
+        .artifacts
+        .iter()
+        .chain(pending_artifacts.iter())
+        .filter(|artifact| artifact.kind == ArtifactKind::DifferentialReplay)
+        .collect::<Vec<_>>();
+    if replay_artifacts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut targets = 0usize;
+    let mut cases = 0usize;
+    for artifact in &replay_artifacts {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&artifact.contents) else {
+            continue;
+        };
+        let replay_targets = value["targets"].as_array().map(Vec::len).unwrap_or(0);
+        targets += replay_targets;
+        cases += value["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|target| target["cases"].as_array())
+            .map(Vec::len)
+            .sum::<usize>();
+    }
+
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "mode": "differential_replay_result",
+        "manifests": replay_artifacts.len(),
+        "targets": targets,
+        "cases": cases,
+        "status": "planned",
+        "next_step": "Persist this result with the pre-change manifest, rerun after the AI change, and promote changed observations into assertion candidates."
+    }))?;
+
+    Ok(vec![GeneratedArtifact {
+        id: format!("{language}-differential-replay-result"),
+        language: language.to_string(),
+        kind: ArtifactKind::ReplayResult,
+        target_id: format!("{language}:differential"),
+        path: Utf8PathBuf::from(format!(".veritas/differential/{language}_result.json")),
+        contents,
+        description: "Differential replay execution summary for selected public APIs".to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
+fn budget_plan_artifacts(
+    language: &str,
+    report: &VerificationReport,
+) -> Result<Vec<GeneratedArtifact>> {
+    let Some(plan) = &report.plan else {
+        return Ok(Vec::new());
+    };
+    let max_concurrency = report
+        .runs
+        .iter()
+        .flat_map(|run| run.commands.iter())
+        .filter(|command| command.status != RunStatus::Skipped)
+        .count()
+        .max(1);
+    let resource_limits = report
+        .runs
+        .iter()
+        .flat_map(|run| run.commands.iter())
+        .filter_map(|command| {
+            if command.program.contains("systemd-run")
+                || command
+                    .args
+                    .iter()
+                    .any(|arg| arg.contains("MemoryMax") || arg.contains("CPUQuota"))
+            {
+                Some(command_line(&command.program, &command.args))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let budget = CommandBudget {
+        language: language.to_string(),
+        target_id: plan.target_id.clone(),
+        budget_seconds: plan.budget_seconds,
+        max_concurrency,
+        resource_limits,
+    };
+
+    Ok(vec![GeneratedArtifact {
+        id: format!("{language}-budget-plan"),
+        language: language.to_string(),
+        kind: ArtifactKind::BudgetPlan,
+        target_id: plan.target_id.clone(),
+        path: Utf8PathBuf::from(format!(".veritas/budgets/{language}.json")),
+        contents: serde_json::to_string_pretty(&budget)?,
+        description: "Command budget and resource-limit metadata for large-repo execution"
+            .to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
 fn should_generate_regression_artifact(failure: &Failure) -> bool {
     failure.message.contains("mutation survived")
         || failure.message.contains("fuzz")
@@ -1797,6 +2152,13 @@ fn parse_replacement(command: &str) -> Option<(&str, &str)> {
     let (from, rest) = rest.split_once("` with `")?;
     let (to, _) = rest.split_once('`')?;
     Some((from, to))
+}
+
+fn command_line(program: &str, args: &[String]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn change_digest_artifact(
@@ -2098,6 +2460,66 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::ReproCase)
         .count();
+    quality.regression.assertion_candidates = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::AssertionCandidate)
+        .count();
+    quality.regression.promoted_scaffolds = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::RegressionTest)
+        .count();
+    quality.regression.corpus_entries = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::CorpusEntry)
+        .count();
+    quality.replay.manifests = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::DifferentialReplay)
+        .count();
+    quality.replay.results = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::ReplayResult)
+        .count();
+    for artifact in report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::DifferentialReplay)
+    {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&artifact.contents) {
+            quality.replay.targets += value["targets"].as_array().map(Vec::len).unwrap_or(0);
+            quality.replay.cases += value["targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|target| target["cases"].as_array())
+                .map(Vec::len)
+                .sum::<usize>();
+        }
+    }
+    quality.budget.budget_plans = report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::BudgetPlan)
+        .count();
+    quality.budget.skipped_commands = report
+        .runs
+        .iter()
+        .flat_map(|run| run.commands.iter())
+        .filter(|command| command.status == RunStatus::Skipped)
+        .count();
+    quality.budget.timed_out_commands = report
+        .runs
+        .iter()
+        .flat_map(|run| run.commands.iter())
+        .filter(|command| {
+            command.stderr.contains("timed out") || command.stdout.contains("timed out")
+        })
+        .count();
     quality.property.failed_generated_tests = report
         .findings
         .iter()
@@ -2109,6 +2531,123 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .map(|score| score.try_into().unwrap_or(100));
 
     report.quality = quality;
+}
+
+pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
+    let mut score: i16 = 45;
+    let mut positive_signals = Vec::new();
+    let mut risks = Vec::new();
+
+    if let Some(mutation_score) = report.quality.mutation.score_percent {
+        score += i16::from(mutation_score) / 3;
+        positive_signals.push(format!("mutation score is {mutation_score}%"));
+    } else {
+        risks.push("mutation checks did not execute".to_string());
+    }
+
+    if report.quality.mutation.survived > 0 {
+        score -= (report.quality.mutation.survived as i16 * 6).min(24);
+        risks.push(format!(
+            "{} surviving mutant(s) still need assertions",
+            report.quality.mutation.survived
+        ));
+    }
+    if report.quality.property.generated_artifacts > 0 {
+        score += 8;
+        positive_signals.push(format!(
+            "{} generated property artifact(s)",
+            report.quality.property.generated_artifacts
+        ));
+    }
+    if report.quality.fuzz.targets_executed > 0 {
+        score += 8;
+        positive_signals.push(format!(
+            "{} fuzz target(s) executed",
+            report.quality.fuzz.targets_executed
+        ));
+    }
+    if report.quality.regression.assertion_candidates > 0 {
+        score += 6;
+        positive_signals.push(format!(
+            "{} assertion candidate(s) ready for promotion",
+            report.quality.regression.assertion_candidates
+        ));
+    }
+    if report.quality.replay.cases > 0 {
+        score += 5;
+        positive_signals.push(format!(
+            "{} differential replay case(s) planned",
+            report.quality.replay.cases
+        ));
+    }
+    if report.quality.budget.timed_out_commands > 0 {
+        score -= 12;
+        risks.push(format!(
+            "{} command(s) timed out",
+            report.quality.budget.timed_out_commands
+        ));
+    }
+    if report.quality.budget.skipped_commands > 0 {
+        score -= 6;
+        risks.push(format!(
+            "{} command(s) were skipped by budget",
+            report.quality.budget.skipped_commands
+        ));
+    }
+    if report.findings.is_empty() {
+        score += 10;
+        positive_signals.push("no active findings".to_string());
+    } else {
+        score -= (report.findings.len() as i16 * 2).min(20);
+        risks.push(format!("{} active finding(s)", report.findings.len()));
+    }
+
+    let score = score.clamp(0, 100) as u8;
+    let grade = if score >= 80 {
+        ConfidenceGrade::High
+    } else if score >= 55 {
+        ConfidenceGrade::Medium
+    } else {
+        ConfidenceGrade::Low
+    };
+    let summary = match grade {
+        ConfidenceGrade::High => "strong verification signal for the current scope",
+        ConfidenceGrade::Medium => "useful signal with remaining promotion or replay work",
+        ConfidenceGrade::Low => "limited confidence; close findings or expand verification",
+    }
+    .to_string();
+    let recommended_next_steps = confidence_next_steps(report);
+
+    ConfidenceScore {
+        score,
+        grade,
+        summary,
+        positive_signals,
+        risks,
+        recommended_next_steps,
+    }
+}
+
+fn confidence_next_steps(report: &VerificationReport) -> Vec<String> {
+    let mut steps = Vec::new();
+    if report.quality.mutation.survived > 0 {
+        steps.push("Promote assertion candidates for surviving mutants.".to_string());
+    }
+    if report.quality.regression.corpus_entries > 0 {
+        steps.push("Replay persisted corpus entries before accepting the AI change.".to_string());
+    }
+    if report.quality.replay.cases > 0 {
+        steps.push("Compare differential replay cases across old/new behavior.".to_string());
+    }
+    if report.quality.budget.timed_out_commands > 0 || report.quality.budget.skipped_commands > 0 {
+        steps.push("Increase budgets or narrow changed-scope verification.".to_string());
+    }
+    if steps.is_empty() {
+        steps.push(
+            "Keep the report as a baseline and rerun Veritas after the next AI change.".to_string(),
+        );
+    }
+    steps
 }
 
 fn finding_is_generated_test_failure(report: &VerificationReport, finding: &Failure) -> bool {
@@ -2225,13 +2764,15 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use veritas_plugin_api::{
-        ArtifactKind, Failure, FailureSeverity, LineRange, ReproCase, RiskLevel,
+        ArtifactKind, AssertionDomain, Failure, FailureSeverity, LineRange, ReproCase, RiskLevel,
+        VerificationReport,
     };
 
     use super::{
-        api_baseline_artifact, cleanup_generated_artifacts, differential_replay_artifact,
-        parse_unified_diff, regression_artifacts, run_parallel_jobs, targets_for_changed_files,
-        ChangedFile, TargetKind, VerificationTarget,
+        api_baseline_artifact, assertion_candidate_artifacts, cleanup_generated_artifacts,
+        confidence_score, corpus_entry_artifacts, differential_replay_artifact, parse_unified_diff,
+        regression_artifacts, run_parallel_jobs, targets_for_changed_files, ChangedFile,
+        TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -2457,6 +2998,111 @@ index 3333333..4444444 100644
             .contents
             .contains("fails if `<=` is replaced with `<`"));
         assert!(artifacts[0].contents.contains("Suggested Rust test shape"));
+    }
+
+    #[test]
+    fn assertion_candidate_artifact_extracts_domain_and_seeds() {
+        let finding = Failure {
+            id: Some("vts-test".to_string()),
+            message: "mutation survived in Rust function `authorize_refund`: auth/permission comparison boundary mutation"
+                .to_string(),
+            severity: FailureSeverity::Warning,
+            target_id: Some("rust:src/lib.rs:authorize_refund".to_string()),
+            artifact_id: None,
+            command: "cargo test".to_string(),
+            stdout_excerpt: String::new(),
+            stderr_excerpt: String::new(),
+            repro: Some(ReproCase {
+                command: "replace `<=` with `<` in src/lib.rs".to_string(),
+                input: None,
+                path: Some(Utf8PathBuf::from("src/lib.rs")),
+            }),
+        };
+
+        let artifacts = assertion_candidate_artifacts("rust", &[finding])
+            .expect("assertion artifacts should serialize");
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, ArtifactKind::AssertionCandidate);
+        let candidate: veritas_plugin_api::AssertionCandidate =
+            serde_json::from_str(&artifacts[0].contents).expect("candidate JSON should parse");
+        assert_eq!(candidate.finding_id.as_deref(), Some("vts-test"));
+        assert_eq!(candidate.domain, AssertionDomain::AuthPermission);
+        assert!(candidate
+            .expected_behavior
+            .contains("distinguishes `<=` from `<`"));
+        assert!(candidate
+            .seed_inputs
+            .iter()
+            .any(|seed| seed.contains("admin")));
+    }
+
+    #[test]
+    fn corpus_entry_artifact_persists_replay_metadata() {
+        let finding = Failure {
+            id: Some("vts-corpus".to_string()),
+            message: "fuzz target failed".to_string(),
+            severity: FailureSeverity::Error,
+            target_id: Some("go:score.go:Parse".to_string()),
+            artifact_id: None,
+            command: "go test -run FuzzParse".to_string(),
+            stdout_excerpt: String::new(),
+            stderr_excerpt: String::new(),
+            repro: Some(ReproCase {
+                command: "go test -run FuzzParse/testdata/fuzz/FuzzParse/abc".to_string(),
+                input: Some("abc".to_string()),
+                path: Some(Utf8PathBuf::from("testdata/fuzz/FuzzParse/abc")),
+            }),
+        };
+
+        let artifacts =
+            corpus_entry_artifacts("go", &[finding]).expect("corpus artifact should serialize");
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, ArtifactKind::CorpusEntry);
+        assert_eq!(
+            artifacts[0].path,
+            Utf8PathBuf::from(".veritas/corpus/go_0.json")
+        );
+        let entry: veritas_plugin_api::CorpusEntry =
+            serde_json::from_str(&artifacts[0].contents).expect("corpus JSON should parse");
+        assert_eq!(entry.finding_id.as_deref(), Some("vts-corpus"));
+        assert_eq!(entry.input.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn confidence_score_penalizes_survivors_and_rewards_replay() {
+        let mut report = VerificationReport::empty();
+        report.quality.mutation.generated = 4;
+        report.quality.mutation.executed = 4;
+        report.quality.mutation.killed = 3;
+        report.quality.mutation.survived = 1;
+        report.quality.mutation.score_percent = Some(75);
+        report.quality.regression.assertion_candidates = 1;
+        report.quality.replay.cases = 2;
+        report.findings.push(Failure {
+            id: Some("vts-score".to_string()),
+            message: "mutation survived".to_string(),
+            severity: FailureSeverity::Warning,
+            target_id: Some("rust:src/lib.rs:target".to_string()),
+            artifact_id: None,
+            command: "cargo test".to_string(),
+            stdout_excerpt: String::new(),
+            stderr_excerpt: String::new(),
+            repro: None,
+        });
+
+        let score = confidence_score(&report);
+
+        assert!(score.score >= 50);
+        assert!(score
+            .risks
+            .iter()
+            .any(|risk| risk.contains("surviving mutant")));
+        assert!(score
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("differential replay")));
     }
 
     #[test]

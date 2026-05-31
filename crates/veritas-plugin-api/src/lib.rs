@@ -9,6 +9,16 @@ pub trait LanguagePlugin: Send + Sync {
 
     fn display_name(&self) -> &'static str;
 
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![
+            PluginCapability::TargetDiscovery,
+            PluginCapability::GeneratedTests,
+            PluginCapability::ExistingTests,
+            PluginCapability::Coverage,
+            PluginCapability::RegressionPromotion,
+        ]
+    }
+
     fn detect_project(&self, root: &Path) -> Result<ProjectInfo>;
 
     fn discover_targets(&self, root: &Path) -> Result<Vec<VerificationTarget>>;
@@ -201,6 +211,28 @@ pub enum ArtifactKind {
     RegressionTest,
     DifferentialReplay,
     EvolutionPlan,
+    AssertionCandidate,
+    CorpusEntry,
+    ReplayResult,
+    BudgetPlan,
+    ConfidenceScore,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginCapability {
+    TargetDiscovery,
+    SymbolGraph,
+    GeneratedTests,
+    ExistingTests,
+    PropertyTests,
+    Fuzzing,
+    MutationChecks,
+    Coverage,
+    DifferentialReplay,
+    CorpusReplay,
+    RegressionPromotion,
+    ResourceBudgets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +301,79 @@ pub struct ReproCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssertionCandidate {
+    pub language: String,
+    pub target_id: String,
+    pub finding_id: Option<String>,
+    pub source: AssertionSource,
+    pub domain: AssertionDomain,
+    pub title: String,
+    pub seed_inputs: Vec<String>,
+    pub expected_behavior: String,
+    pub replay_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionSource {
+    MutationSurvivor,
+    FuzzRepro,
+    GeneratedTestFailure,
+    DifferentialReplay,
+    CoverageGap,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionDomain {
+    AuthPermission,
+    Money,
+    Parsing,
+    Serialization,
+    ErrorHandling,
+    Boundary,
+    General,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CorpusEntry {
+    pub language: String,
+    pub target_id: String,
+    pub finding_id: Option<String>,
+    pub source: AssertionSource,
+    pub input: Option<String>,
+    pub path: Option<Utf8PathBuf>,
+    pub replay_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandBudget {
+    pub language: String,
+    pub target_id: String,
+    pub budget_seconds: u64,
+    pub max_concurrency: usize,
+    pub resource_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfidenceScore {
+    pub score: u8,
+    pub grade: ConfidenceGrade,
+    pub summary: String,
+    pub positive_signals: Vec<String>,
+    pub risks: Vec<String>,
+    pub recommended_next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceGrade {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CoverageReport {
     pub tool: String,
     pub summary: String,
@@ -317,6 +422,12 @@ pub struct VerificationQuality {
     pub mutation: MutationMetrics,
     pub property: PropertyMetrics,
     pub fuzz: FuzzMetrics,
+    #[serde(default)]
+    pub regression: RegressionMetrics,
+    #[serde(default)]
+    pub replay: ReplayMetrics,
+    #[serde(default)]
+    pub budget: BudgetMetrics,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -342,4 +453,26 @@ pub struct FuzzMetrics {
     pub targets_executed: usize,
     pub failures: usize,
     pub persisted_repros: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegressionMetrics {
+    pub assertion_candidates: usize,
+    pub promoted_scaffolds: usize,
+    pub corpus_entries: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplayMetrics {
+    pub manifests: usize,
+    pub targets: usize,
+    pub cases: usize,
+    pub results: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BudgetMetrics {
+    pub budget_plans: usize,
+    pub skipped_commands: usize,
+    pub timed_out_commands: usize,
 }

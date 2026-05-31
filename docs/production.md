@@ -135,6 +135,9 @@ Common generated paths:
 - `.veritas/ai/*.md`
 - `.veritas/baselines/*.json`
 - `.veritas/differential/*.json`
+- `.veritas/assertions/*.json`
+- `.veritas/corpus/*.json`
+- `.veritas/budgets/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
 - `.veritas/package_graph/*.json`
@@ -168,7 +171,8 @@ veritas cleanup
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
 - Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
 - `veritas promote-regression` turns selected findings into ignored/skipped package-owned test scaffolds for Rust and Go; review and replace the placeholder before relying on them.
-- Differential checks persist API signatures and replay-case manifests; they do not yet execute old/new binaries automatically.
+- Differential checks persist API signatures, replay-case manifests, and replay result summaries. Treat them as the handoff point for comparing old/new behavior and promoting changed observations into assertions.
+- `veritas score` summarizes mutation score, findings, assertion candidates, corpus entries, replay cases, and budget health into one AI-change confidence view.
 
 ## External Canaries
 

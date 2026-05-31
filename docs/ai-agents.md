@@ -19,13 +19,15 @@ Before editing broadly:
 
 After making code or test changes:
   veritas verify --changed --profile ci
+  veritas score
 
 If veritas reports findings:
   1. Use veritas explain <finding-id>.
-  2. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
-  3. Run veritas promote-regression --index <finding-index> when a finding should become an owned test scaffold.
-  4. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/promotions/, and .veritas/symbol_graph/.
-  5. Rerun veritas verify --changed --profile ci.
+  2. Inspect .veritas/assertions/ and .veritas/corpus/ for structured assertion and replay seeds.
+  3. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
+  4. Run veritas promote-regression --index <finding-index> when a finding should become an owned test scaffold.
+  5. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/budgets/, .veritas/promotions/, and .veritas/symbol_graph/.
+  6. Rerun veritas verify --changed --profile ci.
 
 Do not ignore warning/error findings without explaining why. Only accept a finding baseline with:
   veritas accept-baseline --id <finding-id>
@@ -41,10 +43,11 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 3. Read `.veritas/ai/agent_feedback.md` for concrete agent instructions.
 4. Edit code or tests.
 5. Run `veritas verify --changed --profile ci`.
-6. For each finding, run `veritas explain <finding-id>`.
-7. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
-8. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
-9. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
+6. Run `veritas score` to summarize confidence, remaining risks, and next steps.
+7. For each finding, run `veritas explain <finding-id>`.
+8. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
+9. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
+10. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## AI-Facing Artifacts
 
@@ -55,7 +58,10 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/symbol_graph/*.json`: discovered symbols, line ranges, owners/receivers, risks, and call hints
 - `.veritas/package_graph/go.json`: Go modules, packages, imports, fuzz targets, tests, and run reasons
 - `.veritas/feedback/*.md`: coverage and mutation feedback
-- `.veritas/differential/*.json`: behavior replay manifests for selected public APIs
+- `.veritas/assertions/*.json`: structured assertion candidates with source finding, domain, seed inputs, expected behavior, and replay command
+- `.veritas/corpus/*.json`: persistent repro seed metadata for later replay
+- `.veritas/differential/*.json`: behavior replay manifests and result summaries for selected public APIs
+- `.veritas/budgets/*.json`: command budget and resource-limit metadata
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance
 - `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs
@@ -69,6 +75,6 @@ Generated tests are reviewable artifacts, not automatically trusted source.
 - Keep verification changed-scope unless the user explicitly asks for a full workspace run.
 - Treat warning-level surviving mutants as evidence of missing assertions, not as proof of production defects.
 - Prefer a small regression test before editing production code when a generated or fuzz repro exposes behavior.
-- Turn `.veritas/regressions/*.md` and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
+- Turn `.veritas/assertions/*.json`, `.veritas/regressions/*.md`, and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
 - Do not widen fuzz time, reverse dependency depth, package caps, or coverage scope without explaining the runtime tradeoff.
 - On shared hosts, keep Rust coverage disabled and use systemd scope limits when running broad Rust verification.

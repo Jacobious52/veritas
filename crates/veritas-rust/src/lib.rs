@@ -15,9 +15,9 @@ use tree_sitter::{Node, Parser};
 use veritas_core::config::RustPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase, RiskLevel, RunStatus,
-    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    GeneratedArtifact, LanguagePlugin, LineRange, PluginCapability, ProjectInfo, ReproCase,
+    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
+    VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -90,6 +90,22 @@ impl LanguagePlugin for RustPlugin {
 
     fn display_name(&self) -> &'static str {
         "Rust"
+    }
+
+    fn capabilities(&self) -> Vec<PluginCapability> {
+        vec![
+            PluginCapability::TargetDiscovery,
+            PluginCapability::SymbolGraph,
+            PluginCapability::GeneratedTests,
+            PluginCapability::ExistingTests,
+            PluginCapability::PropertyTests,
+            PluginCapability::MutationChecks,
+            PluginCapability::Coverage,
+            PluginCapability::DifferentialReplay,
+            PluginCapability::CorpusReplay,
+            PluginCapability::RegressionPromotion,
+            PluginCapability::ResourceBudgets,
+        ]
     }
 
     fn detect_project(&self, root: &Path) -> Result<ProjectInfo> {
@@ -941,13 +957,44 @@ fn render_rust_regression_scaffold(
         "#[ignore = \"review and replace the veritas placeholder with a real assertion\"]\n",
     );
     out.push_str(&format!("fn veritas_regression_{index}_{name}() {{\n"));
-    out.push_str("    // Arrange the smallest input or state that exposes the finding.\n");
+    if let Some(function) = function {
+        out.push_str("    // Candidate assertion seed synthesized by veritas:\n");
+        if function.owner.is_none() {
+            let args = rust_regression_seed_args(function).join(", ");
+            out.push_str(&format!(
+                "    // let actual = {}::{}({args});\n",
+                function.crate_name, function.name
+            ));
+            out.push_str("    // assert_eq!(actual, /* reviewed expected value */);\n");
+        } else {
+            out.push_str("    // Construct the receiver state, call the method, and assert the reviewed expected value.\n");
+        }
+    } else {
+        out.push_str("    // Arrange the smallest input or state that exposes the finding.\n");
+    }
     out.push_str(
         "    // Assert the exact expected behavior so the original mutant or repro is killed.\n",
     );
     out.push_str("    panic!(\"veritas regression scaffold requires a reviewed assertion\");\n");
     out.push_str("}\n");
     out
+}
+
+fn rust_regression_seed_args(function: &RustFunction) -> Vec<String> {
+    function
+        .params
+        .iter()
+        .map(|param| match param.type_name.as_str() {
+            "&str" => "\"veritas-seed\"".to_string(),
+            "String" => "\"veritas-seed\".to_string()".to_string(),
+            "bool" => "true".to_string(),
+            "u8" | "u16" | "u32" | "u64" | "usize" => "1".to_string(),
+            "i8" | "i16" | "i32" | "i64" | "isize" => "1".to_string(),
+            "f32" => "1.0_f32".to_string(),
+            "f64" => "1.0_f64".to_string(),
+            _ => "Default::default()".to_string(),
+        })
+        .collect()
 }
 
 fn push_rust_comment(out: &mut String, line: &str) {
@@ -1490,6 +1537,18 @@ fn domain_mutation_label(symbol: &str, base: &str) -> String {
         || lowered.contains("json")
     {
         Some("serialization")
+    } else if lowered.contains("error")
+        || lowered.contains("err")
+        || lowered.contains("result")
+        || lowered.contains("option")
+    {
+        Some("error handling")
+    } else if lowered.contains("limit")
+        || lowered.contains("threshold")
+        || lowered.contains("min")
+        || lowered.contains("max")
+    {
+        Some("boundary")
     } else {
         None
     };

@@ -96,6 +96,9 @@ pub fn render_markdown(report: &VerificationReport) -> String {
         || report.quality.property.generated_artifacts > 0
         || report.quality.fuzz.generated_harnesses > 0
         || report.quality.fuzz.targets_executed > 0
+        || report.quality.regression.assertion_candidates > 0
+        || report.quality.replay.cases > 0
+        || report.quality.budget.budget_plans > 0
     {
         out.push_str("## Quality Metrics\n\n");
         if report.quality.mutation.generated > 0 {
@@ -130,6 +133,36 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                 report.quality.fuzz.targets_executed,
                 report.quality.fuzz.failures,
                 report.quality.fuzz.persisted_repros
+            ));
+        }
+        if report.quality.regression.assertion_candidates > 0
+            || report.quality.regression.corpus_entries > 0
+        {
+            out.push_str(&format!(
+                "- Regression loop: assertion candidates `{}`, promoted scaffolds `{}`, corpus entries `{}`\n",
+                report.quality.regression.assertion_candidates,
+                report.quality.regression.promoted_scaffolds,
+                report.quality.regression.corpus_entries
+            ));
+        }
+        if report.quality.replay.cases > 0 {
+            out.push_str(&format!(
+                "- Differential replay: manifests `{}`, targets `{}`, cases `{}`, result artifacts `{}`\n",
+                report.quality.replay.manifests,
+                report.quality.replay.targets,
+                report.quality.replay.cases,
+                report.quality.replay.results
+            ));
+        }
+        if report.quality.budget.budget_plans > 0
+            || report.quality.budget.skipped_commands > 0
+            || report.quality.budget.timed_out_commands > 0
+        {
+            out.push_str(&format!(
+                "- Budgets: plans `{}`, skipped commands `{}`, timed-out commands `{}`\n",
+                report.quality.budget.budget_plans,
+                report.quality.budget.skipped_commands,
+                report.quality.budget.timed_out_commands
             ));
         }
         out.push('\n');
@@ -291,6 +324,11 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::RegressionTest => "[regression]",
         ArtifactKind::DifferentialReplay => "[replay]",
         ArtifactKind::EvolutionPlan => "[evolution]",
+        ArtifactKind::AssertionCandidate => "[assertion]",
+        ArtifactKind::CorpusEntry => "[corpus]",
+        ArtifactKind::ReplayResult => "[replay-result]",
+        ArtifactKind::BudgetPlan => "[budget]",
+        ArtifactKind::ConfidenceScore => "[score]",
     }
 }
 

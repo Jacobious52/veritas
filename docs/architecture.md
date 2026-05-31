@@ -36,13 +36,15 @@ docs/
 6. Optionally write artifacts to the target project.
 7. Run language tests, fuzzing, mutation checks, and coverage collection under budgets.
 8. Add observation artifacts: baselines, replay manifests, feedback, repros, patches, and regression notes.
-9. Assign stable finding IDs.
-10. Render reports.
+9. Add structured assertion candidates, corpus entries, replay result summaries, and budget metadata.
+10. Assign stable finding IDs.
+11. Render reports and confidence scores.
 
 ## Plugin Contract
 
 Each language plugin implements:
 
+- `capabilities() -> Vec<PluginCapability>`
 - `detect_project(root) -> ProjectInfo`
 - `discover_targets(root) -> Vec<VerificationTarget>`
 - `generate_tests(target, plan) -> Vec<GeneratedArtifact>`
@@ -69,7 +71,7 @@ Artifacts carry:
 - contents
 - planned/written/skipped status
 
-Plugins can override regression promotion to emit language-owned executable scaffolds. The default plugin contract falls back to Markdown guidance, so future language plugins can adopt promotion incrementally.
+Plugins advertise capabilities such as symbol graphs, property tests, fuzzing, mutation checks, differential replay, corpus replay, regression promotion, and resource budgets. Plugins can override regression promotion to emit language-owned executable scaffolds. The default plugin contract falls back to Markdown guidance, so future language plugins can adopt promotion incrementally.
 
 ## Planning
 
@@ -90,7 +92,7 @@ Core exposes a small ordered parallel-job scheduler for language plugins. Plugin
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, fuzz execution/failure counts, and persisted repro counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, and persisted repro counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 
@@ -111,7 +113,7 @@ Go:
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 
-Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
+Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` for persistent repro seed metadata, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 
@@ -123,3 +125,5 @@ Report formats:
 - JUnit XML
 
 SARIF prefers target file and line range locations when a finding maps to a discovered target. JUnit trims long failure bodies for CI log hygiene.
+
+`veritas score` reads `.veritas/report.json` and produces a compact confidence score from mutation score, findings, assertion candidates, replay cases, corpus entries, and budget health. Use it as the AI-change decision view after `veritas verify`.

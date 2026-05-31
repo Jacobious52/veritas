@@ -142,9 +142,10 @@ Reports and artifacts:
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
-- reports mutation score, property-test quality, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- reports mutation score, assertion candidates, corpus entries, differential replay cases, budget skips/timeouts, property-test quality, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- summarizes current confidence with `veritas score`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, replay manifests, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
 
 CI behavior:
