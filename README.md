@@ -288,6 +288,30 @@ cargo run -p veritas-cli -- verify --root examples/go-invoice --lang go --target
 
 The example projects intentionally contain hidden assumptions while their handwritten tests pass, so they are useful for validating generated property/fuzz artifacts and report output.
 
+## Publishing
+
+The workspace is prepared for crates.io publishing from GitHub Actions.
+
+To publish with an API token:
+
+1. Create a crates.io API token that can publish new crates and updates.
+2. Add it to the GitHub repository as `CARGO_REGISTRY_TOKEN`.
+3. Run the `Release` workflow manually with `dry_run=true` to package every crate without uploading.
+4. Run the workflow with `dry_run=false`, or push a `v0.1.0` style tag, to publish crates in dependency order.
+
+The release script publishes:
+
+```text
+veritas-plugin-api
+veritas-core
+veritas-report
+veritas-rust
+veritas-go
+veritas-cli
+```
+
+After the first release exists on crates.io, trusted publishing can be configured per crate in crates.io settings so future CI releases can use GitHub Actions OIDC instead of a long-lived token.
+
 ## Known Limitations
 
 - v0 does not call LLM APIs by default; the external planner hook is opt-in.

@@ -13,7 +13,11 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/example/veritas"
+repository = "https://github.com/Jacobious52/veritas"
+homepage = "https://github.com/Jacobious52/veritas"
+readme = "README.md"
+keywords = ["ai", "verification", "testing", "fuzzing", "cli"]
+categories = ["command-line-utilities", "development-tools::testing"]
 description = "AI-native verification engine for vibe-coded software"
 
 [workspace.dependencies]

@@ -3,6 +3,11 @@ name = "veritas-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Core orchestration for veritas"
 
 [dependencies]
@@ -12,4 +17,4 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
-veritas-plugin-api = { path = "../veritas-plugin-api" }
+veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }

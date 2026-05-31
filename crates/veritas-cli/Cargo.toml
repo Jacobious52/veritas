@@ -3,6 +3,11 @@ name = "veritas-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "CLI for veritas"
 
 [[bin]]
@@ -15,11 +20,11 @@ camino.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
-veritas-core = { path = "../veritas-core" }
-veritas-go = { path = "../veritas-go" }
-veritas-plugin-api = { path = "../veritas-plugin-api" }
-veritas-report = { path = "../veritas-report" }
-veritas-rust = { path = "../veritas-rust" }
+veritas-core = { version = "0.1.0", path = "../veritas-core" }
+veritas-go = { version = "0.1.0", path = "../veritas-go" }
+veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }
+veritas-report = { version = "0.1.0", path = "../veritas-report" }
+veritas-rust = { version = "0.1.0", path = "../veritas-rust" }
 
 [dev-dependencies]
 assert_cmd = "2.0"

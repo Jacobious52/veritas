@@ -3,6 +3,11 @@ name = "veritas-go"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Go language plugin for veritas"
 
 [dependencies]
@@ -12,6 +17,6 @@ serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
 tree-sitter-go = "0.25.0"
-veritas-core = { path = "../veritas-core" }
-veritas-plugin-api = { path = "../veritas-plugin-api" }
+veritas-core = { version = "0.1.0", path = "../veritas-core" }
+veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }
 walkdir.workspace = true

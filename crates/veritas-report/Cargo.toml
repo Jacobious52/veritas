@@ -3,10 +3,15 @@ name = "veritas-report"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Report rendering for veritas"
 
 [dependencies]
-veritas-plugin-api = { path = "../veritas-plugin-api" }
+veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }
 
 [dev-dependencies]
 serde_json.workspace = true
