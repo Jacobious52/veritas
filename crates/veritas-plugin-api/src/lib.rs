@@ -217,6 +217,7 @@ pub enum ArtifactKind {
     BudgetPlan,
     ConfidenceScore,
     MutationTrend,
+    MutationCampaign,
     EvolutionCandidate,
     CorpusReplay,
     SiteAsset,
@@ -454,25 +455,76 @@ pub struct VerificationQuality {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MutationMetrics {
     pub generated: usize,
+    #[serde(default)]
+    pub runnable: usize,
     pub executed: usize,
     pub killed: usize,
     pub survived: usize,
+    #[serde(default)]
+    pub not_covered: usize,
+    #[serde(default)]
+    pub timed_out: usize,
+    #[serde(default)]
+    pub not_viable: usize,
     pub skipped: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub efficacy_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutant_coverage_percent: Option<u8>,
     #[serde(default)]
     pub by_domain: BTreeMap<String, MutationAttribution>,
     #[serde(default)]
     pub by_operator: BTreeMap<String, MutationAttribution>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<MutationRecord>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MutationAttribution {
     pub generated: usize,
+    #[serde(default)]
+    pub runnable: usize,
     pub executed: usize,
     pub killed: usize,
     pub survived: usize,
+    #[serde(default)]
+    pub not_covered: usize,
+    #[serde(default)]
+    pub timed_out: usize,
+    #[serde(default)]
+    pub not_viable: usize,
     pub skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationRecord {
+    pub id: String,
+    pub language: String,
+    pub path: Utf8PathBuf,
+    pub symbol: String,
+    pub operator: String,
+    pub domain: String,
+    pub status: MutationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_range: Option<LineRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub duration_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationStatus {
+    Runnable,
+    NotCovered,
+    Killed,
+    Lived,
+    TimedOut,
+    NotViable,
+    Skipped,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

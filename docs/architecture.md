@@ -114,7 +114,7 @@ Go:
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 
-Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` plus `*_candidates.json` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
+Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/mutations/*_campaign.json` for per-mutant campaign records, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` plus `*_candidates.json` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 

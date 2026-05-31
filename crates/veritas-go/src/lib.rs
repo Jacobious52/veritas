@@ -17,9 +17,9 @@ use veritas_core::{config::GoPluginConfig, run_parallel_jobs};
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
     FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
-    PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind, TestRunResult,
-    VerificationPlan, VerificationQuality, VerificationReport, VerificationStrategy,
-    VerificationTarget,
+    MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
+    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -1160,8 +1160,21 @@ fn go_test_args(config: &GoPluginConfig, package_args: &[String]) -> Vec<String>
     if let Some(tags) = go_tags_arg(config) {
         args.push(tags);
     }
+    if let Some(test_cpu) = config.mutation.test_cpu {
+        args.push(format!("-cpu={}", test_cpu.max(1)));
+    }
     args.extend(package_args.iter().cloned());
     args
+}
+
+fn mutation_timeout_seconds(config: &GoPluginConfig) -> u64 {
+    if config.mutation.timeout_coefficient == 0 {
+        config.command_timeout_seconds
+    } else {
+        config
+            .command_timeout_seconds
+            .saturating_mul(config.mutation.timeout_coefficient.max(1))
+    }
 }
 
 fn go_tags_arg(config: &GoPluginConfig) -> Option<String> {
@@ -1655,7 +1668,10 @@ fn run_mutation_checks(
     plan: &VerificationPlan,
 ) -> Result<TestRunResult> {
     let start = Instant::now();
-    let candidates = go_mutation_candidates(&context.functions, root, artifacts)?;
+    let candidates = go_mutation_candidates(&context.functions, root, artifacts)?
+        .into_iter()
+        .filter(|candidate| mutation_candidate_allowed(candidate, config))
+        .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
     let mut failures = Vec::new();
@@ -1668,6 +1684,34 @@ fn run_mutation_checks(
         let operator = mutation_operator_from_label(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !candidate_has_package_tests(&candidate, context) {
+            quality.mutation.not_covered += 1;
+            record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
+            record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::NotCovered,
+                None,
+                0,
+            ));
+            continue;
+        }
+        if config.mutation.dry_run {
+            quality.mutation.runnable += 1;
+            record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
+            record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Runnable,
+                None,
+                0,
+            ));
+            continue;
+        }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
             commands.push(skipped_command(
                 root,
@@ -1677,6 +1721,9 @@ fn run_mutation_checks(
             break;
         }
         quality.mutation.executed += 1;
+        quality.mutation.runnable += 1;
+        record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
+        record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
         record_mutation_executed(&mut quality.mutation.by_domain, &domain);
         record_mutation_executed(&mut quality.mutation.by_operator, &operator);
         let path = root.join(&candidate.path);
@@ -1701,17 +1748,25 @@ fn run_mutation_checks(
                 &root.join(&module_root),
                 "go",
                 test_args,
-                config.command_timeout_seconds,
+                mutation_timeout_seconds(config),
             ));
         }
         fs::write(&path, original)
             .with_context(|| format!("failed to restore {}", path.display()))?;
         let mut mutant_survived = true;
+        let mut mutant_timed_out = false;
+        let mut mutant_not_viable = false;
         let mut representative_command = None;
         for command in mutation_commands {
             let command = command?;
             if command.status == RunStatus::Failed {
                 mutant_survived = false;
+                if command.stderr.contains("timed out after") {
+                    mutant_timed_out = true;
+                }
+                if mutation_not_viable(&command) {
+                    mutant_not_viable = true;
+                }
             }
             representative_command.get_or_insert_with(|| command.clone());
             commands.push(command);
@@ -1754,10 +1809,42 @@ fn run_mutation_checks(
                     path: Some(candidate.path.clone()),
                 }),
             });
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Lived,
+                Some(&command_line(&command.program, &command.args)),
+                command.duration_ms,
+            ));
         } else {
-            quality.mutation.killed += 1;
-            record_mutation_killed(&mut quality.mutation.by_domain, &domain);
-            record_mutation_killed(&mut quality.mutation.by_operator, &operator);
+            let command = representative_command.as_ref();
+            let status = if mutant_timed_out {
+                quality.mutation.timed_out += 1;
+                record_mutation_timed_out(&mut quality.mutation.by_domain, &domain);
+                record_mutation_timed_out(&mut quality.mutation.by_operator, &operator);
+                MutationStatus::TimedOut
+            } else if mutant_not_viable {
+                quality.mutation.not_viable += 1;
+                record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
+                record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
+                MutationStatus::NotViable
+            } else {
+                quality.mutation.killed += 1;
+                record_mutation_killed(&mut quality.mutation.by_domain, &domain);
+                record_mutation_killed(&mut quality.mutation.by_operator, &operator);
+                MutationStatus::Killed
+            };
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                status,
+                command
+                    .map(|command| command_line(&command.program, &command.args))
+                    .as_deref(),
+                command.map(|command| command.duration_ms).unwrap_or(0),
+            ));
         }
     }
     quality.mutation.skipped = quality
@@ -1767,6 +1854,15 @@ fn run_mutation_checks(
     quality.mutation.score_percent = (quality.mutation.killed * 100)
         .checked_div(quality.mutation.executed)
         .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.killed + quality.mutation.survived)
+        .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.mutant_coverage_percent =
+        ((quality.mutation.killed + quality.mutation.survived) * 100)
+            .checked_div(
+                quality.mutation.killed + quality.mutation.survived + quality.mutation.not_covered,
+            )
+            .map(|score| score.try_into().unwrap_or(100));
     finalize_mutation_skips(&mut quality.mutation.by_domain);
     finalize_mutation_skips(&mut quality.mutation.by_operator);
 
@@ -1868,6 +1964,10 @@ fn record_mutation_generated(metrics: &mut BTreeMap<String, MutationAttribution>
     metrics.entry(key.to_string()).or_default().generated += 1;
 }
 
+fn record_mutation_runnable(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().runnable += 1;
+}
+
 fn record_mutation_executed(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
     metrics.entry(key.to_string()).or_default().executed += 1;
 }
@@ -1880,10 +1980,99 @@ fn record_mutation_survived(metrics: &mut BTreeMap<String, MutationAttribution>,
     metrics.entry(key.to_string()).or_default().survived += 1;
 }
 
+fn record_mutation_not_covered(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().not_covered += 1;
+}
+
+fn record_mutation_timed_out(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().timed_out += 1;
+}
+
+fn record_mutation_not_viable(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().not_viable += 1;
+}
+
 fn finalize_mutation_skips(metrics: &mut BTreeMap<String, MutationAttribution>) {
     for metric in metrics.values_mut() {
         metric.skipped = metric.generated.saturating_sub(metric.executed);
     }
+}
+
+fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginConfig) -> bool {
+    if config
+        .mutation
+        .exclude_paths
+        .iter()
+        .any(|pattern| candidate.path.as_str().contains(pattern))
+    {
+        return false;
+    }
+    let operator = mutation_operator_from_label(&candidate.label);
+    if !config.mutation.enabled_operators.is_empty()
+        && !config
+            .mutation
+            .enabled_operators
+            .iter()
+            .any(|enabled| operator_matches(&operator, enabled))
+    {
+        return false;
+    }
+    !config
+        .mutation
+        .disabled_operators
+        .iter()
+        .any(|disabled| operator_matches(&operator, disabled))
+}
+
+fn candidate_has_package_tests(
+    candidate: &MutationCandidate,
+    context: &GoVerificationContext,
+) -> bool {
+    let dir = package_dir(&candidate.path);
+    context.packages.iter().any(|package| {
+        package.dir == dir
+            && (!package.test_go_files.is_empty() || !package.x_test_go_files.is_empty())
+    })
+}
+
+fn operator_matches(operator: &str, configured: &str) -> bool {
+    let configured = configured.replace(['_', '-'], " ").to_ascii_lowercase();
+    operator.contains(configured.trim())
+}
+
+fn mutation_record(
+    candidate: &MutationCandidate,
+    domain: &str,
+    operator: &str,
+    status: MutationStatus,
+    command: Option<&str>,
+    duration_ms: u128,
+) -> MutationRecord {
+    MutationRecord {
+        id: format!(
+            "go:{}:{}:{}:{}",
+            candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
+        ),
+        language: "go".to_string(),
+        path: candidate.path.clone(),
+        symbol: candidate.function.clone(),
+        operator: operator.to_string(),
+        domain: domain.to_string(),
+        status,
+        line_range: None,
+        command: command.map(ToString::to_string),
+        duration_ms,
+    }
+}
+
+fn mutation_not_viable(command: &CommandRecord) -> bool {
+    let output = format!("{}\n{}", command.stdout, command.stderr).to_ascii_lowercase();
+    output.contains("build failed")
+        || output.contains("syntax error")
+        || output.contains("cannot use")
+        || output.contains("undefined:")
+        || output.contains("not enough arguments")
+        || output.contains("too many arguments")
 }
 
 fn collect_go_mutation_nodes(
@@ -3490,6 +3679,7 @@ mod tests {
             max_packages: 64,
             max_mutants: 8,
             build_tags: Vec::new(),
+            mutation: Default::default(),
         }
     }
 

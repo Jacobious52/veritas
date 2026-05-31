@@ -103,7 +103,7 @@ pub fn render_markdown(report: &VerificationReport) -> String {
         out.push_str("## Quality Metrics\n\n");
         if report.quality.mutation.generated > 0 {
             out.push_str(&format!(
-                "- Mutation score: `{}` (generated: `{}`, executed: `{}`, killed: `{}`, survived: `{}`, skipped: `{}`)\n",
+                "- Mutation score: `{}` (generated: `{}`, runnable: `{}`, executed: `{}`, killed: `{}`, survived: `{}`, not covered: `{}`, timed out: `{}`, not viable: `{}`, skipped: `{}`)\n",
                 report
                     .quality
                     .mutation
@@ -111,11 +111,34 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                     .map(|score| format!("{score}%"))
                     .unwrap_or_else(|| "n/a".to_string()),
                 report.quality.mutation.generated,
+                report.quality.mutation.runnable,
                 report.quality.mutation.executed,
                 report.quality.mutation.killed,
                 report.quality.mutation.survived,
+                report.quality.mutation.not_covered,
+                report.quality.mutation.timed_out,
+                report.quality.mutation.not_viable,
                 report.quality.mutation.skipped,
             ));
+            if report.quality.mutation.efficacy_percent.is_some()
+                || report.quality.mutation.mutant_coverage_percent.is_some()
+            {
+                out.push_str(&format!(
+                    "  - Efficacy: `{}`, mutant coverage: `{}`\n",
+                    report
+                        .quality
+                        .mutation
+                        .efficacy_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    report
+                        .quality
+                        .mutation
+                        .mutant_coverage_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string())
+                ));
+            }
             if !report.quality.mutation.by_domain.is_empty() {
                 out.push_str(&format!(
                     "  - Domains: `{}`\n",
@@ -352,6 +375,7 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::BudgetPlan => "[budget]",
         ArtifactKind::ConfidenceScore => "[score]",
         ArtifactKind::MutationTrend => "[trend]",
+        ArtifactKind::MutationCampaign => "[campaign]",
         ArtifactKind::EvolutionCandidate => "[candidate]",
         ArtifactKind::CorpusReplay => "[corpus-replay]",
         ArtifactKind::SiteAsset => "[site]",

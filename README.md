@@ -149,10 +149,10 @@ Reports and artifacts:
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
-- reports mutation score attribution/trends, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- reports mutation score attribution/trends, per-mutant campaign records, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
 - summarizes current confidence and baseline deltas with `veritas score`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, evolution candidate queues, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, evolution candidate queues, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
 
 CI behavior:
@@ -185,6 +185,21 @@ fail_on_languages = []
 fail_on_artifact_kinds = []
 fail_on_target_risks = []
 min_mutation_score = 70
+min_mutation_efficacy = 70
+min_mutant_coverage = 80
+
+[mutation]
+# Shared by language plugins. Operator names are intentionally generic so
+# future Tree-sitter plugins can map their own AST mutations onto the same
+# campaign/report model.
+enabled_operators = []
+disabled_operators = []
+exclude_paths = []
+dry_run = false
+workers = 0 # reserved for plugins that can safely isolate mutants in parallel
+test_cpu = 1
+timeout_coefficient = 0
+output_statuses = [] # e.g. ["lived", "not_covered", "timed_out"]
 
 [plugins.rust]
 property_framework = "proptest"

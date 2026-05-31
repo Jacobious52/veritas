@@ -69,6 +69,7 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/differential/*.json`: behavior replay manifests and result summaries for selected public APIs
 - `.veritas/budgets/*.json`: command budget and resource-limit metadata
 - `.veritas/trends/*.json`: mutation score attribution and quality baseline deltas
+- `.veritas/mutations/*_campaign.json`: per-mutant status records for killed, lived, runnable, timed-out, not-viable, and skipped mutants
 - `.veritas/evolution/*_candidates.json`: candidate queue with fitness signals for the next generation loop
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance

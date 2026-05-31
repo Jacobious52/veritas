@@ -669,6 +669,11 @@ impl CoreEngine {
         artifacts.extend(replay_result_artifacts(language, report, &artifacts)?);
         artifacts.extend(budget_plan_artifacts(language, report)?);
         artifacts.extend(mutation_trend_artifacts(root, language, report)?);
+        artifacts.extend(mutation_campaign_artifacts(
+            language,
+            report,
+            self.mutation_output_statuses(language),
+        )?);
 
         if artifacts.is_empty() {
             return Ok(());
@@ -679,6 +684,14 @@ impl CoreEngine {
         }
         report.artifacts.extend(artifacts);
         Ok(())
+    }
+
+    fn mutation_output_statuses(&self, language: &str) -> &[String] {
+        match language {
+            "go" => &self.config.plugins.go.mutation.output_statuses,
+            "rust" => &self.config.plugins.rust.mutation.output_statuses,
+            _ => &[],
+        }
     }
 
     fn resolve_target(
@@ -2444,10 +2457,18 @@ fn mutation_trend_artifacts(
     let mut quality = VerificationQuality::default();
     for run in &report.runs {
         quality.mutation.generated += run.quality.mutation.generated;
+        quality.mutation.runnable += run.quality.mutation.runnable;
         quality.mutation.executed += run.quality.mutation.executed;
         quality.mutation.killed += run.quality.mutation.killed;
         quality.mutation.survived += run.quality.mutation.survived;
+        quality.mutation.not_covered += run.quality.mutation.not_covered;
+        quality.mutation.timed_out += run.quality.mutation.timed_out;
+        quality.mutation.not_viable += run.quality.mutation.not_viable;
         quality.mutation.skipped += run.quality.mutation.skipped;
+        quality
+            .mutation
+            .records
+            .extend(run.quality.mutation.records.clone());
         merge_mutation_attribution(
             &mut quality.mutation.by_domain,
             &run.quality.mutation.by_domain,
@@ -2457,9 +2478,7 @@ fn mutation_trend_artifacts(
             &run.quality.mutation.by_operator,
         );
     }
-    quality.mutation.score_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
+    finalize_mutation_percentages(&mut quality.mutation);
     if quality.mutation.generated == 0 {
         return Ok(Vec::new());
     }
@@ -2488,6 +2507,84 @@ fn mutation_trend_artifacts(
         description: "Mutation score attribution and baseline trend data".to_string(),
         status: ArtifactStatus::Planned,
     }])
+}
+
+fn mutation_campaign_artifacts(
+    language: &str,
+    report: &VerificationReport,
+    output_statuses: &[String],
+) -> Result<Vec<GeneratedArtifact>> {
+    let mut mutation = veritas_plugin_api::MutationMetrics::default();
+    for run in &report.runs {
+        mutation.generated += run.quality.mutation.generated;
+        mutation.runnable += run.quality.mutation.runnable;
+        mutation.executed += run.quality.mutation.executed;
+        mutation.killed += run.quality.mutation.killed;
+        mutation.survived += run.quality.mutation.survived;
+        mutation.not_covered += run.quality.mutation.not_covered;
+        mutation.timed_out += run.quality.mutation.timed_out;
+        mutation.not_viable += run.quality.mutation.not_viable;
+        mutation.skipped += run.quality.mutation.skipped;
+        merge_mutation_attribution(&mut mutation.by_domain, &run.quality.mutation.by_domain);
+        merge_mutation_attribution(&mut mutation.by_operator, &run.quality.mutation.by_operator);
+        mutation
+            .records
+            .extend(run.quality.mutation.records.iter().cloned());
+    }
+    finalize_mutation_percentages(&mut mutation);
+    if mutation.generated == 0 && mutation.records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let records = filtered_mutation_records(&mutation.records, output_statuses);
+    mutation.records = records.clone();
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "output_statuses": output_statuses,
+        "metrics": mutation,
+        "records": records,
+    }))?;
+    Ok(vec![GeneratedArtifact {
+        id: format!("{language}-mutation-campaign"),
+        language: language.to_string(),
+        kind: ArtifactKind::MutationCampaign,
+        target_id: format!("{language}:mutation-campaign"),
+        path: Utf8PathBuf::from(format!(".veritas/mutations/{language}_campaign.json")),
+        contents,
+        description: "Per-mutant campaign records and status metrics".to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
+fn filtered_mutation_records(
+    records: &[veritas_plugin_api::MutationRecord],
+    output_statuses: &[String],
+) -> Vec<veritas_plugin_api::MutationRecord> {
+    if output_statuses.is_empty() {
+        return records.to_vec();
+    }
+    records
+        .iter()
+        .filter(|record| {
+            let status = mutation_status_label(record.status);
+            output_statuses.iter().any(|configured| {
+                configured.replace(['-', '_'], " ").to_ascii_lowercase() == status
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn mutation_status_label(status: veritas_plugin_api::MutationStatus) -> &'static str {
+    match status {
+        veritas_plugin_api::MutationStatus::Runnable => "runnable",
+        veritas_plugin_api::MutationStatus::NotCovered => "not covered",
+        veritas_plugin_api::MutationStatus::Killed => "killed",
+        veritas_plugin_api::MutationStatus::Lived => "lived",
+        veritas_plugin_api::MutationStatus::TimedOut => "timed out",
+        veritas_plugin_api::MutationStatus::NotViable => "not viable",
+        veritas_plugin_api::MutationStatus::Skipped => "skipped",
+    }
 }
 
 fn should_generate_regression_artifact(failure: &Failure) -> bool {
@@ -2828,10 +2925,18 @@ fn refresh_report_quality(report: &mut VerificationReport) {
 
     for run in &report.runs {
         quality.mutation.generated += run.quality.mutation.generated;
+        quality.mutation.runnable += run.quality.mutation.runnable;
         quality.mutation.executed += run.quality.mutation.executed;
         quality.mutation.killed += run.quality.mutation.killed;
         quality.mutation.survived += run.quality.mutation.survived;
+        quality.mutation.not_covered += run.quality.mutation.not_covered;
+        quality.mutation.timed_out += run.quality.mutation.timed_out;
+        quality.mutation.not_viable += run.quality.mutation.not_viable;
         quality.mutation.skipped += run.quality.mutation.skipped;
+        quality
+            .mutation
+            .records
+            .extend(run.quality.mutation.records.clone());
         merge_mutation_attribution(
             &mut quality.mutation.by_domain,
             &run.quality.mutation.by_domain,
@@ -2954,9 +3059,7 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .filter(|finding| finding_is_generated_test_failure(report, finding))
         .count();
 
-    quality.mutation.score_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
+    finalize_mutation_percentages(&mut quality.mutation);
 
     report.quality = quality;
 }
@@ -2968,11 +3071,27 @@ fn merge_mutation_attribution(
     for (key, source) in source {
         let target = target.entry(key.clone()).or_default();
         target.generated += source.generated;
+        target.runnable += source.runnable;
         target.executed += source.executed;
         target.killed += source.killed;
         target.survived += source.survived;
+        target.not_covered += source.not_covered;
+        target.timed_out += source.timed_out;
+        target.not_viable += source.not_viable;
         target.skipped += source.skipped;
     }
+}
+
+fn finalize_mutation_percentages(mutation: &mut veritas_plugin_api::MutationMetrics) {
+    mutation.score_percent = (mutation.killed * 100)
+        .checked_div(mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
+    mutation.efficacy_percent = (mutation.killed * 100)
+        .checked_div(mutation.killed + mutation.survived)
+        .map(|score| score.try_into().unwrap_or(100));
+    mutation.mutant_coverage_percent = ((mutation.killed + mutation.survived) * 100)
+        .checked_div(mutation.killed + mutation.survived + mutation.not_covered)
+        .map(|score| score.try_into().unwrap_or(100));
 }
 
 fn property_strength_score(property: &veritas_plugin_api::PropertyMetrics) -> Option<u8> {
@@ -3315,15 +3434,15 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use veritas_plugin_api::{
-        ArtifactKind, AssertionDomain, Failure, FailureSeverity, LineRange, ReproCase, RiskLevel,
-        VerificationReport,
+        ArtifactKind, AssertionDomain, Failure, FailureSeverity, LineRange, MutationRecord,
+        MutationStatus, ReproCase, RiskLevel, VerificationReport,
     };
 
     use super::{
         api_baseline_artifact, assertion_candidate_artifacts, cleanup_generated_artifacts,
-        confidence_score, corpus_entry_artifacts, differential_replay_artifact, parse_unified_diff,
-        regression_artifacts, run_parallel_jobs, targets_for_changed_files, ChangedFile,
-        TargetKind, VerificationTarget,
+        confidence_score, corpus_entry_artifacts, differential_replay_artifact,
+        filtered_mutation_records, parse_unified_diff, regression_artifacts, run_parallel_jobs,
+        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -3338,6 +3457,41 @@ mod tests {
         assert_eq!(results, vec![6, 4, 2]);
         assert_eq!(summary.requested_jobs, 3);
         assert_eq!(summary.max_concurrency, 2);
+    }
+
+    #[test]
+    fn filters_mutation_campaign_records_by_status_aliases() {
+        let records = vec![
+            mutation_record_for_test("killed", MutationStatus::Killed),
+            mutation_record_for_test("survivor", MutationStatus::Lived),
+            mutation_record_for_test("timeout", MutationStatus::TimedOut),
+        ];
+
+        let filtered =
+            filtered_mutation_records(&records, &["lived".to_string(), "timed-out".to_string()]);
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["survivor", "timeout"]
+        );
+    }
+
+    fn mutation_record_for_test(id: &str, status: MutationStatus) -> MutationRecord {
+        MutationRecord {
+            id: id.to_string(),
+            language: "rust".to_string(),
+            path: Utf8PathBuf::from("src/lib.rs"),
+            symbol: "check".to_string(),
+            operator: "comparison".to_string(),
+            domain: "general".to_string(),
+            status,
+            line_range: None,
+            command: None,
+            duration_ms: 0,
+        }
     }
 
     #[test]

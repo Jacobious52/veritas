@@ -1104,6 +1104,28 @@ fn enforce_failure_policy(config: &VeritasConfig, report: &VerificationReport) -
             _ => {}
         }
     }
+    if let Some(min_efficacy) = config.policy.min_mutation_efficacy {
+        match report.quality.mutation.efficacy_percent {
+            Some(score) if score < min_efficacy => {
+                bail!("mutation efficacy {score}% is below policy minimum {min_efficacy}%");
+            }
+            None => {
+                bail!("mutation efficacy was unavailable but policy minimum is {min_efficacy}%");
+            }
+            _ => {}
+        }
+    }
+    if let Some(min_coverage) = config.policy.min_mutant_coverage {
+        match report.quality.mutation.mutant_coverage_percent {
+            Some(score) if score < min_coverage => {
+                bail!("mutant coverage {score}% is below policy minimum {min_coverage}%");
+            }
+            None => {
+                bail!("mutant coverage was unavailable but policy minimum is {min_coverage}%");
+            }
+            _ => {}
+        }
+    }
 
     if config.fail_on_findings {
         let accepted = report

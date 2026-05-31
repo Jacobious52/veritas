@@ -46,6 +46,7 @@ pub struct RustPluginConfig {
     pub systemd_scope: bool,
     pub memory_max: Option<String>,
     pub cpu_quota: Option<String>,
+    pub mutation: MutationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +61,19 @@ pub struct GoPluginConfig {
     pub max_packages: usize,
     pub max_mutants: usize,
     pub build_tags: Vec<String>,
+    pub mutation: MutationConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationConfig {
+    pub enabled_operators: Vec<String>,
+    pub disabled_operators: Vec<String>,
+    pub exclude_paths: Vec<String>,
+    pub dry_run: bool,
+    pub workers: usize,
+    pub test_cpu: Option<usize>,
+    pub timeout_coefficient: u64,
+    pub output_statuses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +83,8 @@ pub struct PolicyConfig {
     pub fail_on_artifact_kinds: Vec<String>,
     pub fail_on_target_risks: Vec<RiskLevel>,
     pub min_mutation_score: Option<u8>,
+    pub min_mutation_efficacy: Option<u8>,
+    pub min_mutant_coverage: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +92,7 @@ struct ConfigFile {
     veritas: Option<VeritasSection>,
     planner: Option<PlannerSection>,
     policy: Option<PolicySection>,
+    mutation: Option<MutationConfigPartial>,
     plugins: Option<PluginSection>,
 }
 
@@ -101,6 +118,8 @@ struct PolicySection {
     fail_on_artifact_kinds: Option<Vec<String>>,
     fail_on_target_risks: Option<Vec<RiskLevel>>,
     min_mutation_score: Option<u8>,
+    min_mutation_efficacy: Option<u8>,
+    min_mutant_coverage: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,6 +139,7 @@ struct RustPluginConfigPartial {
     systemd_scope: Option<bool>,
     memory_max: Option<String>,
     cpu_quota: Option<String>,
+    mutation: Option<MutationConfigPartial>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -134,6 +154,19 @@ struct GoPluginConfigPartial {
     max_packages: Option<usize>,
     max_mutants: Option<usize>,
     build_tags: Option<Vec<String>>,
+    mutation: Option<MutationConfigPartial>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MutationConfigPartial {
+    enabled_operators: Option<Vec<String>>,
+    disabled_operators: Option<Vec<String>>,
+    exclude_paths: Option<Vec<String>>,
+    dry_run: Option<bool>,
+    workers: Option<usize>,
+    test_cpu: Option<usize>,
+    timeout_coefficient: Option<u64>,
+    output_statuses: Option<Vec<String>>,
 }
 
 impl Default for VeritasConfig {
@@ -154,6 +187,8 @@ impl Default for VeritasConfig {
                 fail_on_artifact_kinds: Vec::new(),
                 fail_on_target_risks: Vec::new(),
                 min_mutation_score: None,
+                min_mutation_efficacy: None,
+                min_mutant_coverage: None,
             },
             plugins: PluginConfigs {
                 rust: RustPluginConfig {
@@ -166,6 +201,7 @@ impl Default for VeritasConfig {
                     systemd_scope: false,
                     memory_max: None,
                     cpu_quota: None,
+                    mutation: MutationConfig::default(),
                 },
                 go: GoPluginConfig {
                     fuzz_seconds: 10,
@@ -178,6 +214,7 @@ impl Default for VeritasConfig {
                     max_packages: 64,
                     max_mutants: 8,
                     build_tags: Vec::new(),
+                    mutation: MutationConfig::default(),
                 },
             },
         }
@@ -239,6 +276,17 @@ impl VeritasConfig {
             if let Some(value) = policy.min_mutation_score {
                 config.policy.min_mutation_score = Some(value.min(100));
             }
+            if let Some(value) = policy.min_mutation_efficacy {
+                config.policy.min_mutation_efficacy = Some(value.min(100));
+            }
+            if let Some(value) = policy.min_mutant_coverage {
+                config.policy.min_mutant_coverage = Some(value.min(100));
+            }
+        }
+
+        if let Some(mutation) = parsed.mutation {
+            apply_mutation_config(&mut config.plugins.rust.mutation, &mutation);
+            apply_mutation_config(&mut config.plugins.go.mutation, &mutation);
         }
 
         if let Some(plugins) = parsed.plugins {
@@ -269,6 +317,9 @@ impl VeritasConfig {
                 }
                 if let Some(value) = rust.cpu_quota {
                     config.plugins.rust.cpu_quota = Some(value);
+                }
+                if let Some(value) = rust.mutation {
+                    apply_mutation_config(&mut config.plugins.rust.mutation, &value);
                 }
             }
             if let Some(go) = plugins.go {
@@ -302,10 +353,40 @@ impl VeritasConfig {
                 if let Some(value) = go.build_tags {
                     config.plugins.go.build_tags = value;
                 }
+                if let Some(value) = go.mutation {
+                    apply_mutation_config(&mut config.plugins.go.mutation, &value);
+                }
             }
         }
 
         Ok(config)
+    }
+}
+
+fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPartial) {
+    if let Some(value) = &partial.enabled_operators {
+        config.enabled_operators = value.clone();
+    }
+    if let Some(value) = &partial.disabled_operators {
+        config.disabled_operators = value.clone();
+    }
+    if let Some(value) = &partial.exclude_paths {
+        config.exclude_paths = value.clone();
+    }
+    if let Some(value) = partial.dry_run {
+        config.dry_run = value;
+    }
+    if let Some(value) = partial.workers {
+        config.workers = value;
+    }
+    if let Some(value) = partial.test_cpu {
+        config.test_cpu = Some(value.max(1));
+    }
+    if let Some(value) = partial.timeout_coefficient {
+        config.timeout_coefficient = value;
+    }
+    if let Some(value) = &partial.output_statuses {
+        config.output_statuses = value.clone();
     }
 }
 
@@ -339,6 +420,17 @@ fail_on_languages = ["go"]
 fail_on_artifact_kinds = ["mutation_check"]
 fail_on_target_risks = ["high"]
 min_mutation_score = 70
+min_mutation_efficacy = 75
+min_mutant_coverage = 80
+
+[mutation]
+disabled_operators = ["loop"]
+exclude_paths = ["vendor/", "_generated.go$"]
+dry_run = true
+workers = 4
+test_cpu = 2
+timeout_coefficient = 3
+output_statuses = ["lived", "timed_out"]
 
 [plugins.go]
 fuzz_seconds = 3
@@ -351,6 +443,10 @@ command_timeout_seconds = 9
 max_packages = 12
 max_mutants = 5
 build_tags = ["integration", "sqlite"]
+
+[plugins.go.mutation]
+enabled_operators = ["arithmetic", "comparison"]
+dry_run = false
 
 [plugins.rust]
 property_framework = "proptest"
@@ -373,6 +469,24 @@ cpu_quota = "150%"
         assert_eq!(config.policy.fail_on_artifact_kinds, vec!["mutation_check"]);
         assert_eq!(config.policy.fail_on_target_risks, vec![RiskLevel::High]);
         assert_eq!(config.policy.min_mutation_score, Some(70));
+        assert_eq!(config.policy.min_mutation_efficacy, Some(75));
+        assert_eq!(config.policy.min_mutant_coverage, Some(80));
+        assert_eq!(
+            config.plugins.rust.mutation.disabled_operators,
+            vec!["loop"]
+        );
+        assert!(config.plugins.rust.mutation.dry_run);
+        assert_eq!(config.plugins.rust.mutation.test_cpu, Some(2));
+        assert_eq!(config.plugins.rust.mutation.timeout_coefficient, 3);
+        assert_eq!(
+            config.plugins.go.mutation.enabled_operators,
+            vec!["arithmetic", "comparison"]
+        );
+        assert_eq!(
+            config.plugins.go.mutation.exclude_paths,
+            vec!["vendor/", "_generated.go$"]
+        );
+        assert!(!config.plugins.go.mutation.dry_run);
         assert_eq!(config.plugins.go.fuzz_seconds, 3);
         assert!(!config.plugins.go.fuzz_existing);
         assert_eq!(config.plugins.go.fuzz_concurrency, 3);

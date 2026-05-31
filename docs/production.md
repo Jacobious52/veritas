@@ -59,6 +59,18 @@ fail_on_findings = true
 [policy]
 fail_on_severity = "error"
 min_mutation_score = 70
+min_mutation_efficacy = 70
+min_mutant_coverage = 80
+
+[mutation]
+# Shared mutation controls for Rust, Go, and future Tree-sitter plugins.
+disabled_operators = []
+exclude_paths = ["vendor/", "_generated.go$"]
+dry_run = false
+workers = 2 # modeled for isolated plugin executors; source-rewrite plugins may stay serial
+test_cpu = 1
+timeout_coefficient = 2
+output_statuses = ["lived", "not_covered", "timed_out", "not_viable"]
 
 [plugins.go]
 fuzz_seconds = 5
@@ -75,7 +87,9 @@ build_tags = []
 
 Use higher caps only for an explicit local investigation.
 
-Set `policy.min_mutation_score` when you want a Gremlins-style mutation quality gate. The threshold is enforced after the report is scored, and it is language-neutral so Rust, Go, and future plugins share the same CI contract.
+Set `policy.min_mutation_score`, `policy.min_mutation_efficacy`, and `policy.min_mutant_coverage` when you want Gremlins-style mutation quality gates. These thresholds are enforced after the report is scored, and they are language-neutral so Rust, Go, and future plugins share the same CI contract.
+
+The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, and `negation` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 
