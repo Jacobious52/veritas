@@ -18,6 +18,8 @@
    - `examples/go-mutation-score`: killed and surviving Go mutants for mutation-score calibration.
    - `examples/rust-risk-suite`: auth, money, parsing, serialization, and boundary mutants with known survivors.
    - `examples/go-risk-suite`: Go fuzzing plus mutation-score attribution across auth, parsing, and serialization surfaces.
+   - `examples/rust-evolution-loop`: Rust refund, parsing, and status behavior with a multi-candidate evolution suite.
+   - `examples/go-evolution-loop`: Go refund, parsing, and status behavior with a before/candidate/after evolution demo.
 5. Benchmark suites in `examples/veritas-bench.toml` run seeded examples in temporary copies and score expected findings, commands, thresholds, and metrics.
 
 ## Required Checks
@@ -57,6 +59,8 @@ Benchmark JSON includes command count, finding counts by severity, artifact coun
 After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving mutants, skipped commands, and timeouts. Use `veritas accept-quality-baseline` only after a reviewed good state; later `veritas score` runs will show baseline deltas.
 
 Use `veritas replay-corpus --dry-run` to inspect persisted repro metadata. Executable commands such as `go test` or `cargo test` can be replayed directly; mutation guidance entries are skipped until promoted into package-owned tests.
+
+The concrete evolution reference is `docs/evolution.md`. It uses `examples/go-evolution-loop` to show a real report moving from `58%` mutation score, `4` surviving mutants, and score `55` to `91%` mutation score, `0` surviving mutants, and score `98` after a selected candidate becomes owned assertions.
 
 ## External Canaries
 

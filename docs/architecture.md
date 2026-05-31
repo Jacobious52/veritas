@@ -22,9 +22,14 @@ examples/
   go-api-service/
   rust-mutation-score/
   go-mutation-score/
+  rust-risk-suite/
+  go-risk-suite/
+  rust-evolution-loop/
+  go-evolution-loop/
   veritas-bench.toml
 docs/
   index.html            # GitHub Pages landing page
+  evolution.md          # concrete before/candidate/after evolution demo
 ```
 
 ## Core Flow
@@ -93,7 +98,7 @@ Core exposes a small ordered parallel-job scheduler for language plugins. Plugin
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, and persisted repro counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, persisted repro counts, evolution candidates, and selected evolution candidates. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 

@@ -35,6 +35,16 @@ cargo run -p veritas-cli -- --root examples bench
 
 The suite validates expected detections, required commands, runtime thresholds, mutation scores, property/fuzz quality metrics, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
 
+For a concrete before/candidate/after evolution run, use the Go evolution fixture:
+
+```bash
+cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score
+cargo run -p veritas-cli -- --root examples/go-evolution-loop evolve --dry-run
+```
+
+The seeded run starts with `14` evolution candidates, `12` selected, `4` surviving parser mutants, and score `55`. After promoting the top `ParseInvoiceTotal` candidate into owned assertions, the follow-up run reaches `91%` mutation score, `0` surviving mutants, and score `98`. See `docs/evolution.md` for the full artifact map and exact assertions.
+
 ## Large Go Repositories
 
 The Go plugin is package-aware:

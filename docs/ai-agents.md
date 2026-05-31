@@ -55,6 +55,20 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 11. Inspect evolutionary candidates with `veritas evolve --dry-run`, then apply one selected candidate with `veritas evolve --index <n> --evaluate` or all safe selected candidates with `veritas evolve --all-selected --evaluate`.
 12. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
+## Concrete Evolution Loop
+
+Use `examples/go-evolution-loop` as the local reference when teaching an agent how the loop should feel:
+
+```bash
+cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score
+cargo run -p veritas-cli -- --root examples/go-evolution-loop evolve --dry-run
+```
+
+The first report produces `14` candidates, `12` selected candidates, `4` surviving mutants, a `58%` mutation score, and a `55` confidence score. The top selected candidate asks for the smallest assertion that kills a surviving `ParseInvoiceTotal` mutant. After the agent turns that candidate into real parser assertions for invalid input, the inclusive `1000000` boundary, and rejected huge values, the follow-up report reaches a `91%` mutation score, `0` surviving mutants, and a `98` confidence score.
+
+See `docs/evolution.md` for the exact before/candidate/after commands, expected metrics, and artifact paths.
+
 ## AI-Facing Artifacts
 
 `veritas` writes artifacts designed to be pasted back into an AI agent:

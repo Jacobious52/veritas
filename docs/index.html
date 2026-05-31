@@ -135,12 +135,20 @@
       align-items: stretch;
       margin-top: 34px;
     }
+    .hero-grid > *,
+    .example > *,
+    .scenario > *,
+    .demo-loop > *,
+    .grid > * {
+      min-width: 0;
+    }
     .panel {
       border: 1px solid var(--line);
       background: rgba(13, 18, 26, .94);
       box-shadow: 0 18px 60px rgba(0,0,0,.32);
       border-radius: 8px;
       padding: 20px;
+      min-width: 0;
     }
     .panel h2,
     .panel h3 {
@@ -179,6 +187,8 @@
       border-radius: 8px;
       border: 1px solid var(--line);
       font-size: 14px;
+      max-width: 100%;
+      min-width: 0;
     }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .actions {
@@ -245,6 +255,7 @@
       background: var(--panel);
       border-radius: 8px;
       padding: 20px;
+      min-width: 0;
     }
     .card strong { color: var(--accent); }
     .example {
@@ -348,6 +359,32 @@
     }
     .bad { color: var(--bad); }
     .good { color: var(--accent); }
+    .demo-loop {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 26px;
+    }
+    .demo-step {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .demo-step h3 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    .demo-step ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    .demo-step li { margin: 4px 0; }
+    .demo-step b { color: var(--ink); }
+    .demo-command {
+      margin: 0 0 18px;
+    }
     footer {
       padding: 36px 0;
       color: var(--muted);
@@ -361,12 +398,15 @@
       .hero-grid,
       .example,
       .scenario,
+      .demo-loop,
       .grid {
         grid-template-columns: 1fr;
       }
       .snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .hero-copy { padding-top: 118px; }
       .lede { font-size: 18px; }
+      .actions { flex-direction: column; }
+      .actions .button { width: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       #hero-canvas { opacity: .45; }
@@ -382,6 +422,7 @@
         <a href="#agent">Agent Prompt</a>
         <a href="#example">Example</a>
         <a href="#testing">Testing</a>
+        <a href="https://github.com/Jacobious52/veritas/blob/main/docs/evolution.md">Evolution</a>
         <a href="https://github.com/Jacobious52/veritas">GitHub</a>
       </div>
     </div>
@@ -436,6 +477,52 @@ Use the generated .veritas/ feedback to add or improve tests before marking the 
       <div class="wrap">
         <h2>Examples that scale with the risk</h2>
         <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust and Go use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
+        <div class="panel">
+          <div class="copy-row">
+            <span class="kicker">Real Evolution Demo</span>
+            <button class="copy" type="button" data-copy="demo-code">Copy</button>
+          </div>
+          <pre class="demo-command"><code id="demo-code">cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score
+cargo run -p veritas-cli -- --root examples/go-evolution-loop evolve --dry-run</code></pre>
+          <div class="demo-loop">
+            <div class="demo-step">
+              <h3>Before</h3>
+              <ul>
+                <li><b>58%</b> mutation score</li>
+                <li><b>4</b> surviving parser mutants</li>
+                <li><b>4</b> assertion candidates</li>
+                <li><b>55</b> confidence score</li>
+              </ul>
+            </div>
+            <div class="demo-step">
+              <h3>Selected Candidate</h3>
+              <ul>
+                <li><b>ParseInvoiceTotal</b></li>
+                <li><b>95%</b> fitness</li>
+                <li>Add the smallest assertion that kills the mutant</li>
+                <li>Artifacts: <code>go_suite.json</code>, <code>go_campaign.json</code>, <code>assertions/go_*.json</code></li>
+              </ul>
+            </div>
+            <div class="demo-step">
+              <h3>After</h3>
+              <ul>
+                <li><b>91%</b> mutation score</li>
+                <li><b>0</b> surviving mutants</li>
+                <li><b>16</b> replay cases retained</li>
+                <li><b>98</b> confidence score</li>
+              </ul>
+            </div>
+          </div>
+          <pre><code>value, ok := ParseInvoiceTotal("1000000")
+assert ok && value == 1000000
+
+value, ok = ParseInvoiceTotal("not-a-number")
+assert !ok && value == 0
+
+value, ok = ParseInvoiceTotal("1000001")
+assert !ok && value == 0</code></pre>
+        </div>
         <div class="examples">
           <div class="scenario">
             <div class="level"><b>1. Boundary mutant</b>Small function, high consequence.</div>
@@ -580,6 +667,7 @@ Next: add assertions for:
     <div class="wrap">
       <a href="https://github.com/Jacobious52/veritas/blob/main/docs/ai-agents.md">AI Agents</a>
       <a href="https://github.com/Jacobious52/veritas/blob/main/docs/confidence.md">Confidence</a>
+      <a href="https://github.com/Jacobious52/veritas/blob/main/docs/evolution.md">Evolution Demo</a>
       <a href="https://github.com/Jacobious52/veritas/blob/main/docs/architecture.md">Architecture</a>
       <span>Built for developers who want AI to move fast without moving blindly.</span>
     </div>

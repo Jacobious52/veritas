@@ -79,6 +79,7 @@ veritas cleanup
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
 - [Project Site](docs/index.html): GitHub Pages landing page and public overview.
+- [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
 - [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
 - [Confidence Guide](docs/confidence.md): fixture tiers, seeded examples, and external canaries.
@@ -290,6 +291,16 @@ cargo run -p veritas-cli -- --root examples bench --format json
 ```
 
 The example projects intentionally contain hidden assumptions while their handwritten tests pass, so they are useful for validating generated property/fuzz artifacts and report output.
+
+Run the concrete evolution demo:
+
+```bash
+cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score
+cargo run -p veritas-cli -- --root examples/go-evolution-loop evolve --dry-run
+```
+
+The seeded fixture starts with `14` evolution candidates, `12` selected candidates, `4` surviving mutants, and a `55` confidence score. Promoting the top `ParseInvoiceTotal` candidate into owned assertions raises the mutation score from `58%` to `91%`, removes the surviving mutants, and raises the confidence score to `98`. See [docs/evolution.md](docs/evolution.md) for the exact before/candidate/after commands and artifact paths.
 
 Run external canary smoke checks when you want confidence against real pinned repositories:
 
