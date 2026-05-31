@@ -43,6 +43,8 @@ External canaries clone pinned public repositories into `target/external-fixture
 
 Smoke mode only scans. Verify mode runs `veritas verify --target .` and then cleans generated artifacts.
 
+GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`. Start the same workflow manually with `mode=verify` when validating a larger release or a plugin behavior change.
+
 Current pinned canaries:
 
 - Rust: `dtolnay/itoa` at `af77385d0daf4d0e949e81f2588be2e44f69f086`

@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Report rendering for veritas"
 
 [dependencies]
-veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }
+veritas-plugin-api = { version = "0.1.1", path = "../veritas-plugin-api" }
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -145,6 +145,8 @@ pub enum ArtifactKind {
     AiFeedback,
     CandidatePatch,
     FindingBaseline,
+    RegressionTest,
+    DifferentialReplay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

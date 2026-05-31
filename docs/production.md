@@ -123,12 +123,14 @@ Common generated paths:
 - `.veritas/report.json`
 - `.veritas/ai/*.md`
 - `.veritas/baselines/*.json`
+- `.veritas/differential/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
 - `.veritas/package_graph/*.json`
 - `.veritas/symbol_graph/*.json`
 - `.veritas/repros/*.md`
 - `.veritas/patches/*.md`
+- `.veritas/regressions/*.md`
 - `.veritas/promotions/*.md`
 - Rust `tests/veritas_generated*`
 - Go `veritas_fuzz_test.go`
@@ -150,6 +152,8 @@ veritas cleanup
 - Go fuzz generation targets exported free functions with supported primitive fuzz parameter types.
 - Methods, unsupported signatures, and richer types are still included in target discovery, symbol graphs, mutation checks, package graphs, policy, and baselines.
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
+- Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
+- Differential checks persist API signatures and replay-case manifests; they do not yet execute old/new binaries automatically.
 
 ## External Canaries
 

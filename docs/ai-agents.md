@@ -23,7 +23,7 @@ After making code or test changes:
 If veritas reports findings:
   1. Use veritas explain <finding-id>.
   2. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
-  3. Inspect .veritas/patches/, .veritas/repros/, .veritas/promotions/, and .veritas/symbol_graph/.
+  3. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/promotions/, and .veritas/symbol_graph/.
   4. Rerun veritas verify --changed --profile ci.
 
 Do not ignore warning/error findings without explaining why. Only accept a finding baseline with:
@@ -53,8 +53,10 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/symbol_graph/*.json`: discovered symbols, line ranges, owners/receivers, risks, and call hints
 - `.veritas/package_graph/go.json`: Go modules, packages, imports, fuzz targets, tests, and run reasons
 - `.veritas/feedback/*.md`: coverage and mutation feedback
+- `.veritas/differential/*.json`: behavior replay manifests for selected public APIs
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance
+- `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs
 - `.veritas/promotions/*.md`: repro promotion notes created by `veritas promote-repro`
 
 Generated tests are reviewable artifacts, not automatically trusted source.
@@ -64,5 +66,6 @@ Generated tests are reviewable artifacts, not automatically trusted source.
 - Keep verification changed-scope unless the user explicitly asks for a full workspace run.
 - Treat warning-level surviving mutants as evidence of missing assertions, not as proof of production defects.
 - Prefer a small regression test before editing production code when a generated or fuzz repro exposes behavior.
+- Turn `.veritas/regressions/*.md` and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
 - Do not widen fuzz time, reverse dependency depth, package caps, or coverage scope without explaining the runtime tradeoff.
 - On shared hosts, keep Rust coverage disabled and use systemd scope limits when running broad Rust verification.

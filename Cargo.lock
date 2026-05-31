@@ -790,7 +790,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "veritas-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "veritas-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "camino",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "veritas-go"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "camino",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "veritas-plugin-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "camino",
@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "veritas-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
  "veritas-plugin-api",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "veritas-rust"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "camino",

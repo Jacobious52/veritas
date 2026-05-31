@@ -1,0 +1,44 @@
+name: External Canaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Canary depth"
+        required: true
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - verify
+  schedule:
+    - cron: "17 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  canaries:
+    name: Pinned external repositories
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERITAS_CANARY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'smoke' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Check Go
+        run: go version
+
+      - name: Build veritas
+        run: cargo build -p veritas-cli --locked
+
+      - name: Run canaries
+        env:
+          VERITAS_BIN: ${{ github.workspace }}/target/debug/veritas
+        run: ./scripts/run-canaries.sh "${VERITAS_CANARY_MODE}"

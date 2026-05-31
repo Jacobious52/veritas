@@ -30,7 +30,7 @@ docs/
 5. Generate reviewable artifacts.
 6. Optionally write artifacts to the target project.
 7. Run language tests, fuzzing, mutation checks, and coverage collection under budgets.
-8. Add observation artifacts: baselines, feedback, repros, patches.
+8. Add observation artifacts: baselines, replay manifests, feedback, repros, patches, and regression notes.
 9. Assign stable finding IDs.
 10. Render reports.
 
@@ -83,6 +83,7 @@ Rust:
 - discovers public free functions and public methods
 - records symbol owners, line ranges, signatures, and call hints
 - uses AST spans for mutation probes
+- mutates comparison, boolean connector, arithmetic, boundary, default, and result-branch operators
 
 Go:
 
@@ -90,8 +91,11 @@ Go:
 - records receivers, line ranges, signatures, and call hints
 - discovers fuzz targets from test files
 - uses AST spans for mutation probes
+- mutates comparison, nil/error, boolean connector, arithmetic, and return-default operators
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
+
+Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning and `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests.
 
 ## Reports
 

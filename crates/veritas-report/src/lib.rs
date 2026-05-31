@@ -245,6 +245,8 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::AiFeedback => "[ai]",
         ArtifactKind::CandidatePatch => "[patch]",
         ArtifactKind::FindingBaseline => "[baseline]",
+        ArtifactKind::RegressionTest => "[regression]",
+        ArtifactKind::DifferentialReplay => "[replay]",
     }
 }
 

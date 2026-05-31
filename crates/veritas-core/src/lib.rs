@@ -504,12 +504,14 @@ impl CoreEngine {
         if differential_enabled {
             let (baseline, mut failures) = api_baseline_artifact(root, language, &report.targets)?;
             artifacts.push(baseline);
+            artifacts.push(differential_replay_artifact(language, &report.targets)?);
             report.findings.append(&mut failures);
         }
 
         artifacts.extend(feedback_artifacts(language, report));
         artifacts.extend(repro_artifacts(language, &report.findings));
         artifacts.extend(candidate_patch_artifacts(language, &report.findings));
+        artifacts.extend(regression_artifacts(language, &report.findings));
 
         if artifacts.is_empty() {
             return Ok(());
@@ -1167,6 +1169,127 @@ fn api_baseline_artifact(
     ))
 }
 
+fn differential_replay_artifact(
+    language: &str,
+    targets: &[VerificationTarget],
+) -> Result<GeneratedArtifact> {
+    let targets = targets
+        .iter()
+        .filter(|target| target.kind == TargetKind::Function)
+        .filter(|target| target.signature.is_some())
+        .map(|target| {
+            serde_json::json!({
+                "target_id": target.id,
+                "path": target.path,
+                "symbol": target.symbol,
+                "signature": target.signature,
+                "line_range": target.line_range,
+                "risk": target.risk,
+                "cases": replay_cases_for_target(language, target),
+            })
+        })
+        .collect::<Vec<_>>();
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "mode": "behavioral_replay_manifest",
+        "description": "Reviewable old/new replay cases for selected public APIs. Persist this artifact before a risky change, rerun veritas after the change, and compare case intent plus promoted assertions.",
+        "targets": targets,
+    }))?;
+
+    Ok(GeneratedArtifact {
+        id: format!("{language}-differential-replay"),
+        language: language.to_string(),
+        kind: ArtifactKind::DifferentialReplay,
+        target_id: format!("{language}:project"),
+        path: Utf8PathBuf::from(format!(".veritas/differential/{language}_replay.json")),
+        contents,
+        description: "Behavioral replay manifest for selected public APIs".to_string(),
+        status: ArtifactStatus::Planned,
+    })
+}
+
+fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<serde_json::Value> {
+    let signature = target.signature.as_deref().unwrap_or_default();
+    let mut cases = Vec::new();
+    let lowered_symbol = target
+        .symbol
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if signature.contains("&str") || signature.contains("String") || signature.contains("string") {
+        cases.push(serde_json::json!({
+            "name": "empty_string",
+            "inputs": [""],
+            "assertion": "replay old/new behavior for empty input and invalid formatting"
+        }));
+        cases.push(serde_json::json!({
+            "name": "trimmed_token",
+            "inputs": ["  veritas-seed  "],
+            "assertion": "replay old/new behavior for whitespace-normalized input"
+        }));
+    }
+    if signature_contains_numeric(signature) {
+        cases.push(serde_json::json!({
+            "name": "zero_boundary",
+            "inputs": [0],
+            "assertion": "replay old/new behavior at zero boundary"
+        }));
+        cases.push(serde_json::json!({
+            "name": "one_boundary",
+            "inputs": [1],
+            "assertion": "replay old/new behavior at one boundary"
+        }));
+    }
+    if signature.contains("bool") {
+        cases.push(serde_json::json!({
+            "name": "boolean_edges",
+            "inputs": [false, true],
+            "assertion": "replay old/new behavior for both boolean branches"
+        }));
+    }
+    if lowered_symbol.contains("auth")
+        || lowered_symbol.contains("permission")
+        || lowered_symbol.contains("refund")
+    {
+        cases.push(serde_json::json!({
+            "name": "permission_boundary",
+            "inputs": ["admin", "support", "guest"],
+            "assertion": "assert privileged, delegated, and denied principals keep their old/new behavior"
+        }));
+    }
+    if lowered_symbol.contains("parse")
+        || lowered_symbol.contains("invoice")
+        || lowered_symbol.contains("total")
+    {
+        cases.push(serde_json::json!({
+            "name": "parser_invalid_input",
+            "inputs": ["", "total=0", "not-a-total"],
+            "assertion": "assert parser invalid-input behavior is intentional before accepting the replay"
+        }));
+    }
+
+    if cases.is_empty() {
+        cases.push(serde_json::json!({
+            "name": "targeted_behavior",
+            "inputs": [],
+            "assertion": format!("add a promoted {language} assertion for this public API before accepting behavior changes")
+        }));
+    }
+    cases
+}
+
+fn signature_contains_numeric(signature: &str) -> bool {
+    [
+        "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "int", "int8",
+        "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "float32",
+        "float64",
+    ]
+    .iter()
+    .any(|needle| signature.contains(needle))
+}
+
 fn feedback_artifacts(language: &str, report: &VerificationReport) -> Vec<GeneratedArtifact> {
     let mut artifacts = Vec::new();
     if report
@@ -1306,6 +1429,123 @@ fn candidate_patch_artifacts(language: &str, findings: &[Failure]) -> Vec<Genera
             })
         })
         .collect()
+}
+
+fn regression_artifacts(language: &str, findings: &[Failure]) -> Vec<GeneratedArtifact> {
+    findings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, failure)| {
+            if !should_generate_regression_artifact(failure) {
+                return None;
+            }
+            let target_id = failure.target_id.as_deref().unwrap_or("unknown");
+            let repro = failure.repro.as_ref();
+            let mut contents = String::from("# Generated Regression Assertion\n\n");
+            contents.push_str("Generated by veritas. Review before committing.\n\n");
+            contents.push_str(&format!("- Finding: {}\n", failure.message));
+            contents.push_str(&format!("- Severity: {:?}\n", failure.severity));
+            contents.push_str(&format!("- Target: `{target_id}`\n"));
+            contents.push_str(&format!("- Original command: `{}`\n", failure.command));
+            if let Some(repro) = repro {
+                contents.push_str(&format!("- Repro command: `{}`\n", repro.command));
+                if let Some(path) = &repro.path {
+                    contents.push_str(&format!("- Repro path: `{path}`\n"));
+                }
+                if let Some(input) = &repro.input {
+                    contents.push_str(&format!("- Repro input: `{}`\n", input.trim()));
+                }
+            }
+            if let Some(input) = extract_minimized_input(&failure.stdout_excerpt)
+                .or_else(|| extract_minimized_input(&failure.stderr_excerpt))
+            {
+                contents.push_str(&format!("- Minimized input: `{}`\n", input.trim()));
+            }
+
+            contents.push_str("\n## Assertion To Promote\n\n");
+            if failure.message.contains("mutation survived") {
+                contents.push_str(&mutation_regression_text(language, failure));
+            } else if let Some(repro) = repro.filter(|repro| {
+                repro
+                    .path
+                    .as_ref()
+                    .is_some_and(|path| path.starts_with("testdata/fuzz"))
+            }) {
+                contents.push_str(&format!(
+                    "Keep the Go fuzz corpus entry `{}` and add a named unit regression that asserts the intended behavior for that input. Run `{}` after promotion.\n",
+                    repro.path.as_ref().expect("checked path"),
+                    repro.command
+                ));
+            } else if failure.message.contains("cargo test failed")
+                || failure.message.contains("go test failed")
+            {
+                contents.push_str("Promote the generated failing harness case into a stable handwritten regression test owned by the target package. The assertion should encode the expected behavior directly, not only `does not panic`.\n");
+            } else {
+                contents.push_str("Persist the minimized input as a regression case and assert the intended behavior before accepting the finding.\n");
+            }
+
+            Some(GeneratedArtifact {
+                id: format!("{language}-regression-{index}"),
+                language: language.to_string(),
+                kind: ArtifactKind::RegressionTest,
+                target_id: failure
+                    .target_id
+                    .clone()
+                    .unwrap_or_else(|| format!("{language}:unknown")),
+                path: Utf8PathBuf::from(format!(".veritas/regressions/{language}_{index}.md")),
+                contents,
+                description: "Generated regression assertion to promote from verification feedback"
+                    .to_string(),
+                status: ArtifactStatus::Planned,
+            })
+        })
+        .collect()
+}
+
+fn should_generate_regression_artifact(failure: &Failure) -> bool {
+    failure.message.contains("mutation survived")
+        || failure.message.contains("fuzz")
+        || failure.message.contains("minimal failing input")
+        || failure.message.contains("cargo test failed")
+        || failure.message.contains("go test failed")
+}
+
+fn mutation_regression_text(language: &str, failure: &Failure) -> String {
+    let mut out = String::new();
+    let symbol = failure
+        .target_id
+        .as_deref()
+        .and_then(|target_id| target_id.rsplit_once(':').map(|(_, symbol)| symbol))
+        .unwrap_or("target");
+    let Some(repro) = &failure.repro else {
+        out.push_str(
+            "Add a focused assertion that fails when the described mutation is applied.\n",
+        );
+        return out;
+    };
+    let (from, to) = parse_replacement(&repro.command).unwrap_or(("old", "new"));
+    out.push_str(&format!(
+        "Create a focused {language} regression for `{symbol}` that fails if `{from}` is replaced with `{to}`.\n\n"
+    ));
+    match language {
+        "rust" => {
+            out.push_str("Suggested Rust test shape:\n\n```rust\n#[test]\nfn veritas_mutation_regression() {\n    // Arrange the boundary or branch named by the finding.\n    // Assert the exact expected value so the mutant is killed.\n}\n```\n");
+        }
+        "go" => {
+            out.push_str("Suggested Go test shape:\n\n```go\nfunc TestVeritasMutationRegression(t *testing.T) {\n\t// Arrange the boundary or branch named by the finding.\n\t// Assert the exact expected value so the mutant is killed.\n}\n```\n");
+        }
+        _ => {
+            out.push_str("Suggested test shape: add a named regression that asserts the exact old/new behavior at the mutated boundary.\n");
+        }
+    }
+    out
+}
+
+fn parse_replacement(command: &str) -> Option<(&str, &str)> {
+    let rest = command.strip_prefix("replace `")?;
+    let (from, rest) = rest.split_once("` with `")?;
+    let (to, _) = rest.split_once('`')?;
+    Some((from, to))
 }
 
 fn change_digest_artifact(
@@ -1640,11 +1880,14 @@ mod tests {
     };
 
     use camino::Utf8PathBuf;
-    use veritas_plugin_api::{LineRange, RiskLevel};
+    use veritas_plugin_api::{
+        ArtifactKind, Failure, FailureSeverity, LineRange, ReproCase, RiskLevel,
+    };
 
     use super::{
-        api_baseline_artifact, cleanup_generated_artifacts, parse_unified_diff,
-        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
+        api_baseline_artifact, cleanup_generated_artifacts, differential_replay_artifact,
+        parse_unified_diff, regression_artifacts, targets_for_changed_files, ChangedFile,
+        TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -1793,6 +2036,69 @@ index 3333333..4444444 100644
             current.get("rust:src/lib.rs::new_api").map(String::as_str),
             Some("pub fn new_api()")
         );
+    }
+
+    #[test]
+    fn differential_replay_artifact_includes_seeded_behavior_cases() {
+        let targets = vec![function_target_with_signature(
+            "rust:src/lib.rs::parse_total",
+            "pub fn parse_total(input: &str, cents: u64) -> bool",
+        )];
+
+        let artifact =
+            differential_replay_artifact("rust", &targets).expect("build replay artifact");
+
+        assert_eq!(artifact.kind, ArtifactKind::DifferentialReplay);
+        assert_eq!(
+            artifact.path,
+            Utf8PathBuf::from(".veritas/differential/rust_replay.json")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&artifact.contents).expect("replay JSON should parse");
+        let cases = body["targets"][0]["cases"]
+            .as_array()
+            .expect("cases should be present");
+        let names = cases
+            .iter()
+            .filter_map(|case| case["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"empty_string"));
+        assert!(names.contains(&"zero_boundary"));
+        assert!(names.contains(&"boolean_edges"));
+        assert!(names.contains(&"parser_invalid_input"));
+    }
+
+    #[test]
+    fn regression_artifacts_promote_mutation_findings() {
+        let finding = Failure {
+            id: None,
+            message: "mutation survived in `authorize_refund`: comparison boundary mutation"
+                .to_string(),
+            severity: FailureSeverity::Warning,
+            target_id: Some("rust:src/lib.rs::authorize_refund".to_string()),
+            artifact_id: Some("rust-mutation-src_lib_rs_authorize_refund".to_string()),
+            command: "veritas mutation".to_string(),
+            stdout_excerpt: String::new(),
+            stderr_excerpt: String::new(),
+            repro: Some(ReproCase {
+                command: "replace `<=` with `<` in src/lib.rs".to_string(),
+                input: None,
+                path: Some(Utf8PathBuf::from("src/lib.rs")),
+            }),
+        };
+
+        let artifacts = regression_artifacts("rust", &[finding]);
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, ArtifactKind::RegressionTest);
+        assert_eq!(
+            artifacts[0].path,
+            Utf8PathBuf::from(".veritas/regressions/rust_0.md")
+        );
+        assert!(artifacts[0]
+            .contents
+            .contains("fails if `<=` is replaced with `<`"));
+        assert!(artifacts[0].contents.contains("Suggested Rust test shape"));
     }
 
     #[test]

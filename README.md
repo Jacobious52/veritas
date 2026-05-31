@@ -12,7 +12,7 @@ The default path is deterministic and does not call an LLM. An optional external
 
 ## Install
 
-From crates.io, after release:
+From crates.io:
 
 ```bash
 cargo install veritas-cli --locked
@@ -130,7 +130,7 @@ Go verification:
 - writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types
 - runs relevant `go test -run=^$ -fuzz=...` targets within caps and timeouts
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
-- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, and domain-labeled risk surfaces
+- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic operators, and domain-labeled risk surfaces
 - writes package graph, package-awareness, and symbol graph artifacts
 
 Reports and artifacts:
@@ -138,7 +138,7 @@ Reports and artifacts:
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, repro notes, candidate verification patches, and promotion notes
+- writes coverage feedback, mutation feedback, replay manifests, repro notes, candidate verification patches, regression notes, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
 
 CI behavior:
@@ -244,3 +244,5 @@ Run external canary smoke checks when you want confidence against real pinned re
 ```bash
 ./scripts/run-canaries.sh smoke
 ```
+
+The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow.

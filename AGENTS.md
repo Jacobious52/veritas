@@ -109,10 +109,14 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust property generation is intentionally limited to supported public free functions in packages whose manifest mentions `proptest`.
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, fuzz target caps, and AST-scoped mutation probes.
+- Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
+- Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
+- Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
 - Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke` or `./scripts/run-canaries.sh verify`.
+- GitHub Actions runs weekly smoke canaries and supports manual smoke/verify canary runs.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
 - GitHub Actions release workflow exists. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
@@ -123,12 +127,14 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/report.json`
 - `.veritas/ai/*.md`
 - `.veritas/baselines/*.json`
+- `.veritas/differential/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
 - `.veritas/package_graph/*.json`
 - `.veritas/symbol_graph/*.json`
 - `.veritas/repros/*.md`
 - `.veritas/patches/*.md`
+- `.veritas/regressions/*.md`
 - `.veritas/promotions/*.md`
 - Rust generated tests under `tests/veritas_generated*` or package-local equivalents
 - Go generated fuzz files such as `veritas_fuzz_test.go`

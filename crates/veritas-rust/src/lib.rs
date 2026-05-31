@@ -1097,19 +1097,25 @@ fn rust_mutation_candidate_from_binary(
 ) -> Option<MutationCandidate> {
     let operator = rust_binary_operator_node(node)?;
     let op = operator.kind();
-    let to = match op {
-        "==" => "!=",
-        "!=" => "==",
-        ">=" => ">",
-        "<=" => "<",
-        ">" => ">=",
-        "<" => "<=",
+    let (label, to) = match op {
+        "==" => ("equality inversion", "!="),
+        "!=" => ("equality inversion", "=="),
+        ">=" => ("comparison boundary mutation", ">"),
+        "<=" => ("comparison boundary mutation", "<"),
+        ">" => ("comparison boundary mutation", ">="),
+        "<" => ("comparison boundary mutation", "<="),
+        "&&" => ("boolean connector inversion", "||"),
+        "||" => ("boolean connector inversion", "&&"),
+        "+" => ("arithmetic direction mutation", "-"),
+        "-" => ("arithmetic direction mutation", "+"),
+        "*" => ("arithmetic operator mutation", "/"),
+        "/" => ("arithmetic operator mutation", "*"),
         _ => return None,
     };
     Some(MutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
-        label: domain_mutation_label(&function.symbol, "comparison boundary mutation"),
+        label: domain_mutation_label(&function.symbol, label),
         from: op.to_string(),
         to: to.to_string(),
         start_byte: operator.start_byte(),
@@ -1128,6 +1134,12 @@ fn rust_mutation_candidate_from_identifier(
         "max" => Some(("boundary inversion", "min")),
         "saturating_sub" => Some(("arithmetic direction", "saturating_add")),
         "saturating_add" => Some(("arithmetic direction", "saturating_sub")),
+        "checked_sub" => Some(("checked arithmetic direction", "checked_add")),
+        "checked_add" => Some(("checked arithmetic direction", "checked_sub")),
+        "wrapping_sub" => Some(("wrapping arithmetic direction", "wrapping_add")),
+        "wrapping_add" => Some(("wrapping arithmetic direction", "wrapping_sub")),
+        "is_ok" => Some(("result branch inversion", "is_err")),
+        "is_err" => Some(("result branch inversion", "is_ok")),
         _ => None,
     }) else {
         return Ok(None);
@@ -1195,9 +1207,12 @@ fn rust_mutation_candidate_from_integer(
 
 fn rust_binary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
-    let operator = node
-        .children(&mut cursor)
-        .find(|child| matches!(child.kind(), "==" | "!=" | ">=" | "<=" | ">" | "<"));
+    let operator = node.children(&mut cursor).find(|child| {
+        matches!(
+            child.kind(),
+            "==" | "!=" | ">=" | "<=" | ">" | "<" | "&&" | "||" | "+" | "-" | "*" | "/"
+        )
+    });
     operator
 }
 
@@ -1649,7 +1664,7 @@ mod tests {
             "Cargo.toml",
             "[package]\nname = \"tree-sitter-rust-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         );
-        let source = "pub fn authorize_refund(amount: u64) -> bool {\n    let _ = \"amount == 0\";\n    amount == 0\n}\n";
+        let source = "pub fn authorize_refund(amount: u64, approved: bool) -> bool {\n    let _ = \"amount == 0 && amount + 1\";\n    approved && amount + 1 >= 2\n}\n";
         write_file(root.path(), "src/lib.rs", source);
         let functions = discover_functions(root.path()).expect("discover functions");
         let artifact = GeneratedArtifact {
@@ -1666,9 +1681,13 @@ mod tests {
         let candidates =
             rust_mutation_candidates(&functions, root.path(), &[artifact]).expect("mutations");
 
-        let string_start = source.find("\"amount == 0\"").expect("string literal");
-        let string_end = string_start + "\"amount == 0\"".len();
-        assert!(candidates.iter().any(|candidate| candidate.from == "=="));
+        let string_start = source
+            .find("\"amount == 0 && amount + 1\"")
+            .expect("string literal");
+        let string_end = string_start + "\"amount == 0 && amount + 1\"".len();
+        assert!(candidates.iter().any(|candidate| candidate.from == ">="));
+        assert!(candidates.iter().any(|candidate| candidate.from == "&&"));
+        assert!(candidates.iter().any(|candidate| candidate.from == "+"));
         assert!(candidates
             .iter()
             .all(|candidate| candidate.start_byte < string_start

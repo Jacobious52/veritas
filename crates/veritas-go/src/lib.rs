@@ -1752,6 +1752,12 @@ fn mutation_candidate_from_binary(
         "error/nil branch inversion"
     } else if matches!(op, "==" | "!=") {
         "equality inversion"
+    } else if matches!(op, "&&" | "||") {
+        "boolean connector inversion"
+    } else if matches!(op, "+" | "-") {
+        "arithmetic direction mutation"
+    } else if matches!(op, "*" | "/") {
+        "arithmetic operator mutation"
     } else {
         "comparison boundary mutation"
     };
@@ -1795,9 +1801,12 @@ fn mutation_candidate_from_return(
 
 fn binary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
-    let operator = node
-        .children(&mut cursor)
-        .find(|child| matches!(child.kind(), "==" | "!=" | ">=" | "<=" | ">" | "<"));
+    let operator = node.children(&mut cursor).find(|child| {
+        matches!(
+            child.kind(),
+            "==" | "!=" | ">=" | "<=" | ">" | "<" | "&&" | "||" | "+" | "-" | "*" | "/"
+        )
+    });
     operator
 }
 
@@ -1809,6 +1818,12 @@ fn binary_operator_replacement(operator: &str) -> Option<&'static str> {
         "<=" => Some("<"),
         ">" => Some(">="),
         "<" => Some("<="),
+        "&&" => Some("||"),
+        "||" => Some("&&"),
+        "+" => Some("-"),
+        "-" => Some("+"),
+        "*" => Some("/"),
+        "/" => Some("*"),
         _ => None,
     }
 }
@@ -2749,7 +2764,7 @@ mod tests {
         write_file(
             root.path(),
             "invoice.go",
-            "package invoice\n\nfunc ParseInvoiceTotal(input string) int {\n\t_ = \"err != nil\"\n\tif input == \"\" {\n\t\treturn 0\n\t}\n\treturn 1\n}\n",
+            "package invoice\n\nfunc ParseInvoiceTotal(input string) int {\n\t_ = \"err != nil\"\n\tif input == \"\" || len(input)+1 > 10 {\n\t\treturn 0\n\t}\n\treturn len(input)+1\n}\n",
         );
         let functions = discover_functions(root.path()).expect("discover functions");
         let artifact = GeneratedArtifact {
@@ -2767,6 +2782,9 @@ mod tests {
             go_mutation_candidates(&functions, root.path(), &[artifact]).expect("mutations");
 
         assert!(candidates.iter().any(|candidate| candidate.from == "=="));
+        assert!(candidates.iter().any(|candidate| candidate.from == "||"));
+        assert!(candidates.iter().any(|candidate| candidate.from == "+"));
+        assert!(candidates.iter().any(|candidate| candidate.from == ">"));
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.from == "err != nil"));

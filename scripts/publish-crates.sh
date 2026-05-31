@@ -49,6 +49,49 @@ wait_for_crate_version() {
   return 1
 }
 
+publish_package() {
+  local package="$1"
+  local output
+  local attempt
+  for attempt in 1 2; do
+    if output="$(cargo publish --locked -p "$package" 2>&1)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    if grep -Fq "Too Many Requests" <<<"$output" && [[ "$attempt" == "1" ]]; then
+      local retry_after
+      retry_after="$(sed -n 's/.*try again after \(.* GMT\).*/\1/p' <<<"$output" | head -n1)"
+      local sleep_seconds="${VERITAS_RELEASE_RATE_LIMIT_SLEEP:-60}"
+      if [[ -n "$retry_after" ]]; then
+        local retry_epoch
+        local now_epoch
+        retry_epoch="$(date -u -d "$retry_after" +%s 2>/dev/null || true)"
+        now_epoch="$(date -u +%s)"
+        if [[ -n "$retry_epoch" && "$retry_epoch" -gt "$now_epoch" ]]; then
+          sleep_seconds=$((retry_epoch - now_epoch + 5))
+        fi
+      fi
+      local max_sleep="${VERITAS_RELEASE_MAX_RATE_LIMIT_SLEEP:-900}"
+      if [[ "$sleep_seconds" -gt "$max_sleep" ]]; then
+        printf '%s\n' "$output" >&2
+        echo "crates.io rate-limit retry is ${sleep_seconds}s, above max ${max_sleep}s" >&2
+        return 1
+      fi
+      echo "crates.io rate limit while publishing ${package}; retrying in ${sleep_seconds}s" >&2
+      sleep "$sleep_seconds"
+      continue
+    fi
+
+    printf '%s\n' "$output" >&2
+    if grep -Fq "A verified email address is required" <<<"$output" \
+      && [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      echo "::error title=crates.io email is not verified::Verify the email address on the crates.io account that owns CARGO_REGISTRY_TOKEN, then rerun the release workflow."
+    fi
+    return 1
+  done
+}
+
 if [[ "$mode" == "--dry-run" ]]; then
   for package in "${packages[@]}"; do
     echo "==> Packaging ${package} ${version}"
@@ -101,14 +144,6 @@ for package in "${packages[@]}"; do
   fi
 
   echo "==> Publishing ${package} ${version}"
-  if ! output="$(cargo publish --locked -p "$package" 2>&1)"; then
-    printf '%s\n' "$output" >&2
-    if grep -Fq "A verified email address is required" <<<"$output" \
-      && [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-      echo "::error title=crates.io email is not verified::Verify the email address on the crates.io account that owns CARGO_REGISTRY_TOKEN, then rerun the release workflow."
-    fi
-    exit 1
-  fi
-  printf '%s\n' "$output"
+  publish_package "$package"
   wait_for_crate_version "$package" "$version"
 done

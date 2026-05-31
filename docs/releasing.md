@@ -45,6 +45,10 @@ gh workflow run release.yml --repo Jacobious52/veritas -f dry_run=false --ref ma
 
 Publishing also runs on tags matching `v*`.
 
+The publish script is resumable: it skips crate versions that already exist on crates.io and retries once after short crates.io rate-limit responses. If a first workspace release partially succeeds, rerun the failed workflow after the crates.io retry time instead of changing the published artifacts.
+
+After any successful publish, bump the workspace package version and internal crate dependency versions before landing new feature work.
+
 ## Secret
 
 The workflow uses a repository Actions secret:

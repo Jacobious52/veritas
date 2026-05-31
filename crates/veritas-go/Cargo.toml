@@ -17,6 +17,6 @@ serde.workspace = true
 serde_json.workspace = true
 tree-sitter.workspace = true
 tree-sitter-go = "0.25.0"
-veritas-core = { version = "0.1.0", path = "../veritas-core" }
-veritas-plugin-api = { version = "0.1.0", path = "../veritas-plugin-api" }
+veritas-core = { version = "0.1.1", path = "../veritas-core" }
+veritas-plugin-api = { version = "0.1.1", path = "../veritas-plugin-api" }
 walkdir.workspace = true
