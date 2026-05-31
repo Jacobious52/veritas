@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
-use veritas_core::config::GoPluginConfig;
+use veritas_core::{config::GoPluginConfig, run_parallel_jobs};
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
     FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase,
@@ -424,49 +424,21 @@ impl LanguagePlugin for GoPlugin {
         }
 
         if status == RunStatus::Passed {
-            for (package, fuzz_names) in relevant_fuzz_targets(&context, artifacts, &self.config) {
-                if budget_nearly_spent(start, plan.budget_seconds) {
-                    commands.push(skipped_command(
-                        root,
-                        "go fuzz targets",
-                        "global budget nearly exhausted before remaining fuzz targets",
-                    )?);
-                    break;
+            if budget_nearly_spent(start, plan.budget_seconds) {
+                commands.push(skipped_command(
+                    root,
+                    "go fuzz targets",
+                    "global budget nearly exhausted before remaining fuzz targets",
+                )?);
+            } else {
+                let fuzz_commands = run_fuzz_targets(root, &context, &self.config, artifacts)?;
+                if fuzz_commands
+                    .iter()
+                    .any(|command| command.status == RunStatus::Failed)
+                {
+                    status = RunStatus::Failed;
                 }
-                let module = owning_module(&context.modules, &package);
-                let package_arg = module_relative_package_arg(&module.root, &package);
-                for fuzz_name in fuzz_names {
-                    if budget_nearly_spent(start, plan.budget_seconds) {
-                        commands.push(skipped_command(
-                            root,
-                            "go fuzz targets",
-                            "global budget nearly exhausted before remaining fuzz targets",
-                        )?);
-                        break;
-                    }
-                    let fuzz_seconds = format!("{}s", self.config.fuzz_seconds);
-                    let fuzz_pattern = format!("^{fuzz_name}$");
-                    let mut args = vec!["test".to_string()];
-                    if let Some(tags) = go_tags_arg(&self.config) {
-                        args.push(tags);
-                    }
-                    args.extend([
-                        "-run=^$".to_string(),
-                        format!("-fuzz={fuzz_pattern}"),
-                        format!("-fuzztime={fuzz_seconds}"),
-                        package_arg.clone(),
-                    ]);
-                    let fuzz = run_command(
-                        &root.join(&module.root),
-                        "go",
-                        args,
-                        self.config.command_timeout_seconds,
-                    )?;
-                    if fuzz.status == RunStatus::Failed {
-                        status = RunStatus::Failed;
-                    }
-                    commands.push(fuzz);
-                }
+                commands.extend(fuzz_commands);
             }
         }
 
@@ -1588,6 +1560,50 @@ fn fuzz_seed_values(type_name: &str) -> Vec<&'static str> {
         "int64" => vec!["int64(1)", "int64(0)", "int64(-1)"],
         _ => vec![fuzz_seed(type_name)],
     }
+}
+
+#[derive(Debug, Clone)]
+struct FuzzJob {
+    cwd: Utf8PathBuf,
+    args: Vec<String>,
+    timeout_seconds: u64,
+}
+
+fn run_fuzz_targets(
+    root: &Path,
+    context: &GoVerificationContext,
+    config: &GoPluginConfig,
+    artifacts: &[GeneratedArtifact],
+) -> Result<Vec<CommandRecord>> {
+    let mut jobs = Vec::new();
+    for (package, fuzz_names) in relevant_fuzz_targets(context, artifacts, config) {
+        let module = owning_module(&context.modules, &package);
+        let package_arg = module_relative_package_arg(&module.root, &package);
+        for fuzz_name in fuzz_names {
+            let fuzz_seconds = format!("{}s", config.fuzz_seconds);
+            let fuzz_pattern = format!("^{fuzz_name}$");
+            let mut args = vec!["test".to_string()];
+            if let Some(tags) = go_tags_arg(config) {
+                args.push(tags);
+            }
+            args.extend([
+                "-run=^$".to_string(),
+                format!("-fuzz={fuzz_pattern}"),
+                format!("-fuzztime={fuzz_seconds}"),
+                package_arg.clone(),
+            ]);
+            jobs.push(FuzzJob {
+                cwd: utf8_path(&root.join(&module.root))?,
+                args,
+                timeout_seconds: config.command_timeout_seconds,
+            });
+        }
+    }
+
+    let (results, _summary) = run_parallel_jobs(jobs, config.fuzz_concurrency, |job| {
+        run_command(job.cwd.as_std_path(), "go", job.args, job.timeout_seconds)
+    });
+    results.into_iter().collect()
 }
 
 #[derive(Debug, Clone)]
@@ -3035,6 +3051,7 @@ mod tests {
         GoPluginConfig {
             fuzz_seconds: 1,
             fuzz_existing: true,
+            fuzz_concurrency: 2,
             coverage_enabled: true,
             reverse_dependency_depth: 1,
             max_fuzz_targets: 20,

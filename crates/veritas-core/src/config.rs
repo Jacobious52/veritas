@@ -52,6 +52,7 @@ pub struct RustPluginConfig {
 pub struct GoPluginConfig {
     pub fuzz_seconds: u64,
     pub fuzz_existing: bool,
+    pub fuzz_concurrency: usize,
     pub coverage_enabled: bool,
     pub reverse_dependency_depth: usize,
     pub max_fuzz_targets: usize,
@@ -123,6 +124,7 @@ struct RustPluginConfigPartial {
 struct GoPluginConfigPartial {
     fuzz_seconds: Option<u64>,
     fuzz_existing: Option<bool>,
+    fuzz_concurrency: Option<usize>,
     coverage_enabled: Option<bool>,
     reverse_dependency_depth: Option<usize>,
     max_fuzz_targets: Option<usize>,
@@ -165,6 +167,7 @@ impl Default for VeritasConfig {
                 go: GoPluginConfig {
                     fuzz_seconds: 10,
                     fuzz_existing: true,
+                    fuzz_concurrency: 2,
                     coverage_enabled: true,
                     reverse_dependency_depth: 1,
                     max_fuzz_targets: 20,
@@ -269,6 +272,9 @@ impl VeritasConfig {
                 if let Some(value) = go.fuzz_existing {
                     config.plugins.go.fuzz_existing = value;
                 }
+                if let Some(value) = go.fuzz_concurrency {
+                    config.plugins.go.fuzz_concurrency = value.max(1);
+                }
                 if let Some(value) = go.coverage_enabled {
                     config.plugins.go.coverage_enabled = value;
                 }
@@ -330,6 +336,7 @@ fail_on_target_risks = ["high"]
 [plugins.go]
 fuzz_seconds = 3
 fuzz_existing = false
+fuzz_concurrency = 3
 coverage_enabled = false
 reverse_dependency_depth = 2
 max_fuzz_targets = 4
@@ -360,6 +367,7 @@ cpu_quota = "150%"
         assert_eq!(config.policy.fail_on_target_risks, vec![RiskLevel::High]);
         assert_eq!(config.plugins.go.fuzz_seconds, 3);
         assert!(!config.plugins.go.fuzz_existing);
+        assert_eq!(config.plugins.go.fuzz_concurrency, 3);
         assert!(!config.plugins.go.coverage_enabled);
         assert_eq!(config.plugins.go.reverse_dependency_depth, 2);
         assert_eq!(config.plugins.go.max_fuzz_targets, 4);

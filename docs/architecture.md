@@ -79,6 +79,10 @@ The optional external planner receives bounded JSON with:
 
 Returned plans are clamped to the provided target, allowed strategy list, generated-test policy, and maximum budget. Planner failures fall back to deterministic planning unless `fail_on_error = true`.
 
+## Execution Scheduler
+
+Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it today through `plugins.go.fuzz_concurrency`. Mutation probes remain serial because they temporarily rewrite source files in the target checkout.
+
 ## Tree-Sitter Use
 
 Rust:

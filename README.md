@@ -130,7 +130,7 @@ Go verification:
 - runs scoped `go test` commands for selected packages plus configurable reverse dependencies
 - discovers handwritten and generated fuzz targets
 - writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types and edge-case seed rows
-- runs relevant `go test -run=^$ -fuzz=...` targets within caps and timeouts
+- runs relevant `go test -run=^$ -fuzz=...` targets through a bounded scheduler within caps and timeouts
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
 - runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic operators, and domain-labeled risk surfaces
 - writes package graph, package-awareness, and symbol graph artifacts
@@ -187,6 +187,7 @@ cpu_quota = "200%"
 [plugins.go]
 fuzz_seconds = 10
 fuzz_existing = true
+fuzz_concurrency = 2
 coverage_enabled = true
 reverse_dependency_depth = 1
 max_fuzz_targets = 20

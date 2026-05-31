@@ -1,12 +1,12 @@
 pub mod config;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -56,6 +56,12 @@ pub struct BaselineSummary {
     pub accepted_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerSummary {
+    pub requested_jobs: usize,
+    pub max_concurrency: usize,
+}
+
 #[derive(Debug, Clone)]
 struct ChangedFile {
     path: Utf8PathBuf,
@@ -93,6 +99,89 @@ impl RunBudget {
     fn nearly_spent(&self) -> bool {
         self.start.elapsed() + Duration::from_secs(5) >= self.total
     }
+}
+
+pub fn run_parallel_jobs<T, R, F>(
+    jobs: Vec<T>,
+    max_concurrency: usize,
+    runner: F,
+) -> (Vec<R>, SchedulerSummary)
+where
+    T: Send + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> R + Send + Sync + 'static,
+{
+    let requested_jobs = jobs.len();
+    if jobs.is_empty() {
+        return (
+            Vec::new(),
+            SchedulerSummary {
+                requested_jobs,
+                max_concurrency: 0,
+            },
+        );
+    }
+
+    let max_concurrency = max_concurrency.clamp(1, jobs.len());
+    if max_concurrency == 1 {
+        let results = jobs.into_iter().map(runner).collect::<Vec<_>>();
+        return (
+            results,
+            SchedulerSummary {
+                requested_jobs,
+                max_concurrency,
+            },
+        );
+    }
+
+    let queue = Arc::new(Mutex::new(
+        jobs.into_iter().enumerate().collect::<VecDeque<_>>(),
+    ));
+    let results = Arc::new(Mutex::new(Vec::with_capacity(requested_jobs)));
+    let runner = Arc::new(runner);
+    let mut handles = Vec::new();
+
+    for _ in 0..max_concurrency {
+        let queue = Arc::clone(&queue);
+        let results = Arc::clone(&results);
+        let runner = Arc::clone(&runner);
+        handles.push(std::thread::spawn(move || loop {
+            let next = {
+                let mut queue = queue.lock().expect("scheduler queue lock poisoned");
+                queue.pop_front()
+            };
+            let Some((index, job)) = next else {
+                break;
+            };
+            let result = runner(job);
+            results
+                .lock()
+                .expect("scheduler results lock poisoned")
+                .push((index, result));
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("scheduler worker panicked");
+    }
+
+    let mut results = match Arc::try_unwrap(results) {
+        Ok(results) => results
+            .into_inner()
+            .expect("scheduler results lock poisoned"),
+        Err(_) => panic!("scheduler results still shared"),
+    };
+    results.sort_by_key(|(index, _)| *index);
+    (
+        results
+            .into_iter()
+            .map(|(_, result)| result)
+            .collect::<Vec<_>>(),
+        SchedulerSummary {
+            requested_jobs,
+            max_concurrency,
+        },
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -1989,9 +2078,23 @@ mod tests {
 
     use super::{
         api_baseline_artifact, cleanup_generated_artifacts, differential_replay_artifact,
-        parse_unified_diff, regression_artifacts, targets_for_changed_files, ChangedFile,
-        TargetKind, VerificationTarget,
+        parse_unified_diff, regression_artifacts, run_parallel_jobs, targets_for_changed_files,
+        ChangedFile, TargetKind, VerificationTarget,
     };
+
+    #[test]
+    fn scheduler_runs_jobs_concurrently_and_preserves_order() {
+        let jobs = vec![3_u64, 2, 1];
+
+        let (results, summary) = run_parallel_jobs(jobs, 2, |value| {
+            std::thread::sleep(std::time::Duration::from_millis(value * 10));
+            value * 2
+        });
+
+        assert_eq!(results, vec![6, 4, 2]);
+        assert_eq!(summary.requested_jobs, 3);
+        assert_eq!(summary.max_concurrency, 2);
+    }
 
     #[test]
     fn parses_added_hunk_ranges_from_zero_context_diff() {

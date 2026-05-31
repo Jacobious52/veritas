@@ -323,6 +323,7 @@ fn apply_verify_profile(config: &mut VeritasConfig, profile: Option<VerifyProfil
 
     config.plugins.go.coverage_enabled = false;
     config.plugins.go.fuzz_seconds = config.plugins.go.fuzz_seconds.min(5);
+    config.plugins.go.fuzz_concurrency = config.plugins.go.fuzz_concurrency.clamp(1, 2);
     config.plugins.go.reverse_dependency_depth = config.plugins.go.reverse_dependency_depth.min(1);
     config.plugins.go.max_fuzz_targets = config.plugins.go.max_fuzz_targets.min(5);
     config.plugins.go.command_timeout_seconds = config.plugins.go.command_timeout_seconds.min(90);

@@ -108,7 +108,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust discovers public free functions and public methods with Tree-sitter, writes symbol graphs, and uses AST spans for mutation probes.
 - Rust property generation is intentionally limited to supported public free functions in packages whose manifest mentions `proptest`.
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
-- Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, fuzz target caps, and AST-scoped mutation probes.
+- Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, and AST-scoped mutation probes.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.

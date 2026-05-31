@@ -54,6 +54,7 @@ fail_on_severity = "error"
 [plugins.go]
 fuzz_seconds = 5
 fuzz_existing = true
+fuzz_concurrency = 2
 coverage_enabled = false
 reverse_dependency_depth = 1
 max_fuzz_targets = 5
@@ -64,6 +65,8 @@ build_tags = []
 ```
 
 Use higher caps only for an explicit local investigation.
+
+Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 
 `fixtures/go-multimodule` is the local confidence fixture for this path. It has two Go modules, a cross-module import, a selected billing package, and a gateway reverse dependency. It also keeps a handwritten fuzz target so the generated-fuzz path proves it does not emit duplicate fuzz names.
 
