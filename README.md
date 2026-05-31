@@ -2,79 +2,23 @@
 
 `veritas` is a CLI-first adversarial verification harness for AI-written and AI-modified software.
 
-It answers a question ordinary tests often miss:
+It answers the question ordinary test runs often miss:
 
 > Would the current tests catch the kinds of subtle mistakes an AI coding agent is likely to make?
 
-`veritas` maps changed code to verification targets, generates reviewable harnesses, runs scoped tests/fuzz/mutation checks under budgets, writes CI-friendly reports, and produces AI-ready feedback that can be pasted back into a coding agent.
+`veritas` maps changed code to verification targets, generates reviewable harnesses, runs scoped tests, fuzzing, mutation probes, and coverage collection under budgets, then writes CI-friendly reports and AI-ready feedback.
 
-The default path is deterministic and does not call an LLM. An optional bounded external planner hook can be enabled when you want AI-assisted planning while keeping execution scope and budgets controlled by `veritas`.
-
-For large Go repositories, see [`docs/go-productionization-handoff.md`](docs/go-productionization-handoff.md). It records the production-readiness plan, current implementation state, and next agent tasks for making `veritas` useful beyond regular test execution.
-
-## Vision
-
-AI-generated code often looks correct, compiles, and passes existing tests while still violating hidden assumptions, edge cases, invariants, security expectations, or backwards compatibility. `veritas` is intended to distrust generated code and attack assumptions by orchestrating:
-
-- existing tests
-- generated unit tests
-- property-based tests
-- fuzz harnesses
-- mutation-test style checks
-- coverage feedback
-- minimized repro cases
-
-The long-term loop is:
-
-1. Understand the change by inspecting diffs, changed functions, APIs, call paths, usage sites, and tests.
-2. Build a verification plan that prioritizes risky code such as parsers, auth, money, permissions, concurrency, serialization, networking, unsafe code, cryptography, migrations, and error handling.
-3. Generate verification artifacts such as unit tests, property tests, fuzz harnesses, differential tests, semantic mutation checks, and regression tests.
-4. Execute, observe, classify failures, and minimize repro cases.
-5. Improve recursively using coverage, fuzzing, killed/surviving mutants, and failing inputs.
-
-## Workspace
-
-```text
-crates/
-  veritas-cli/
-  veritas-core/
-  veritas-plugin-api/
-  veritas-rust/
-  veritas-go/
-  veritas-report/
-fixtures/
-  sample-rust/
-  sample-go/
-examples/
-  rust-invoice/
-  go-invoice/
-```
-
-## CLI
-
-```bash
-veritas scan
-veritas review-ai
-veritas verify --changed
-veritas verify --changed --profile ci
-veritas verify --lang rust --target path/to/file.rs
-veritas verify --lang go --target ./pkg/foo
-veritas generate --kind property --target path
-veritas generate --kind fuzz --target path
-veritas run
-veritas report --format markdown
-veritas report --format sarif
-veritas report --format junit
-veritas explain <finding-id>
-veritas promote-repro
-veritas promote-repro --index 0
-veritas accept-baseline --id <finding-id>
-veritas accept-baseline --all
-veritas cleanup
-veritas cleanup --dry-run
-```
+The default path is deterministic and does not call an LLM. An optional external planner hook can be enabled for AI-assisted planning while `veritas` still owns execution scope, budgets, and artifact writes.
 
 ## Install
+
+From crates.io, after release:
+
+```bash
+cargo install veritas-cli --locked
+```
+
+From the Git repository:
 
 ```bash
 cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
@@ -99,113 +43,109 @@ go version
 cargo install cargo-llvm-cov
 ```
 
-## Copy-Paste AI Agent Instructions
+## Quick Start
 
-Paste this into an AI coding agent working in a repository:
+Use `veritas` on a changed branch:
 
-```text
-Use veritas as the adversarial verification loop for this change.
-
-Install if needed:
-  cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
-
-Before editing broadly:
-  veritas review-ai
-  Read .veritas/ai/change_digest.md and .veritas/ai/agent_feedback.md.
-
-After making code or test changes:
-  veritas verify --changed --profile ci
-
-If veritas reports findings:
-  1. Use veritas explain <finding-id>.
-  2. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
-  3. Inspect .veritas/patches/ and .veritas/repros/.
-  4. Rerun veritas verify --changed --profile ci.
-
-Do not ignore warning/error findings without explaining why. Only accept a finding baseline with:
-  veritas accept-baseline --id <finding-id>
-
-Clean generated artifacts before finalizing unless intentionally committing reviewed artifacts:
-  veritas cleanup
+```bash
+veritas review-ai
+veritas verify --changed --profile ci
+veritas report --format markdown
 ```
 
-## v0 Capabilities
+Verify a specific target:
 
-Rust plugin:
+```bash
+veritas verify --lang rust --target src/lib.rs
+veritas verify --lang go --target ./pkg/invoice
+```
 
-- detects `Cargo.toml`
-- discovers public free functions in `src/**/*.rs` with tree-sitter
-- runs `cargo test --all-targets` with configurable jobs, test threads, command timeouts, and optional systemd cgroup limits
-- generates simple `proptest` integration tests for public functions with supported primitive/string-like inputs
-- writes generated modules under `tests/veritas_generated/` with a Cargo integration-test index at `tests/veritas_generated.rs`
-- runs deterministic source-level mutation probes and reports surviving mutants
-- ingests `cargo llvm-cov --summary-only` output when enabled and `cargo-llvm-cov` is installed
+Explain and promote findings:
 
-Go plugin:
+```bash
+veritas explain <finding-id>
+veritas promote-repro --dry-run
+veritas accept-baseline --id <finding-id>
+veritas cleanup
+```
 
-- detects `go.mod`
-- discovers exported functions in `.go` files with tree-sitter
-- uses `go list -json ./...` to scope package test execution when generated artifacts identify target packages
-- runs existing Go tests for selected packages plus configurable transitive reverse dependencies, including test-only imports
-- generates basic `testing.F` fuzz harnesses for exported functions with supported Go fuzz parameter types
-- writes generated files as `veritas_fuzz_test.go`
-- distinguishes handwritten fuzz targets from generated `veritas_fuzz_test.go` files
-- runs targeted `go test -run=^$ -fuzz=Fuzz -fuzztime=<N>s <package>` for generated and relevant handwritten fuzz targets, capped per package
-- runs deterministic tree-sitter scoped mutation probes and reports surviving mutants with assertion suggestions
-- applies build tags and per-command timeouts to Go test, fuzz, package graph, coverage, and mutation commands
-- writes package-awareness feedback for changed packages, reverse dependencies, tests, and fuzz coverage
-- writes machine-readable Go module/package graph data under `.veritas/package_graph/go.json`
-- detects multiple `go.mod` roots and runs scoped package commands from the owning module
-- ingests scoped `go test -coverprofile=.veritas/go-cover.out <packages>` output after verification
+## Documentation
 
-Reporting:
+- [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
+- [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
+- [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
+- [Releasing](docs/releasing.md): crates.io publishing through GitHub Actions.
 
-- renders Markdown, JSON, SARIF, and JUnit XML
-- includes targets, plan, generated artifacts, commands run, coverage, failures, and suggested next steps
-- saves the latest report to `.veritas/report.json`
-- SARIF locations use target file and line information when the finding can be mapped to a verification target
-- JUnit failure bodies are trimmed for CI log hygiene
+## CLI Surface
+
+```bash
+veritas scan
+veritas review-ai
+veritas verify --changed
+veritas verify --changed --profile ci
+veritas verify --lang rust --target path/to/file.rs
+veritas verify --lang go --target ./pkg/foo
+veritas generate --kind property --target path
+veritas generate --kind fuzz --target path
+veritas run
+veritas report --format markdown
+veritas report --format sarif
+veritas report --format junit
+veritas explain <finding-id>
+veritas promote-repro
+veritas promote-repro --index 0
+veritas accept-baseline --id <finding-id>
+veritas accept-baseline --all
+veritas cleanup
+veritas cleanup --dry-run
+```
+
+## Capabilities
 
 Changed-target verification:
 
-- `veritas verify --changed` reads git diff hunks, staged changes, and untracked files
-- maps changed Rust/Go lines to discovered function/package targets when line ranges are available
-- generates and runs artifacts once per detected language plugin
+- reads git diffs, staged changes, and untracked files
+- maps changed lines to discovered Rust/Go symbols when line ranges are available
+- scopes package commands to changed packages and selected reverse dependencies where graph data exists
+- writes AI review artifacts with change digests and verification guidance
 
-Recursive feedback:
+Rust verification:
 
-- `veritas review-ai` writes `.veritas/ai/change_digest.md` and `.veritas/ai/agent_feedback.md` for copy-paste AI coding loops
-- writes coverage feedback under `.veritas/feedback/`
-- writes mutation feedback when mutants survive
-- writes repro summaries under `.veritas/repros/` with minimized input hints when tool output exposes them
-- writes candidate verification patch guidance under `.veritas/patches/`
-- `veritas promote-repro` writes reviewable promotion notes under `.veritas/promotions/` for saved repro findings
-- writes public API signature baselines under `.veritas/baselines/` and reports signature drift on later runs
+- detects packages and virtual workspaces through `Cargo.toml`
+- discovers public free functions and public methods with Tree-sitter
+- writes package-local `proptest` integration harnesses for supported public free functions
+- runs `cargo test --all-targets` with configurable jobs, test threads, command timeouts, and optional systemd scope limits
+- runs AST-scoped mutation probes and reports surviving mutants
+- collects `cargo llvm-cov --summary-only` when enabled
+- writes Rust symbol graph artifacts under `.veritas/symbol_graph/`
 
-Cleanup:
+Go verification:
 
-- `veritas cleanup --dry-run` lists generated artifacts that would be removed
-- `veritas cleanup` removes `.veritas/`, Rust `tests/veritas_generated*` artifacts, and Go `veritas_fuzz_test.go` files
-- skips build, VCS, dependency, and vendor directories while searching for package-local generated artifacts
+- detects one or more `go.mod` roots
+- discovers exported functions and methods with Tree-sitter
+- builds package graphs with `go list -json ./...`
+- runs scoped `go test` commands for selected packages plus configurable reverse dependencies
+- discovers handwritten and generated fuzz targets
+- writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types
+- runs relevant `go test -run=^$ -fuzz=...` targets within caps and timeouts
+- applies build tags to Go list, test, fuzz, coverage, and mutation commands
+- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, and domain-labeled risk surfaces
+- writes package graph, package-awareness, and symbol graph artifacts
 
-CI output and failure policy:
+Reports and artifacts:
 
-- `veritas report --format sarif` emits SARIF 2.1.0
-- `veritas report --format junit` emits a compact JUnit XML testsuite
-- findings carry severity (`info`, `warning`, `error`, or `critical`)
-- findings receive stable IDs such as `vts-...`
-- `fail_on_findings = true` makes `verify`, `generate`, and `run` exit non-zero for findings that match `[policy]`
-- policy can filter by minimum severity, language, artifact kind, and target risk
-- `veritas accept-baseline` records accepted finding IDs under `.veritas/baselines/findings.json` for new-findings-only CI behavior
+- renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
+- saves the latest report to `.veritas/report.json`
+- writes API signature baselines and accepted finding baselines
+- writes coverage feedback, mutation feedback, repro notes, candidate verification patches, and promotion notes
+- cleans generated artifacts with `veritas cleanup`
 
-Planner extension:
+CI behavior:
 
-- deterministic planning is the default
-- optional external LLM planning is available through a command hook behind `VerificationPlanner`
-- the command receives bounded JSON on stdin, including `project`, `target`, `default_plan`, and `constraints`
-- the command may return either a `VerificationPlan` JSON object or `{ "plan": ... }`
-- returned plans are constrained to the provided target, allowed strategy list, generated-test policy, and maximum budget
-- planner failures fall back to deterministic planning unless `fail_on_error = true`
+- `veritas verify --profile ci` implies `--changed`
+- CI profile disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure on error severity by default
+- policy filters can select severity, language, artifact kind, and target risk
+- accepted finding IDs support new-findings-only CI behavior
 
 ## Config
 
@@ -237,7 +177,6 @@ coverage_enabled = false
 coverage_timeout_seconds = 120
 cargo_jobs = 1
 test_threads = 1
-# Linux/systemd host safety valve for large repos:
 systemd_scope = false
 memory_max = "4G"
 cpu_quota = "200%"
@@ -254,30 +193,39 @@ max_mutants = 8
 build_tags = []
 ```
 
-`veritas verify --profile ci` implies `--changed`, disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure with `error` as the default minimum severity. Warning-only exploratory findings still appear in the report without failing the process unless the policy is configured to fail on warnings.
+For shared machines, keep Rust coverage disabled unless needed and enable systemd scope limits:
+
+```toml
+[plugins.rust]
+coverage_enabled = false
+systemd_scope = true
+cargo_jobs = 1
+test_threads = 1
+memory_max = "4G"
+cpu_quota = "200%"
+```
 
 ## Development
 
-Run the full Rust workspace tests:
+Run the workspace checks:
 
 ```bash
+cargo fmt --all
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The Go verification integration test runs `go test` and `go test -fuzz` when the Go toolchain is available. On machines without `go` on `PATH`, that execution check is skipped while Go scanning and deterministic fuzz artifact generation remain testable.
-
-Run the CLI against fixtures:
+Run fixture checks:
 
 ```bash
 cargo run -p veritas-cli -- scan --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
-cargo run -p veritas-cli -- verify --root fixtures/sample-rust --changed
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-rust --dry-run
 cargo run -p veritas-cli -- scan --root fixtures/sample-go
 cargo run -p veritas-cli -- verify --root fixtures/sample-go --lang go --target .
 ```
 
-Run the richer test beds:
+Run the richer example beds:
 
 ```bash
 cargo test --manifest-path examples/rust-invoice/Cargo.toml
@@ -287,46 +235,3 @@ cargo run -p veritas-cli -- verify --root examples/go-invoice --lang go --target
 ```
 
 The example projects intentionally contain hidden assumptions while their handwritten tests pass, so they are useful for validating generated property/fuzz artifacts and report output.
-
-## Publishing
-
-The workspace is prepared for crates.io publishing from GitHub Actions.
-
-To publish with an API token:
-
-1. Create a crates.io API token that can publish new crates and updates.
-2. Add it to the GitHub repository as `CARGO_REGISTRY_TOKEN`.
-3. Run the `Release` workflow manually with `dry_run=true` to package every crate without uploading.
-4. Run the workflow with `dry_run=false`, or push a `v0.1.0` style tag, to publish crates in dependency order.
-
-The release script publishes:
-
-```text
-veritas-plugin-api
-veritas-core
-veritas-report
-veritas-rust
-veritas-go
-veritas-cli
-```
-
-After the first release exists on crates.io, trusted publishing can be configured per crate in crates.io settings so future CI releases can use GitHub Actions OIDC instead of a long-lived token.
-
-## Known Limitations
-
-- v0 does not call LLM APIs by default; the external planner hook is opt-in.
-- Rust generation only handles public free functions with up to two supported primitive/string-like parameters.
-- Go fuzz generation handles exported functions with supported primitive fuzz parameter types; other exported functions are still discovered for targeting, mutation, and API baselines.
-- Coverage collection is best-effort and depends on local tools (`cargo-llvm-cov` for Rust when enabled, Go toolchain for Go).
-- Mutation probes use deterministic AST-scoped operators for branch, nil/error, comparison, return default, and domain-labeled auth, money, parsing, and serialization risks.
-- Minimized repro extraction depends on tool output exposing failing inputs.
-- Differential checks compare public signatures, not full behavior.
-- Generated tests are intentionally conservative scaffolds that must be reviewed before committing.
-
-## Next Engineering Steps
-
-1. Replace signature-only differential checks with old/new behavioral replay for selected APIs.
-2. Turn candidate patch guidance into directly applicable source patches for common Rust and Go shapes.
-3. Persist and replay concrete minimized fuzz/proptest inputs as committed regression tests.
-4. Add typed semantic mutation operators for auth, money, parsing, serialization, permissions, and error handling.
-5. Add owner/team metadata and expiry windows to accepted finding baselines.

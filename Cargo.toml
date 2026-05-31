@@ -18,7 +18,7 @@ homepage = "https://github.com/Jacobious52/veritas"
 readme = "README.md"
 keywords = ["ai", "verification", "testing", "fuzzing", "cli"]
 categories = ["command-line-utilities", "development-tools::testing"]
-description = "AI-native verification engine for vibe-coded software"
+description = "Adversarial verification harness for AI-written and AI-modified software"
 
 [workspace.dependencies]
 anyhow = "1.0"

@@ -6,4 +6,4 @@
 **/tests/veritas_generated/
 **/tests/veritas_generated.rs
 **/*.proptest-regressions
-
+.env

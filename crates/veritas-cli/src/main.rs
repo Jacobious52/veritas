@@ -16,7 +16,7 @@ use veritas_rust::RustPlugin;
 
 #[derive(Debug, Parser)]
 #[command(name = "veritas")]
-#[command(about = "AI-native verification engine for vibe-coded software")]
+#[command(about = "Adversarial verification harness for AI-written and AI-modified software")]
 struct Cli {
     #[arg(long, global = true, default_value = ".")]
     root: PathBuf,

@@ -274,7 +274,7 @@ impl LanguagePlugin for RustPlugin {
             RunStatus::Passed
         };
         let mut failures =
-            failures_for_failed_commands(&test_commands, artifacts, "cargo test failed");
+            failures_for_failed_commands(root, &test_commands, artifacts, "cargo test failed");
         commands.extend(test_commands);
 
         if status == RunStatus::Passed
@@ -1399,6 +1399,7 @@ fn resource_limited_command(
 }
 
 fn failures_for_failed_commands(
+    root: &Path,
     commands: &[CommandRecord],
     artifacts: &[GeneratedArtifact],
     message: &str,
@@ -1406,22 +1407,73 @@ fn failures_for_failed_commands(
     commands
         .iter()
         .filter(|command| command.status == RunStatus::Failed)
-        .map(|command| Failure {
-            id: None,
-            message: message.to_string(),
-            severity: FailureSeverity::Error,
-            target_id: artifacts.first().map(|artifact| artifact.target_id.clone()),
-            artifact_id: artifacts.first().map(|artifact| artifact.id.clone()),
-            command: command_line(&command.program, &command.args),
-            stdout_excerpt: excerpt(&command.stdout),
-            stderr_excerpt: excerpt(&command.stderr),
-            repro: Some(ReproCase {
+        .map(|command| {
+            let artifact = artifact_for_failed_command(root, command, artifacts);
+            Failure {
+                id: None,
+                message: message.to_string(),
+                severity: FailureSeverity::Error,
+                target_id: artifact.map(|artifact| artifact.target_id.clone()),
+                artifact_id: artifact.map(|artifact| artifact.id.clone()),
                 command: command_line(&command.program, &command.args),
-                input: None,
-                path: None,
-            }),
+                stdout_excerpt: excerpt(&command.stdout),
+                stderr_excerpt: excerpt(&command.stderr),
+                repro: Some(ReproCase {
+                    command: command_line(&command.program, &command.args),
+                    input: None,
+                    path: None,
+                }),
+            }
         })
         .collect()
+}
+
+fn artifact_for_failed_command<'a>(
+    root: &Path,
+    command: &CommandRecord,
+    artifacts: &'a [GeneratedArtifact],
+) -> Option<&'a GeneratedArtifact> {
+    let combined_output = format!("{}\n{}", command.stdout, command.stderr);
+    artifacts
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                artifact.kind,
+                ArtifactKind::UnitTest | ArtifactKind::PropertyTest | ArtifactKind::FuzzHarness
+            )
+        })
+        .find(|artifact| {
+            combined_output.contains(artifact.path.as_str())
+                || artifact_package_root(root, artifact)
+                    .map(|package_root| package_root == command.cwd)
+                    .unwrap_or(false)
+        })
+        .or_else(|| {
+            artifacts.iter().find(|artifact| {
+                matches!(
+                    artifact.kind,
+                    ArtifactKind::UnitTest
+                        | ArtifactKind::PropertyTest
+                        | ArtifactKind::FuzzHarness
+                        | ArtifactKind::HarnessIndex
+                )
+            })
+        })
+}
+
+fn artifact_package_root(root: &Path, artifact: &GeneratedArtifact) -> Option<Utf8PathBuf> {
+    let parts = artifact.path.components().collect::<Vec<_>>();
+    let tests_position = parts
+        .iter()
+        .position(|component| component.as_str() == "tests")?;
+    let relative_root = if tests_position == 0 {
+        Utf8PathBuf::from(".")
+    } else {
+        parts[..tests_position]
+            .iter()
+            .fold(Utf8PathBuf::new(), |path, component| path.join(component))
+    };
+    utf8_path(&root.join(relative_root)).ok()
 }
 
 fn budget_nearly_spent(start: Instant, budget_seconds: u64) -> bool {
@@ -1649,6 +1701,40 @@ mod tests {
         assert_eq!(artifact.kind, ArtifactKind::SymbolGraph);
         assert!(artifact.contents.contains("Invoice.normalize"));
         assert!(artifact.contents.contains("input.trim"));
+    }
+
+    #[test]
+    fn failed_generated_test_commands_are_attributed_to_generated_artifacts() {
+        let root = TempRoot::new();
+        let artifact = GeneratedArtifact {
+            id: "rust-property-example".to_string(),
+            language: "rust".to_string(),
+            kind: ArtifactKind::PropertyTest,
+            target_id: "rust:project".to_string(),
+            path: Utf8PathBuf::from("examples/rust-invoice/tests/veritas_generated/target.rs"),
+            contents: String::new(),
+            description: String::new(),
+            status: ArtifactStatus::Written,
+        };
+        let command = CommandRecord {
+            program: "cargo".to_string(),
+            args: vec!["test".to_string()],
+            cwd: utf8_path(&root.path().join("examples/rust-invoice")).expect("utf8 cwd"),
+            exit_code: Some(101),
+            status: RunStatus::Failed,
+            stdout: String::new(),
+            stderr: "tests/veritas_generated/target.rs: assertion failed".to_string(),
+            duration_ms: 1,
+        };
+
+        let failures =
+            failures_for_failed_commands(root.path(), &[command], &[artifact], "cargo test failed");
+
+        assert_eq!(
+            failures[0].artifact_id.as_deref(),
+            Some("rust-property-example")
+        );
+        assert_eq!(failures[0].target_id.as_deref(), Some("rust:project"));
     }
 
     fn write_file(root: &Path, relative: &str, contents: &str) {
