@@ -187,6 +187,21 @@
       gap: 12px;
       margin-top: 18px;
     }
+    .language-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .language-strip span {
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(5, 7, 11, .5);
+      border-radius: 999px;
+      padding: 6px 11px;
+      color: #d7e0ea;
+      font-size: 13px;
+      font-weight: 800;
+    }
     .button {
       display: inline-flex;
       align-items: center;
@@ -301,6 +316,14 @@
       color: var(--ink);
       font-size: 22px;
     }
+    .mini-title {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
     .mutant {
       display: grid;
       gap: 12px;
@@ -370,6 +393,12 @@
       <div class="wrap hero-copy">
         <h1>Ship AI code with adversarial proof, not vibes.</h1>
         <p class="lede">Veritas turns every AI-written change into a verification loop: mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential checks, and a confidence score an agent can act on.</p>
+        <div class="language-strip" aria-label="Language and plugin support">
+          <span>Rust plugin today</span>
+          <span>Go plugin today</span>
+          <span>Tree-sitter symbols</span>
+          <span>Plugin API for more languages</span>
+        </div>
 
         <div class="hero-grid">
           <div id="install" class="panel">
@@ -406,7 +435,7 @@ Use the generated .veritas/ feedback to add or improve tests before marking the 
     <section id="example">
       <div class="wrap">
         <h2>Examples that scale with the risk</h2>
-        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on.</p>
+        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust and Go use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
         <div class="examples">
           <div class="scenario">
             <div class="level"><b>1. Boundary mutant</b>Small function, high consequence.</div>
@@ -430,7 +459,12 @@ veritas promote-regression --index 0</code></pre>
           <div class="scenario">
             <div class="level"><b>2. Properties and fuzzing</b>Inputs are messy, generated code is optimistic.</div>
             <div class="card">
-              <p>A parser accepts totals from invoices. Veritas generates no-panic and deterministic properties, creates Go fuzz targets where possible, and persists minimized repros as corpus entries.</p>
+              <p class="mini-title">Invoice parser an AI just “simplified”</p>
+              <pre><code>func ParseTotal(raw string) int {
+    cents, _ := strconv.Atoi(raw)
+    return cents
+}</code></pre>
+              <p>A generated fuzz target feeds `""`, `" 1200 "`, `"12.34"`, and large values. The parser panic or bad normalization becomes a replayable seed instead of a one-off CI surprise.</p>
               <div class="flow">
                 <span class="pill">property test</span>
                 <span class="pill">fuzz harness</span>
@@ -438,7 +472,11 @@ veritas promote-regression --index 0</code></pre>
               </div>
             </div>
             <div class="card">
-              <pre><code>.veritas/assertions/go_0.json
+              <p class="mini-title">What Veritas writes</p>
+              <pre><code>FuzzParseTotal
+seed: " 12.34 "
+expected: no panic, stable cents
+
 .veritas/corpus/go_0.json
 .veritas/repros/go_0.md</code></pre>
               <p class="good">The next run can replay the same seed instead of rediscovering it by luck.</p>
@@ -448,7 +486,11 @@ veritas promote-regression --index 0</code></pre>
           <div class="scenario">
             <div class="level"><b>3. Behavior replay</b>Review old/new semantics, not just signatures.</div>
             <div class="card">
-              <p>For public APIs, Veritas emits replay cases around empty strings, numeric boundaries, booleans, and auth-like roles so AI edits can be compared against expected behavior.</p>
+              <p class="mini-title">Permission API before an AI refactor</p>
+              <pre><code>AuthorizeRefund("admin", 5000)  =&gt; true
+AuthorizeRefund("support", 500) =&gt; true
+AuthorizeRefund("guest", 500)   =&gt; false</code></pre>
+              <p>Veritas turns public API behavior into replay cases before the change, then makes drift explicit after the change.</p>
               <div class="flow">
                 <span class="pill">differential replay</span>
                 <span class="pill">public API</span>
@@ -456,8 +498,12 @@ veritas promote-regression --index 0</code></pre>
               </div>
             </div>
             <div class="card">
-              <pre><code>.veritas/differential/go_replay.json
-.veritas/differential/go_result.json</code></pre>
+              <p class="mini-title">Replay manifest</p>
+              <pre><code>{
+  "name": "permission_boundary",
+  "inputs": ["admin", "support", "guest"],
+  "assertion": "privileged, delegated, denied"
+}</code></pre>
               <p>Replay results become assertion candidates when behavior drift matters.</p>
             </div>
           </div>
@@ -465,7 +511,12 @@ veritas promote-regression --index 0</code></pre>
           <div class="scenario">
             <div class="level"><b>4. Evolution suite</b>Let the report choose the next best tests.</div>
             <div class="card">
-              <p>Veritas combines survivors, uncovered mutants, corpus entries, replay opportunities, and generated harness failures into a ranked suite for the next agent loop.</p>
+              <p class="mini-title">A real next-test queue</p>
+              <pre><code>survivor: ApplyServiceFeeCents + -&gt; -
+survivor: CapDiscountPercent &gt; -&gt; &gt;=
+seed: " 12.34 "
+replay: permission_boundary</code></pre>
+              <p>Veritas ranks what to try first, so the agent does not spray random tests across the repo.</p>
               <div class="snapshot">
                 <div class="metric"><span>candidates</span><b>8</b></div>
                 <div class="metric"><span>selected</span><b>6</b></div>
@@ -474,10 +525,12 @@ veritas promote-regression --index 0</code></pre>
               </div>
             </div>
             <div class="card">
-              <pre><code>.veritas/evolution/go_suite.json
-{
+              <p class="mini-title">Selected candidate</p>
+              <pre><code>{
+  "target_id": "go:score.go:ApplyServiceFeeCents",
   "strategy": "add_assertion",
   "status": "selected",
+  "fitness": { "score_percent": 95 },
   "keep_if": "mutant moves from lived to killed"
 }</code></pre>
             </div>
@@ -486,16 +539,20 @@ veritas promote-regression --index 0</code></pre>
           <div class="scenario">
             <div class="level"><b>5. AI verification loop</b>The agent gets a work queue, not a vague warning.</div>
             <div class="card">
+              <p class="mini-title">Agent prompt becomes concrete</p>
               <pre><code>veritas review-ai
 veritas verify --changed --profile ci
 veritas score</code></pre>
-              <p>The agent reads `.veritas/ai/agent_feedback.md`, promotes selected evolution candidates into tests, reruns Veritas, and keeps only improvements.</p>
+              <p>The agent reads `.veritas/ai/agent_feedback.md` and `.veritas/evolution/go_suite.json`, promotes selected candidates into tests, reruns Veritas, and keeps only improvements.</p>
             </div>
             <div class="card">
+              <p class="mini-title">Snapshot after verification</p>
               <pre><code>Confidence: medium
 Positive: 6 selected evolutionary candidates
 Risk: 2 surviving mutants
-Next: add assertions for top survivors</code></pre>
+Next: add assertions for:
+- ApplyServiceFeeCents fee direction
+- CapDiscountPercent boundary at 100</code></pre>
             </div>
           </div>
         </div>
@@ -505,7 +562,7 @@ Next: add assertions for top survivors</code></pre>
     <section id="testing">
       <div class="wrap">
         <h2>The testing hub for AI development</h2>
-        <p class="subhead">Rust and Go work today. The architecture is language-plugin based, with tree-sitter symbol discovery so more languages can join without changing the core verification model.</p>
+        <p class="subhead">Rust and Go work today. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
         <div class="grid">
           <div class="card"><strong>Mutation testing</strong><br>Domain-aware mutants for auth, money, parsing, serialization, permissions, booleans, comparisons, returns, and error paths.</div>
           <div class="card"><strong>Property testing</strong><br>Generated and discovered properties are scored for assertion strength, determinism, and no-panic coverage.</div>
