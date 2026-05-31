@@ -466,13 +466,19 @@ fn evolve_dry_run_and_apply_rust_candidate() {
         .stdout(predicate::str::contains("Fitness: `95%`"));
 
     let mut apply = veritas();
-    apply
-        .current_dir(fixture.path())
-        .args(["evolve", "--lang", "rust", "--index", "0"]);
+    apply.current_dir(fixture.path()).args([
+        "evolve",
+        "--lang",
+        "rust",
+        "--index",
+        "0",
+        "--evaluate",
+    ]);
     apply
         .assert()
         .success()
         .stdout(predicate::str::contains("Result: `applied`"))
+        .stdout(predicate::str::contains("Evaluation: `Improved`"))
         .stdout(predicate::str::contains("veritas_regression_0"));
 
     assert!(has_file_with_prefix(

@@ -122,6 +122,9 @@ enum Command {
 
         #[arg(long)]
         all_selected: bool,
+
+        #[arg(long)]
+        evaluate: bool,
     },
     AcceptBaseline {
         #[arg(long)]
@@ -373,8 +376,16 @@ fn main() -> Result<()> {
             dry_run,
             index,
             all_selected,
+            evaluate,
         } => {
-            let summary = engine.evolve(&root, lang.as_deref(), dry_run, index, all_selected)?;
+            let summary = engine.evolve(
+                &root,
+                lang.as_deref(),
+                dry_run,
+                index,
+                all_selected,
+                evaluate,
+            )?;
             print_evolve_summary(&summary);
         }
         Command::AcceptBaseline { id, all } => {
@@ -918,6 +929,25 @@ fn print_evolve_summary(summary: &EvolveSummary) {
     println!("- Candidates: `{}`", summary.candidates.len());
     if !summary.written_paths.is_empty() {
         println!("- Written artifacts: `{}`", summary.written_paths.len());
+    }
+    if let Some(evaluation) = &summary.evaluation {
+        println!("- Evaluation: `{:?}`", evaluation.outcome);
+        println!(
+            "- Confidence delta: `{}` -> `{}` (`{:+}`)",
+            evaluation.before_confidence,
+            evaluation.after_confidence,
+            evaluation.delta.confidence_delta
+        );
+        if let Some(score_delta) = evaluation.delta.mutation_score_delta {
+            println!("- Mutation score delta: `{score_delta:+}`");
+        }
+        println!(
+            "- Survivor/findings delta: `{:+}` / `{:+}`",
+            evaluation.delta.surviving_mutants_delta, evaluation.delta.findings_delta
+        );
+        if let Some(error) = &evaluation.error {
+            println!("- Evaluation error: {error}");
+        }
     }
     println!();
 

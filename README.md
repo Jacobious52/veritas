@@ -68,6 +68,7 @@ veritas explain <finding-id>
 veritas promote-repro --dry-run
 veritas evolve --dry-run
 veritas evolve --index 0
+veritas evolve --index 0 --evaluate
 veritas replay-corpus --dry-run
 veritas accept-quality-baseline
 veritas accept-baseline --id <finding-id>
@@ -109,6 +110,7 @@ veritas promote-regression --index 0
 veritas evolve --dry-run
 veritas evolve --index 0
 veritas evolve --all-selected
+veritas evolve --all-selected --evaluate
 veritas accept-baseline --id <finding-id>
 veritas accept-baseline --all
 veritas bench --root examples

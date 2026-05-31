@@ -19,10 +19,11 @@ use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
     CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry,
     EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
-    EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
-    LineRange, MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta,
-    ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
-    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
+    EvolutionOutcome, EvolutionQualityDelta, EvolutionStrategy, EvolutionSuite, Failure,
+    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
+    MutationStatus, ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind,
+    TestRunResult, VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -45,6 +46,8 @@ pub struct EvolveSummary {
     pub suite_path: Utf8PathBuf,
     pub candidates: Vec<EvolveCandidateSummary>,
     pub written_paths: Vec<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<EvolveEvaluationSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +64,17 @@ pub struct EvolveCandidateSummary {
     pub applied: bool,
     pub skipped_reason: Option<String>,
     pub written_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolveEvaluationSummary {
+    pub outcome: EvolutionOutcome,
+    pub delta: EvolutionQualityDelta,
+    pub before_confidence: u8,
+    pub after_confidence: u8,
+    pub report_path: Utf8PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub struct ScanResult {
@@ -330,6 +344,7 @@ impl CoreEngine {
         dry_run: bool,
         index: Option<usize>,
         all_selected: bool,
+        evaluate: bool,
     ) -> Result<EvolveSummary> {
         if index.is_some() && all_selected {
             bail!("--index cannot be combined with --all-selected");
@@ -392,6 +407,11 @@ impl CoreEngine {
         if !dry_run {
             write_artifacts(root, &mut artifacts)?;
         }
+        let evaluation = if evaluate && !dry_run {
+            Some(self.evaluate_evolution(root, &language, report.as_ref(), &summaries))
+        } else {
+            None
+        };
 
         Ok(EvolveSummary {
             dry_run,
@@ -399,7 +419,47 @@ impl CoreEngine {
             suite_path,
             candidates: summaries,
             written_paths,
+            evaluation,
         })
+    }
+
+    fn evaluate_evolution(
+        &self,
+        root: &Path,
+        language: &str,
+        before: Option<&VerificationReport>,
+        candidates: &[EvolveCandidateSummary],
+    ) -> EvolveEvaluationSummary {
+        let Some(before) = before else {
+            return failed_evolution_evaluation("no saved .veritas/report.json was available");
+        };
+        let target_path = candidates
+            .iter()
+            .filter(|candidate| candidate.applied)
+            .find_map(|candidate| {
+                before
+                    .targets
+                    .iter()
+                    .find(|target| target.id == candidate.target_id)
+                    .map(|target| target.path.as_std_path().to_path_buf())
+            });
+        match self.verify(root, language, target_path.as_deref(), vec![]) {
+            Ok(after) => {
+                let _ = self.save_report(root, &after);
+                let before_confidence = confidence_score(before).score;
+                let after_confidence = confidence_score(&after).score;
+                let delta = evolution_quality_delta(before, &after);
+                EvolveEvaluationSummary {
+                    outcome: classify_evolution_outcome(&delta),
+                    delta,
+                    before_confidence,
+                    after_confidence,
+                    report_path: Utf8PathBuf::from(".veritas/report.json"),
+                    error: None,
+                }
+            }
+            Err(error) => failed_evolution_evaluation(error.to_string()),
+        }
     }
 
     fn evolution_candidate_artifacts(
@@ -3965,6 +4025,79 @@ fn quality_delta(
     }
 }
 
+pub fn evolution_quality_delta(
+    before: &VerificationReport,
+    after: &VerificationReport,
+) -> EvolutionQualityDelta {
+    let before_confidence = confidence_score(before).score;
+    let after_confidence = confidence_score(after).score;
+    EvolutionQualityDelta {
+        mutation_score_delta: match (
+            before.quality.mutation.score_percent,
+            after.quality.mutation.score_percent,
+        ) {
+            (Some(before), Some(after)) => Some(i16::from(after) - i16::from(before)),
+            _ => None,
+        },
+        killed_mutants_delta: after.quality.mutation.killed as i64
+            - before.quality.mutation.killed as i64,
+        surviving_mutants_delta: after.quality.mutation.survived as i64
+            - before.quality.mutation.survived as i64,
+        not_covered_mutants_delta: after.quality.mutation.not_covered as i64
+            - before.quality.mutation.not_covered as i64,
+        findings_delta: after.findings.len() as i64 - before.findings.len() as i64,
+        replay_cases_delta: after.quality.replay.cases as i64 - before.quality.replay.cases as i64,
+        corpus_failed_delta: after.quality.regression.corpus_failed as i64
+            - before.quality.regression.corpus_failed as i64,
+        budget_timed_out_delta: after.quality.budget.timed_out_commands as i64
+            - before.quality.budget.timed_out_commands as i64,
+        budget_skipped_delta: after.quality.budget.skipped_commands as i64
+            - before.quality.budget.skipped_commands as i64,
+        confidence_delta: i16::from(after_confidence) - i16::from(before_confidence),
+    }
+}
+
+pub fn classify_evolution_outcome(delta: &EvolutionQualityDelta) -> EvolutionOutcome {
+    let regressed = delta.mutation_score_delta.is_some_and(|score| score < 0)
+        || delta.surviving_mutants_delta > 0
+        || delta.not_covered_mutants_delta > 0
+        || delta.findings_delta > 0
+        || delta.corpus_failed_delta > 0
+        || delta.budget_timed_out_delta > 0
+        || delta.budget_skipped_delta > 0
+        || delta.confidence_delta < 0;
+    if regressed {
+        return EvolutionOutcome::Regressed;
+    }
+
+    let improved = delta.mutation_score_delta.is_some_and(|score| score > 0)
+        || delta.killed_mutants_delta > 0
+        || delta.surviving_mutants_delta < 0
+        || delta.not_covered_mutants_delta < 0
+        || delta.findings_delta < 0
+        || delta.replay_cases_delta > 0
+        || delta.corpus_failed_delta < 0
+        || delta.budget_timed_out_delta < 0
+        || delta.budget_skipped_delta < 0
+        || delta.confidence_delta > 0;
+    if improved {
+        EvolutionOutcome::Improved
+    } else {
+        EvolutionOutcome::Neutral
+    }
+}
+
+fn failed_evolution_evaluation(error: impl Into<String>) -> EvolveEvaluationSummary {
+    EvolveEvaluationSummary {
+        outcome: EvolutionOutcome::FailedToEvaluate,
+        delta: EvolutionQualityDelta::default(),
+        before_confidence: 0,
+        after_confidence: 0,
+        report_path: Utf8PathBuf::from(".veritas/report.json"),
+        error: Some(error.into()),
+    }
+}
+
 fn confidence_next_steps(report: &VerificationReport) -> Vec<String> {
     let mut steps = Vec::new();
     if report.quality.mutation.survived > 0 {
@@ -4113,11 +4246,11 @@ mod tests {
     };
 
     use super::{
-        api_baseline_artifact, assertion_candidate_artifacts, cleanup_generated_artifacts,
-        confidence_score, corpus_entry_artifacts, differential_replay_artifact,
-        evolution_artifacts, evolution_metrics_from_artifacts, filtered_mutation_records,
-        parse_unified_diff, regression_artifacts, run_parallel_jobs, targets_for_changed_files,
-        ChangedFile, TargetKind, VerificationTarget,
+        api_baseline_artifact, assertion_candidate_artifacts, classify_evolution_outcome,
+        cleanup_generated_artifacts, confidence_score, corpus_entry_artifacts,
+        differential_replay_artifact, evolution_artifacts, evolution_metrics_from_artifacts,
+        filtered_mutation_records, parse_unified_diff, regression_artifacts, run_parallel_jobs,
+        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -4211,6 +4344,36 @@ mod tests {
         assert_eq!(metrics.candidates, 2);
         assert_eq!(metrics.mutation_candidates, 1);
         assert_eq!(metrics.property_candidates, 1);
+    }
+
+    #[test]
+    fn classifies_evolution_quality_deltas() {
+        let improved = veritas_plugin_api::EvolutionQualityDelta {
+            mutation_score_delta: Some(8),
+            killed_mutants_delta: 1,
+            confidence_delta: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_evolution_outcome(&improved),
+            veritas_plugin_api::EvolutionOutcome::Improved
+        );
+
+        let neutral = veritas_plugin_api::EvolutionQualityDelta::default();
+        assert_eq!(
+            classify_evolution_outcome(&neutral),
+            veritas_plugin_api::EvolutionOutcome::Neutral
+        );
+
+        let regressed = veritas_plugin_api::EvolutionQualityDelta {
+            findings_delta: 1,
+            confidence_delta: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_evolution_outcome(&regressed),
+            veritas_plugin_api::EvolutionOutcome::Regressed
+        );
     }
 
     fn mutation_record_for_test(id: &str, status: MutationStatus) -> MutationRecord {

@@ -658,3 +658,27 @@ pub struct EvolutionFitness {
     pub confidence_delta: i16,
     pub rationale: String,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionOutcome {
+    Improved,
+    Neutral,
+    Regressed,
+    FailedToEvaluate,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionQualityDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutation_score_delta: Option<i16>,
+    pub killed_mutants_delta: i64,
+    pub surviving_mutants_delta: i64,
+    pub not_covered_mutants_delta: i64,
+    pub findings_delta: i64,
+    pub replay_cases_delta: i64,
+    pub corpus_failed_delta: i64,
+    pub budget_timed_out_delta: i64,
+    pub budget_skipped_delta: i64,
+    pub confidence_delta: i16,
+}
