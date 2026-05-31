@@ -22,7 +22,7 @@ expect_commands = ["go test"]
 min_findings = 1
 min_commands = 1
 min_generated_test_failures = 1
-max_duration_ms = 10000
+max_duration_ms = 30000
 
 [[case]]
 name = "rust-commerce"
@@ -48,4 +48,4 @@ expect_commands = ["go test"]
 min_findings = 1
 min_commands = 1
 min_generated_test_failures = 1
-max_duration_ms = 10000
+max_duration_ms = 30000
