@@ -52,7 +52,8 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 8. For each finding, run `veritas explain <finding-id>`.
 9. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
 10. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
-11. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
+11. Inspect evolutionary candidates with `veritas evolve --dry-run`, then apply one selected candidate with `veritas evolve --index <n>` or all safe selected candidates with `veritas evolve --all-selected`.
+12. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## AI-Facing Artifacts
 
@@ -86,6 +87,6 @@ Generated tests are reviewable artifacts, not automatically trusted source.
 - Treat warning-level surviving mutants as evidence of missing assertions, not as proof of production defects.
 - Prefer a small regression test before editing production code when a generated or fuzz repro exposes behavior.
 - Turn `.veritas/assertions/*.json`, `.veritas/regressions/*.md`, and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
-- Treat `.veritas/evolution/*_suite.json` as the next-generation work queue. Apply selected candidates one at a time, rerun `veritas verify`, and keep only candidates that improve mutation, replay, finding, or confidence metrics.
+- Treat `.veritas/evolution/*_suite.json` as the next-generation work queue. Use `veritas evolve --dry-run` first, apply selected candidates one at a time, rerun `veritas verify`, and keep only candidates that improve mutation, replay, finding, or confidence metrics.
 - Do not widen fuzz time, reverse dependency depth, package caps, or coverage scope without explaining the runtime tradeoff.
 - On shared hosts, keep Rust coverage disabled and use systemd scope limits when running broad Rust verification.

@@ -192,6 +192,7 @@ veritas cleanup
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
 - Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
 - `veritas promote-regression` turns selected findings into ignored/skipped package-owned test scaffolds for Rust and Go; review and replace the placeholder before relying on them.
+- `veritas evolve --dry-run` reads `.veritas/evolution/*_suite.json` and lists ranked candidates. `veritas evolve --index <n>` or `--all-selected` applies safe candidates as reviewable guidance or language-owned regression scaffolds.
 - Differential checks persist API signatures, replay-case manifests, and replay result summaries. Treat them as the handoff point for comparing old/new behavior and promoting changed observations into assertions.
 - `veritas replay-corpus` replays executable persisted corpus commands and skips guidance-only mutation entries until they are promoted into owned tests.
 - `veritas score` summarizes mutation score, findings, assertion candidates, corpus entries/replay, replay cases, property strength, and budget health into one AI-change confidence view.

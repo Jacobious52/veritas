@@ -66,6 +66,8 @@ Explain and promote findings:
 ```bash
 veritas explain <finding-id>
 veritas promote-repro --dry-run
+veritas evolve --dry-run
+veritas evolve --index 0
 veritas replay-corpus --dry-run
 veritas accept-quality-baseline
 veritas accept-baseline --id <finding-id>
@@ -104,6 +106,9 @@ veritas promote-repro
 veritas promote-repro --index 0
 veritas promote-regression
 veritas promote-regression --index 0
+veritas evolve --dry-run
+veritas evolve --index 0
+veritas evolve --all-selected
 veritas accept-baseline --id <finding-id>
 veritas accept-baseline --all
 veritas bench --root examples

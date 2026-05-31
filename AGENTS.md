@@ -111,7 +111,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 
 - `verify --changed` parses git diff hunks, staged changes, and untracked files, then maps changed lines to discovered target line ranges when possible.
 - `review-ai` writes AI digest and feedback artifacts under `.veritas/ai/`.
-- `explain`, `promote-repro`, `promote-regression`, `accept-baseline`, and `cleanup` are implemented CLI commands.
+- `explain`, `promote-repro`, `promote-regression`, `evolve`, `accept-baseline`, and `cleanup` are implemented CLI commands.
 - Findings carry stable IDs and severity. Policy can filter by severity, language, artifact kind, and target risk.
 - Accepted finding baselines are stored under `.veritas/baselines/findings.json`.
 - Rust workspace roots are supported. Rust scans package `src/` directories inside virtual workspaces.
@@ -124,7 +124,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `veritas score` reads `.veritas/report.json` and summarizes confidence from mutation score, findings, assertion candidates, corpus entries/replay, replay cases, baseline deltas, and budget health.
 - `veritas accept-quality-baseline` stores `.veritas/baselines/quality.json` after a reviewed good state.
 - Observation artifacts now include structured `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
-- Evolution suites are plugin-neutral ranked queues. They combine assertion candidates, surviving/not-covered/timed-out mutants, corpus/replay opportunities, generated harness failures, and budget risks with fitness signals so agents can apply the highest-value next test first and keep only candidates that improve the next verification run.
+- Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n>` and `--all-selected` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds. Keep candidates only when the next verification run improves.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Rust and Go mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Shared mutation config supports operator allow/deny lists, path exclusions, dry-run discovery, timeout coefficients, and campaign status filtering. `workers` is modeled for plugins that can isolate mutants safely; current source-rewrite executors remain conservative.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.

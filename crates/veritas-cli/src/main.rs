@@ -13,7 +13,7 @@ use veritas_core::{
     accept_findings, accept_quality_baseline, accepted_finding_ids, cleanup_generated_artifacts,
     confidence_score_for_root, config::VeritasConfig, promote_repros, read_saved_report,
     replay_corpus, strategy_from_kind, BaselineSummary, CleanupSummary, CoreEngine,
-    CorpusReplaySummary, PluginRegistry, PromotionSummary, QualityBaselineSummary,
+    CorpusReplaySummary, EvolveSummary, PluginRegistry, PromotionSummary, QualityBaselineSummary,
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
@@ -109,6 +109,19 @@ enum Command {
 
         #[arg(long)]
         index: Option<usize>,
+    },
+    Evolve {
+        #[arg(long)]
+        lang: Option<String>,
+
+        #[arg(long)]
+        dry_run: bool,
+
+        #[arg(long)]
+        index: Option<usize>,
+
+        #[arg(long)]
+        all_selected: bool,
     },
     AcceptBaseline {
         #[arg(long)]
@@ -354,6 +367,15 @@ fn main() -> Result<()> {
         Command::PromoteRegression { dry_run, index } => {
             let summary = engine.promote_regressions(&root, dry_run, index)?;
             print_named_promotion_summary("promote-regression", &summary);
+        }
+        Command::Evolve {
+            lang,
+            dry_run,
+            index,
+            all_selected,
+        } => {
+            let summary = engine.evolve(&root, lang.as_deref(), dry_run, index, all_selected)?;
+            print_evolve_summary(&summary);
         }
         Command::AcceptBaseline { id, all } => {
             if id.is_empty() && !all {
@@ -882,6 +904,46 @@ fn print_named_promotion_summary(command: &str, summary: &PromotionSummary) {
     }
     for path in &summary.paths {
         println!("- `{path}`");
+    }
+}
+
+fn print_evolve_summary(summary: &EvolveSummary) {
+    if summary.dry_run {
+        println!("# veritas evolve (dry run)\n");
+    } else {
+        println!("# veritas evolve\n");
+    }
+    println!("- Language: `{}`", summary.language);
+    println!("- Suite: `{}`", summary.suite_path);
+    println!("- Candidates: `{}`", summary.candidates.len());
+    if !summary.written_paths.is_empty() {
+        println!("- Written artifacts: `{}`", summary.written_paths.len());
+    }
+    println!();
+
+    for candidate in &summary.candidates {
+        println!(
+            "## [{}] {} ({:?}, {:?})",
+            candidate.index, candidate.id, candidate.kind, candidate.status
+        );
+        println!("- Target: `{}`", candidate.target_id);
+        println!("- Fitness: `{}%`", candidate.fitness_percent);
+        println!("- Action: {}", candidate.proposed_action);
+        println!("- Keep if: {}", candidate.keep_if);
+        if candidate.applied {
+            println!("- Result: `applied`");
+        } else if let Some(reason) = &candidate.skipped_reason {
+            println!("- Result: `skipped` - {reason}");
+        } else if summary.dry_run {
+            println!("- Result: `would apply or inspect`");
+        }
+        if !candidate.written_paths.is_empty() {
+            println!("- Wrote:");
+            for path in &candidate.written_paths {
+                println!("  - `{path}`");
+            }
+        }
+        println!();
     }
 }
 

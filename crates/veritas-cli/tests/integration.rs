@@ -443,6 +443,84 @@ fn cleanup_removes_generated_artifacts() {
         .exists());
 }
 
+#[test]
+fn evolve_dry_run_and_apply_rust_candidate() {
+    let fixture = copy_fixture("sample-rust");
+    write_evolution_state(
+        fixture.path(),
+        "rust",
+        "rust:src/lib.rs:parse_invoice_total",
+        "src/lib.rs",
+        "parse_invoice_total",
+    );
+
+    let mut dry_run = veritas();
+    dry_run
+        .current_dir(fixture.path())
+        .args(["evolve", "--lang", "rust", "--dry-run"]);
+    dry_run
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas evolve (dry run)"))
+        .stdout(predicate::str::contains("evolve-mutant-rust"))
+        .stdout(predicate::str::contains("Fitness: `95%`"));
+
+    let mut apply = veritas();
+    apply
+        .current_dir(fixture.path())
+        .args(["evolve", "--lang", "rust", "--index", "0"]);
+    apply
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result: `applied`"))
+        .stdout(predicate::str::contains("veritas_regression_0"));
+
+    assert!(has_file_with_prefix(
+        &fixture.path().join("tests"),
+        "veritas_regression_0"
+    ));
+}
+
+#[test]
+fn evolve_dry_run_and_apply_go_candidate() {
+    if !go_available() {
+        return;
+    }
+    let fixture = copy_fixture("sample-go");
+    write_evolution_state(
+        fixture.path(),
+        "go",
+        "go:invoice.go:ParseInvoiceTotal",
+        "invoice.go",
+        "ParseInvoiceTotal",
+    );
+
+    let mut dry_run = veritas();
+    dry_run
+        .current_dir(fixture.path())
+        .args(["evolve", "--lang", "go", "--dry-run"]);
+    dry_run
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas evolve (dry run)"))
+        .stdout(predicate::str::contains("evolve-mutant-go"))
+        .stdout(predicate::str::contains(
+            "mutant moves from lived to killed",
+        ));
+
+    let mut apply = veritas();
+    apply
+        .current_dir(fixture.path())
+        .args(["evolve", "--lang", "go", "--index", "0"]);
+    apply
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result: `applied`"))
+        .stdout(predicate::str::contains("veritas_regression_0_test.go"));
+
+    assert!(fixture.path().join("veritas_regression_0_test.go").exists());
+}
+
 fn veritas() -> Command {
     Command::cargo_bin("veritas").expect("veritas binary should build")
 }
@@ -522,6 +600,82 @@ fn write_fixture_file(root: &Path, relative: &str) {
     fs::create_dir_all(path.parent().expect("fixture file should have a parent"))
         .expect("create fixture parent");
     fs::write(path, "generated").expect("write fixture file");
+}
+
+fn write_evolution_state(root: &Path, language: &str, target_id: &str, path: &str, symbol: &str) {
+    let veritas = root.join(".veritas");
+    fs::create_dir_all(veritas.join("evolution")).expect("create evolution dir");
+    let report = serde_json::json!({
+        "project": null,
+        "targets": [{
+            "id": target_id,
+            "language": language,
+            "kind": "function",
+            "path": path,
+            "symbol": symbol,
+            "signature": null,
+            "line_range": {"start": 1, "end": 12},
+            "description": "test target",
+            "risk": "medium"
+        }],
+        "plan": null,
+        "artifacts": [],
+        "runs": [],
+        "coverage": [],
+        "findings": [{
+            "id": "vts-test-finding",
+            "message": format!("mutation survived in {language} function `{symbol}`: comparison boundary mutation"),
+            "severity": "warning",
+            "target_id": target_id,
+            "artifact_id": null,
+            "command": "test command",
+            "stdout_excerpt": "",
+            "stderr_excerpt": "",
+            "repro": {
+                "command": "replace boundary and run tests",
+                "input": null,
+                "path": path
+            }
+        }],
+        "suggested_next_steps": []
+    });
+    fs::write(
+        veritas.join("report.json"),
+        serde_json::to_string_pretty(&report).expect("report json"),
+    )
+    .expect("write report");
+    let suite = serde_json::json!({
+        "version": 1,
+        "language": language,
+        "generation": 1,
+        "selection_budget": 1,
+        "fitness_signals": ["mutation_score_delta", "confidence_score_delta"],
+        "candidates": [{
+            "id": format!("evolve-mutant-{language}"),
+            "language": language,
+            "target_id": target_id,
+            "kind": "mutation",
+            "strategy": "add_assertion",
+            "status": "selected",
+            "source_finding_id": "vts-test-finding",
+            "domain": "boundary",
+            "fitness": {
+                "score_percent": 95,
+                "mutation_delta": 1,
+                "finding_delta": 0,
+                "replay_delta": 0,
+                "confidence_delta": 20,
+                "rationale": "surviving mutant should become an assertion"
+            },
+            "proposed_action": "Add the smallest assertion that fails under this surviving mutant.",
+            "keep_if": "mutant moves from lived to killed"
+        }]
+    });
+    fs::write(
+        veritas.join(format!("evolution/{language}_suite.json")),
+        serde_json::to_string_pretty(&suite).expect("suite json"),
+    )
+    .expect("write suite");
 }
 
 fn fixture_root() -> PathBuf {

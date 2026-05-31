@@ -38,6 +38,31 @@ pub struct CoreEngine {
     config: VeritasConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolveSummary {
+    pub dry_run: bool,
+    pub language: String,
+    pub suite_path: Utf8PathBuf,
+    pub candidates: Vec<EvolveCandidateSummary>,
+    pub written_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolveCandidateSummary {
+    pub index: usize,
+    pub id: String,
+    pub target_id: String,
+    pub kind: EvolutionCandidateKind,
+    pub strategy: EvolutionStrategy,
+    pub status: EvolutionCandidateStatus,
+    pub fitness_percent: u8,
+    pub proposed_action: String,
+    pub keep_if: String,
+    pub applied: bool,
+    pub skipped_reason: Option<String>,
+    pub written_paths: Vec<Utf8PathBuf>,
+}
+
 pub struct ScanResult {
     pub projects: Vec<ProjectInfo>,
     pub targets: Vec<VerificationTarget>,
@@ -296,6 +321,134 @@ impl CoreEngine {
             write_artifacts(root, &mut artifacts)?;
         }
         Ok(PromotionSummary { dry_run, paths })
+    }
+
+    pub fn evolve(
+        &self,
+        root: &Path,
+        language: Option<&str>,
+        dry_run: bool,
+        index: Option<usize>,
+        all_selected: bool,
+    ) -> Result<EvolveSummary> {
+        if index.is_some() && all_selected {
+            bail!("--index cannot be combined with --all-selected");
+        }
+        if !dry_run && index.is_none() && !all_selected {
+            bail!("pass --index <n>, --all-selected, or --dry-run");
+        }
+        let (language, suite_path, suite) = load_evolution_suite(root, language)?;
+        let report = read_saved_report(root).ok();
+        let mut summaries = Vec::new();
+        let mut artifacts = Vec::new();
+
+        for (candidate_index, candidate) in suite.candidates.iter().enumerate() {
+            let selected_by_cli = index.is_some_and(|selected| selected == candidate_index)
+                || (all_selected && candidate.status == EvolutionCandidateStatus::Selected)
+                || (dry_run && index.is_none() && !all_selected);
+            if !selected_by_cli {
+                continue;
+            }
+
+            let mut summary = evolve_candidate_summary(candidate_index, candidate);
+            if dry_run {
+                summaries.push(summary);
+                continue;
+            }
+
+            match self.evolution_candidate_artifacts(
+                root,
+                report.as_ref(),
+                candidate_index,
+                candidate,
+            ) {
+                Ok(candidate_artifacts) if candidate_artifacts.is_empty() => {
+                    summary.skipped_reason =
+                        Some("candidate kind is not safely applyable yet".to_string());
+                }
+                Ok(candidate_artifacts) => {
+                    summary.applied = true;
+                    summary.written_paths = candidate_artifacts
+                        .iter()
+                        .map(|artifact| artifact.path.clone())
+                        .collect();
+                    artifacts.extend(candidate_artifacts);
+                }
+                Err(error) => {
+                    summary.skipped_reason = Some(error.to_string());
+                }
+            }
+            summaries.push(summary);
+        }
+
+        if summaries.is_empty() {
+            bail!("no evolution candidates matched the requested selection");
+        }
+
+        let written_paths = artifacts
+            .iter()
+            .map(|artifact| artifact.path.clone())
+            .collect::<Vec<_>>();
+        if !dry_run {
+            write_artifacts(root, &mut artifacts)?;
+        }
+
+        Ok(EvolveSummary {
+            dry_run,
+            language,
+            suite_path,
+            candidates: summaries,
+            written_paths,
+        })
+    }
+
+    fn evolution_candidate_artifacts(
+        &self,
+        root: &Path,
+        report: Option<&VerificationReport>,
+        candidate_index: usize,
+        candidate: &EvolutionCandidateRecord,
+    ) -> Result<Vec<GeneratedArtifact>> {
+        if let Some(report) = report {
+            if matches!(
+                candidate.kind,
+                EvolutionCandidateKind::Mutation | EvolutionCandidateKind::Regression
+            ) {
+                if let Some((finding_index, finding)) =
+                    matching_evolution_finding(report, candidate)
+                {
+                    let language = finding_language(finding).unwrap_or(candidate.language.as_str());
+                    return self
+                        .registry
+                        .get(language)
+                        .and_then(|plugin| {
+                            plugin.promote_regression(root, report, finding, finding_index)
+                        })
+                        .or_else(|_| {
+                            Ok(generic_regression_promotion_artifact(
+                                language,
+                                finding,
+                                finding_index,
+                            ))
+                        });
+                }
+            }
+        }
+
+        if matches!(
+            candidate.kind,
+            EvolutionCandidateKind::Property
+                | EvolutionCandidateKind::Fuzz
+                | EvolutionCandidateKind::Replay
+                | EvolutionCandidateKind::Regression
+        ) {
+            return Ok(vec![applied_evolution_candidate_artifact(
+                candidate_index,
+                candidate,
+            )]);
+        }
+
+        Ok(Vec::new())
     }
 
     pub fn scan(&self, root: &Path) -> Result<ScanResult> {
@@ -1005,6 +1158,132 @@ fn finding_language(finding: &Failure) -> Option<&str> {
         .target_id
         .as_deref()
         .and_then(|target_id| target_id.split_once(':').map(|(language, _)| language))
+}
+
+fn load_evolution_suite(
+    root: &Path,
+    language: Option<&str>,
+) -> Result<(String, Utf8PathBuf, EvolutionSuite)> {
+    let suite_path = if let Some(language) = language {
+        Utf8PathBuf::from(format!(".veritas/evolution/{language}_suite.json"))
+    } else {
+        discover_single_evolution_suite(root)?
+    };
+    let full_path = root.join(&suite_path);
+    let contents = fs::read_to_string(&full_path)
+        .with_context(|| format!("failed to read {}", full_path.display()))?;
+    let suite = parse_evolution_suite(&contents)
+        .with_context(|| format!("failed to parse {}", full_path.display()))?;
+    Ok((suite.language.clone(), suite_path, suite))
+}
+
+fn discover_single_evolution_suite(root: &Path) -> Result<Utf8PathBuf> {
+    let evolution_dir = root.join(".veritas/evolution");
+    let mut suites = Vec::new();
+    if evolution_dir.exists() {
+        for entry in fs::read_dir(&evolution_dir)
+            .with_context(|| format!("failed to read {}", evolution_dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in {}", evolution_dir.display()))?;
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_suite.json"))
+            {
+                suites.push(relative_utf8(root, &path)?);
+            }
+        }
+    }
+    suites.sort();
+    match suites.len() {
+        0 => bail!("no evolution suite found under .veritas/evolution; run veritas verify first"),
+        1 => Ok(suites.remove(0)),
+        _ => bail!("multiple evolution suites found; pass --lang <language>"),
+    }
+}
+
+fn parse_evolution_suite(contents: &str) -> Result<EvolutionSuite> {
+    if let Ok(suite) = serde_json::from_str::<EvolutionSuite>(contents) {
+        return Ok(suite);
+    }
+    let value = serde_json::from_str::<serde_json::Value>(contents)?;
+    serde_json::from_value(value["suite"].clone()).with_context(|| "missing `suite` object")
+}
+
+fn evolve_candidate_summary(
+    index: usize,
+    candidate: &EvolutionCandidateRecord,
+) -> EvolveCandidateSummary {
+    EvolveCandidateSummary {
+        index,
+        id: candidate.id.clone(),
+        target_id: candidate.target_id.clone(),
+        kind: candidate.kind,
+        strategy: candidate.strategy,
+        status: candidate.status,
+        fitness_percent: candidate.fitness.score_percent,
+        proposed_action: candidate.proposed_action.clone(),
+        keep_if: candidate.keep_if.clone(),
+        applied: false,
+        skipped_reason: None,
+        written_paths: Vec::new(),
+    }
+}
+
+fn matching_evolution_finding<'a>(
+    report: &'a VerificationReport,
+    candidate: &EvolutionCandidateRecord,
+) -> Option<(usize, &'a Failure)> {
+    report.findings.iter().enumerate().find(|(_, finding)| {
+        finding
+            .target_id
+            .as_ref()
+            .is_some_and(|target_id| target_id == &candidate.target_id)
+            || candidate
+                .source_finding_id
+                .as_ref()
+                .is_some_and(|id| finding.id.as_ref() == Some(id))
+    })
+}
+
+fn applied_evolution_candidate_artifact(
+    index: usize,
+    candidate: &EvolutionCandidateRecord,
+) -> GeneratedArtifact {
+    let mut contents = String::from("# Applied Evolution Candidate\n\n");
+    contents.push_str("Generated by veritas. Review before committing.\n\n");
+    contents.push_str(&format!("- Candidate: `{}`\n", candidate.id));
+    contents.push_str(&format!("- Target: `{}`\n", candidate.target_id));
+    contents.push_str(&format!("- Kind: `{:?}`\n", candidate.kind));
+    contents.push_str(&format!("- Strategy: `{:?}`\n", candidate.strategy));
+    contents.push_str(&format!(
+        "- Fitness: `{}%`\n",
+        candidate.fitness.score_percent
+    ));
+    if let Some(source_artifact) = &candidate.source_artifact {
+        contents.push_str(&format!("- Source artifact: `{source_artifact}`\n"));
+    }
+    contents.push_str("\n## Proposed Action\n\n");
+    contents.push_str(&candidate.proposed_action);
+    contents.push_str("\n\n## Keep If\n\n");
+    contents.push_str(&candidate.keep_if);
+    contents.push('\n');
+
+    GeneratedArtifact {
+        id: format!("{}-evolution-applied-{index}", candidate.language),
+        language: candidate.language.clone(),
+        kind: ArtifactKind::EvolutionCandidate,
+        target_id: candidate.target_id.clone(),
+        path: Utf8PathBuf::from(format!(
+            ".veritas/evolution/applied/{}_{}.md",
+            candidate.language, index
+        )),
+        contents,
+        description: "Reviewable applied evolution candidate guidance".to_string(),
+        status: ArtifactStatus::Planned,
+    }
 }
 
 fn generic_regression_promotion_artifact(
