@@ -10,9 +10,10 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use veritas_core::{
-    accept_findings, accepted_finding_ids, cleanup_generated_artifacts, confidence_score,
-    config::VeritasConfig, promote_repros, read_saved_report, strategy_from_kind, BaselineSummary,
-    CleanupSummary, CoreEngine, PluginRegistry, PromotionSummary,
+    accept_findings, accept_quality_baseline, accepted_finding_ids, cleanup_generated_artifacts,
+    confidence_score_for_root, config::VeritasConfig, promote_repros, read_saved_report,
+    replay_corpus, strategy_from_kind, BaselineSummary, CleanupSummary, CoreEngine,
+    CorpusReplaySummary, PluginRegistry, PromotionSummary, QualityBaselineSummary,
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
@@ -77,6 +78,17 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
     },
+    ReplayCorpus {
+        #[arg(long)]
+        dry_run: bool,
+
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
+    AcceptQualityBaseline,
     Explain {
         id: String,
     },
@@ -199,8 +211,13 @@ struct BenchMetrics {
     fuzz_targets_executed: usize,
     fuzz_failures: usize,
     persisted_repros: usize,
+    property_no_panic: usize,
+    property_deterministic: usize,
+    property_strength_score_percent: Option<u8>,
     assertion_candidates: usize,
     corpus_entries: usize,
+    corpus_replayed: usize,
+    corpus_failed: usize,
     replay_cases: usize,
     budget_skipped_commands: usize,
     budget_timed_out_commands: usize,
@@ -304,7 +321,19 @@ fn main() -> Result<()> {
         }
         Command::Score { format } => {
             let report = read_saved_report(&root)?;
-            print_score(&report, format)?;
+            print_score(&root, &report, format)?;
+        }
+        Command::ReplayCorpus {
+            dry_run,
+            timeout_seconds,
+            format,
+        } => {
+            let summary = replay_corpus(&root, dry_run, timeout_seconds)?;
+            print_corpus_replay_summary(&summary, format)?;
+        }
+        Command::AcceptQualityBaseline => {
+            let summary = accept_quality_baseline(&root)?;
+            print_quality_baseline_summary(&summary);
         }
         Command::Explain { id } => {
             let report = read_saved_report(&root)?;
@@ -559,8 +588,13 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         fuzz_targets_executed: report.quality.fuzz.targets_executed,
         fuzz_failures: report.quality.fuzz.failures,
         persisted_repros: report.quality.fuzz.persisted_repros,
+        property_no_panic: report.quality.property.no_panic_properties,
+        property_deterministic: report.quality.property.deterministic_properties,
+        property_strength_score_percent: report.quality.property.strength_score_percent,
         assertion_candidates: report.quality.regression.assertion_candidates,
         corpus_entries: report.quality.regression.corpus_entries,
+        corpus_replayed: report.quality.regression.corpus_replayed,
+        corpus_failed: report.quality.regression.corpus_failed,
         replay_cases: report.quality.replay.cases,
         budget_skipped_commands: report.quality.budget.skipped_commands,
         budget_timed_out_commands: report.quality.budget.timed_out_commands,
@@ -707,6 +741,15 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                     case.metrics.property_artifacts
                 );
                 println!(
+                    "- Property strength: `{}` (no-panic `{}`, deterministic `{}`)",
+                    case.metrics
+                        .property_strength_score_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    case.metrics.property_no_panic,
+                    case.metrics.property_deterministic
+                );
+                println!(
                     "- Generated test failures: `{}`",
                     case.metrics.generated_test_failures
                 );
@@ -722,6 +765,10 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                     case.metrics.assertion_candidates
                 );
                 println!("- Corpus entries: `{}`", case.metrics.corpus_entries);
+                println!(
+                    "- Corpus replayed/failed: `{}/{}`",
+                    case.metrics.corpus_replayed, case.metrics.corpus_failed
+                );
                 println!("- Replay cases: `{}`", case.metrics.replay_cases);
                 println!(
                     "- Budget skips/timeouts: `{}/{}`",
@@ -826,6 +873,19 @@ fn print_baseline_summary(summary: &BaselineSummary) {
     println!("- Accepted findings: `{}`", summary.accepted_ids.len());
 }
 
+fn print_quality_baseline_summary(summary: &QualityBaselineSummary) {
+    println!("# veritas accept-quality-baseline\n");
+    println!("- Baseline: `{}`", summary.path);
+    println!("- Confidence: `{}`", summary.confidence);
+    println!(
+        "- Mutation score: `{}`",
+        summary
+            .mutation_score
+            .map(|score| format!("{score}%"))
+            .unwrap_or_else(|| "n/a".to_string())
+    );
+}
+
 fn print_explanation(report: &VerificationReport, id: &str) -> Result<()> {
     let Some(finding) = report
         .findings
@@ -919,8 +979,8 @@ fn print_report(report: &VerificationReport, format: OutputFormat) -> Result<()>
     Ok(())
 }
 
-fn print_score(report: &VerificationReport, format: OutputFormat) -> Result<()> {
-    let score = confidence_score(report);
+fn print_score(root: &Path, report: &VerificationReport, format: OutputFormat) -> Result<()> {
+    let score = confidence_score_for_root(root, report);
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&score)?),
         OutputFormat::Markdown => {
@@ -928,6 +988,22 @@ fn print_score(report: &VerificationReport, format: OutputFormat) -> Result<()> 
             println!("- Score: `{}`", score.score);
             println!("- Grade: `{:?}`", score.grade);
             println!("- Summary: {}", score.summary);
+            if let Some(delta) = &score.baseline_delta {
+                println!("\n## Baseline Delta\n");
+                println!(
+                    "- Mutation score delta: `{}`",
+                    delta
+                        .mutation_score_delta
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "n/a".to_string())
+                );
+                println!("- Confidence delta: `{}`", delta.confidence_delta);
+                println!(
+                    "- Surviving mutants delta: `{}`",
+                    delta.surviving_mutants_delta
+                );
+                println!("- Corpus entries delta: `{}`", delta.corpus_entries_delta);
+            }
             if !score.positive_signals.is_empty() {
                 println!("\n## Positive Signals\n");
                 for signal in &score.positive_signals {
@@ -947,6 +1023,48 @@ fn print_score(report: &VerificationReport, format: OutputFormat) -> Result<()> 
         }
         OutputFormat::Sarif | OutputFormat::Junit => {
             bail!("score supports --format markdown or --format json")
+        }
+    }
+    Ok(())
+}
+
+fn print_corpus_replay_summary(summary: &CorpusReplaySummary, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&summary.report)?),
+        OutputFormat::Markdown => {
+            println!(
+                "# veritas replay-corpus{}\n",
+                if summary.dry_run { " (dry run)" } else { "" }
+            );
+            println!(
+                "- Replayed: `{}`",
+                summary.report.quality.regression.corpus_replayed
+            );
+            println!(
+                "- Passed: `{}`",
+                summary.report.quality.regression.corpus_passed
+            );
+            println!(
+                "- Failed: `{}`",
+                summary.report.quality.regression.corpus_failed
+            );
+            println!(
+                "- Skipped: `{}`",
+                summary.report.quality.regression.corpus_skipped
+            );
+            for run in &summary.report.runs {
+                for command in &run.commands {
+                    println!(
+                        "- `{} {}` -> {:?}",
+                        command.program,
+                        command.args.join(" "),
+                        command.status
+                    );
+                }
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("replay-corpus supports --format markdown or --format json")
         }
     }
     Ok(())

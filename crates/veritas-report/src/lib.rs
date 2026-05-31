@@ -116,13 +116,33 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                 report.quality.mutation.survived,
                 report.quality.mutation.skipped,
             ));
+            if !report.quality.mutation.by_domain.is_empty() {
+                out.push_str(&format!(
+                    "  - Domains: `{}`\n",
+                    attribution_counts(&report.quality.mutation.by_domain)
+                ));
+            }
+            if !report.quality.mutation.by_operator.is_empty() {
+                out.push_str(&format!(
+                    "  - Operators: `{}`\n",
+                    attribution_counts(&report.quality.mutation.by_operator)
+                ));
+            }
         }
         if report.quality.property.generated_artifacts > 0
             || report.quality.property.failed_generated_tests > 0
         {
             out.push_str(&format!(
-                "- Property tests: generated artifacts `{}`, generated-test failures `{}`\n",
+                "- Property tests: generated artifacts `{}`, no-panic `{}`, deterministic `{}`, strength `{}`, generated-test failures `{}`\n",
                 report.quality.property.generated_artifacts,
+                report.quality.property.no_panic_properties,
+                report.quality.property.deterministic_properties,
+                report
+                    .quality
+                    .property
+                    .strength_score_percent
+                    .map(|score| format!("{score}%"))
+                    .unwrap_or_else(|| "n/a".to_string()),
                 report.quality.property.failed_generated_tests
             ));
         }
@@ -139,10 +159,12 @@ pub fn render_markdown(report: &VerificationReport) -> String {
             || report.quality.regression.corpus_entries > 0
         {
             out.push_str(&format!(
-                "- Regression loop: assertion candidates `{}`, promoted scaffolds `{}`, corpus entries `{}`\n",
+                "- Regression loop: assertion candidates `{}`, promoted scaffolds `{}`, corpus entries `{}`, corpus replayed `{}`, corpus failed `{}`\n",
                 report.quality.regression.assertion_candidates,
                 report.quality.regression.promoted_scaffolds,
-                report.quality.regression.corpus_entries
+                report.quality.regression.corpus_entries,
+                report.quality.regression.corpus_replayed,
+                report.quality.regression.corpus_failed
             ));
         }
         if report.quality.replay.cases > 0 {
@@ -329,7 +351,26 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::ReplayResult => "[replay-result]",
         ArtifactKind::BudgetPlan => "[budget]",
         ArtifactKind::ConfidenceScore => "[score]",
+        ArtifactKind::MutationTrend => "[trend]",
+        ArtifactKind::EvolutionCandidate => "[candidate]",
+        ArtifactKind::CorpusReplay => "[corpus-replay]",
+        ArtifactKind::SiteAsset => "[site]",
     }
+}
+
+fn attribution_counts(
+    counts: &std::collections::BTreeMap<String, veritas_plugin_api::MutationAttribution>,
+) -> String {
+    counts
+        .iter()
+        .map(|(label, value)| {
+            format!(
+                "{label}=generated:{}, killed:{}, survived:{}",
+                value.generated, value.killed, value.survived
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn risk_label(risk: &RiskLevel) -> &'static str {

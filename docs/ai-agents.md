@@ -24,13 +24,17 @@ After making code or test changes:
 If veritas reports findings:
   1. Use veritas explain <finding-id>.
   2. Inspect .veritas/assertions/ and .veritas/corpus/ for structured assertion and replay seeds.
-  3. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
-  4. Run veritas promote-regression --index <finding-index> when a finding should become an owned test scaffold.
-  5. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/budgets/, .veritas/promotions/, and .veritas/symbol_graph/.
-  6. Rerun veritas verify --changed --profile ci.
+  3. Run veritas replay-corpus --dry-run to see which persisted seeds are executable.
+  4. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
+  5. Run veritas promote-regression --index <finding-index> when a finding should become an owned test scaffold.
+  6. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/budgets/, .veritas/promotions/, and .veritas/symbol_graph/.
+  7. Rerun veritas verify --changed --profile ci.
 
 Do not ignore warning/error findings without explaining why. Only accept a finding baseline with:
   veritas accept-baseline --id <finding-id>
+
+Refresh the quality baseline only after a reviewed good state:
+  veritas accept-quality-baseline
 
 Clean generated artifacts before finalizing unless intentionally committing reviewed artifacts:
   veritas cleanup
@@ -44,10 +48,11 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 4. Edit code or tests.
 5. Run `veritas verify --changed --profile ci`.
 6. Run `veritas score` to summarize confidence, remaining risks, and next steps.
-7. For each finding, run `veritas explain <finding-id>`.
-8. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
-9. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
-10. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
+7. Run `veritas replay-corpus --dry-run` to separate executable corpus seeds from guidance-only mutation repros.
+8. For each finding, run `veritas explain <finding-id>`.
+9. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
+10. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
+11. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## AI-Facing Artifacts
 
@@ -60,8 +65,11 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/feedback/*.md`: coverage and mutation feedback
 - `.veritas/assertions/*.json`: structured assertion candidates with source finding, domain, seed inputs, expected behavior, and replay command
 - `.veritas/corpus/*.json`: persistent repro seed metadata for later replay
+- `.veritas/corpus/replay_result.json`: corpus replay summary from `veritas replay-corpus`
 - `.veritas/differential/*.json`: behavior replay manifests and result summaries for selected public APIs
 - `.veritas/budgets/*.json`: command budget and resource-limit metadata
+- `.veritas/trends/*.json`: mutation score attribution and quality baseline deltas
+- `.veritas/evolution/*_candidates.json`: candidate queue with fitness signals for the next generation loop
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance
 - `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs

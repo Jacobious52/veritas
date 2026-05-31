@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -15,9 +15,9 @@ use tree_sitter::{Node, Parser};
 use veritas_core::config::RustPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, PluginCapability, ProjectInfo, ReproCase,
-    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
-    VerificationReport, VerificationStrategy, VerificationTarget,
+    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, PluginCapability,
+    ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan,
+    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -1093,6 +1093,10 @@ fn run_mutation_checks(
     quality.mutation.generated = generated;
 
     for candidate in candidates.into_iter().take(8) {
+        let domain = mutation_domain_from_label(&candidate.label);
+        let operator = mutation_operator_from_label(&candidate.label);
+        record_mutation_generated(&mut quality.mutation.by_domain, &domain);
+        record_mutation_generated(&mut quality.mutation.by_operator, &operator);
         if budget_nearly_spent(run_start, plan.budget_seconds) {
             commands.push(skipped_command(
                 root,
@@ -1102,6 +1106,8 @@ fn run_mutation_checks(
             break;
         }
         quality.mutation.executed += 1;
+        record_mutation_executed(&mut quality.mutation.by_domain, &domain);
+        record_mutation_executed(&mut quality.mutation.by_operator, &operator);
         let path = root.join(&candidate.path);
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -1131,6 +1137,8 @@ fn run_mutation_checks(
 
         if mutant_survived {
             quality.mutation.survived += 1;
+            record_mutation_survived(&mut quality.mutation.by_domain, &domain);
+            record_mutation_survived(&mut quality.mutation.by_operator, &operator);
             let command = representative_command.unwrap_or(skipped_command(
                 root,
                 "rust mutation checks",
@@ -1163,6 +1171,8 @@ fn run_mutation_checks(
             });
         } else {
             quality.mutation.killed += 1;
+            record_mutation_killed(&mut quality.mutation.by_domain, &domain);
+            record_mutation_killed(&mut quality.mutation.by_operator, &operator);
         }
     }
     quality.mutation.skipped = quality
@@ -1172,6 +1182,8 @@ fn run_mutation_checks(
     quality.mutation.score_percent = (quality.mutation.killed * 100)
         .checked_div(quality.mutation.executed)
         .map(|score| score.try_into().unwrap_or(100));
+    finalize_mutation_skips(&mut quality.mutation.by_domain);
+    finalize_mutation_skips(&mut quality.mutation.by_operator);
 
     Ok(TestRunResult {
         language: "rust".to_string(),
@@ -1193,6 +1205,62 @@ fn cargo_test_args(root: &Path, config: &RustPluginConfig) -> Result<Vec<String>
     }
     args.push("--all-targets".to_string());
     Ok(args)
+}
+
+fn mutation_domain_from_label(label: &str) -> String {
+    for domain in [
+        "auth/permission",
+        "money",
+        "parsing/normalization",
+        "serialization",
+        "error handling",
+        "boundary",
+    ] {
+        if label.contains(domain) {
+            return domain.to_string();
+        }
+    }
+    "general".to_string()
+}
+
+fn mutation_operator_from_label(label: &str) -> String {
+    for operator in [
+        "comparison",
+        "equality",
+        "boolean",
+        "arithmetic",
+        "default",
+        "nil",
+        "error",
+        "boundary",
+    ] {
+        if label.contains(operator) {
+            return operator.to_string();
+        }
+    }
+    "general".to_string()
+}
+
+fn record_mutation_generated(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().generated += 1;
+}
+
+fn record_mutation_executed(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().executed += 1;
+}
+
+fn record_mutation_killed(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().killed += 1;
+}
+
+fn record_mutation_survived(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().survived += 1;
+}
+
+fn finalize_mutation_skips(metrics: &mut BTreeMap<String, MutationAttribution>) {
+    for metric in metrics.values_mut() {
+        metric.skipped = metric.generated.saturating_sub(metric.executed);
+    }
 }
 
 fn test_package_roots(

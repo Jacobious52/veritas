@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -16,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
-    CommandBudget, ConfidenceGrade, ConfidenceScore, CorpusEntry, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase, RunStatus, TargetKind,
+    CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry, Failure,
+    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
+    ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
     VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
     VerificationStrategy, VerificationTarget,
 };
@@ -56,6 +58,19 @@ pub struct PromotionSummary {
 pub struct BaselineSummary {
     pub path: Utf8PathBuf,
     pub accepted_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityBaselineSummary {
+    pub path: Utf8PathBuf,
+    pub confidence: u8,
+    pub mutation_score: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusReplaySummary {
+    pub dry_run: bool,
+    pub report: VerificationReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,9 +665,10 @@ impl CoreEngine {
         artifacts.extend(corpus_entry_artifacts(language, &report.findings)?);
         artifacts.extend(candidate_patch_artifacts(language, &report.findings));
         artifacts.extend(regression_artifacts(language, &report.findings));
-        artifacts.extend(evolution_artifacts(language, report));
+        artifacts.extend(evolution_artifacts(language, report, &artifacts));
         artifacts.extend(replay_result_artifacts(language, report, &artifacts)?);
         artifacts.extend(budget_plan_artifacts(language, report)?);
+        artifacts.extend(mutation_trend_artifacts(root, language, report)?);
 
         if artifacts.is_empty() {
             return Ok(());
@@ -1047,6 +1063,142 @@ pub fn accept_findings(root: &Path, ids: &[String], accept_all: bool) -> Result<
     Ok(BaselineSummary { path, accepted_ids })
 }
 
+pub fn accept_quality_baseline(root: &Path) -> Result<QualityBaselineSummary> {
+    let report = read_saved_report(root)?;
+    let score = confidence_score_for_root(root, &report);
+    let baseline = QualityBaseline {
+        version: 1,
+        quality: report.quality.clone(),
+        confidence: score.score,
+    };
+    let path = Utf8PathBuf::from(".veritas/baselines/quality.json");
+    let full_path = root.join(&path);
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&full_path, serde_json::to_string_pretty(&baseline)?)
+        .with_context(|| format!("failed to write {}", full_path.display()))?;
+    Ok(QualityBaselineSummary {
+        path,
+        confidence: score.score,
+        mutation_score: report.quality.mutation.score_percent,
+    })
+}
+
+pub fn quality_baseline(root: &Path) -> Result<Option<QualityBaseline>> {
+    let path = root.join(".veritas/baselines/quality.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .map(Some)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+pub fn replay_corpus(
+    root: &Path,
+    dry_run: bool,
+    timeout_seconds: u64,
+) -> Result<CorpusReplaySummary> {
+    let entries = read_corpus_entries(root)?;
+    let start = Instant::now();
+    let mut commands = Vec::new();
+    let mut failures = Vec::new();
+    let mut skipped = 0usize;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+
+    for entry in entries {
+        if !is_executable_replay_command(&entry.replay_command) {
+            skipped += 1;
+            commands.push(skipped_command_record(
+                root,
+                &entry.replay_command,
+                "corpus replay command is guidance, not an executable test command",
+            )?);
+            continue;
+        }
+        if dry_run {
+            skipped += 1;
+            commands.push(skipped_command_record(
+                root,
+                &entry.replay_command,
+                "dry run",
+            )?);
+            continue;
+        }
+        let command = run_shell_command(root, &entry.replay_command, timeout_seconds)?;
+        match command.status {
+            RunStatus::Passed => passed += 1,
+            RunStatus::Failed => {
+                failed += 1;
+                failures.push(Failure {
+                    id: None,
+                    message: format!("corpus replay failed for `{}`", entry.target_id),
+                    severity: FailureSeverity::Error,
+                    target_id: Some(entry.target_id.clone()),
+                    artifact_id: None,
+                    command: entry.replay_command.clone(),
+                    stdout_excerpt: excerpt_text(&command.stdout),
+                    stderr_excerpt: excerpt_text(&command.stderr),
+                    repro: Some(ReproCase {
+                        command: entry.replay_command.clone(),
+                        input: entry.input.clone(),
+                        path: entry.path.clone(),
+                    }),
+                });
+            }
+            RunStatus::Skipped => skipped += 1,
+        }
+        commands.push(command);
+    }
+
+    let status = if failed > 0 {
+        RunStatus::Failed
+    } else if passed > 0 {
+        RunStatus::Passed
+    } else {
+        RunStatus::Skipped
+    };
+    let mut quality = VerificationQuality::default();
+    quality.regression.corpus_entries = passed + failed + skipped;
+    quality.regression.corpus_replayed = passed + failed;
+    quality.regression.corpus_passed = passed;
+    quality.regression.corpus_failed = failed;
+    quality.regression.corpus_skipped = skipped;
+    let run = TestRunResult {
+        language: "corpus".to_string(),
+        status,
+        commands,
+        failures: failures.clone(),
+        duration_ms: start.elapsed().as_millis(),
+        quality,
+    };
+    let mut report = VerificationReport {
+        project: None,
+        targets: Vec::new(),
+        plan: None,
+        artifacts: vec![corpus_replay_artifact(&run)?],
+        runs: vec![run],
+        coverage: Vec::new(),
+        findings: failures,
+        quality: VerificationQuality::default(),
+        suggested_next_steps: vec![
+            "Promote failing corpus entries into package-owned regression tests.".to_string(),
+            "Remove stale corpus metadata when replay commands are no longer valid.".to_string(),
+        ],
+    };
+    assign_finding_ids(&mut report);
+    refresh_report_quality(&mut report);
+    if !dry_run {
+        write_artifacts(root, &mut report.artifacts)?;
+    }
+    Ok(CorpusReplaySummary { dry_run, report })
+}
+
 pub fn accepted_finding_ids(root: &Path) -> Result<BTreeSet<String>> {
     let path = root.join(".veritas/baselines/findings.json");
     if !path.exists() {
@@ -1057,6 +1209,136 @@ pub fn accepted_finding_ids(root: &Path) -> Result<BTreeSet<String>> {
     let ids = serde_json::from_str::<Vec<String>>(&contents)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(ids.into_iter().collect())
+}
+
+fn read_corpus_entries(root: &Path) -> Result<Vec<CorpusEntry>> {
+    let corpus_dir = root.join(".veritas/corpus");
+    if !corpus_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&corpus_dir)
+        .with_context(|| format!("failed to read {}", corpus_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        entries.push(
+            serde_json::from_str(&contents)
+                .with_context(|| format!("failed to parse {}", path.display()))?,
+        );
+    }
+    Ok(entries)
+}
+
+fn is_executable_replay_command(command: &str) -> bool {
+    let trimmed = command.trim_start();
+    trimmed.starts_with("cargo ")
+        || trimmed.starts_with("go ")
+        || trimmed.starts_with("(cd ")
+        || trimmed.starts_with("./")
+}
+
+fn run_shell_command(root: &Path, command: &str, timeout_seconds: u64) -> Result<CommandRecord> {
+    let start = Instant::now();
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to start corpus replay command `{command}`"))?;
+    let timeout = Duration::from_secs(timeout_seconds.max(1));
+    loop {
+        if child
+            .try_wait()
+            .with_context(|| format!("failed to poll corpus replay command `{command}`"))?
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("failed to collect corpus replay command `{command}`"))?;
+            return Ok(CommandRecord {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), command.to_string()],
+                cwd: utf8_path(root)?,
+                exit_code: output.status.code(),
+                status: if output.status.success() {
+                    RunStatus::Passed
+                } else {
+                    RunStatus::Failed
+                },
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                duration_ms: start.elapsed().as_millis(),
+            });
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let output = child.wait_with_output().with_context(|| {
+                format!("failed to collect timed-out corpus replay `{command}`")
+            })?;
+            return Ok(CommandRecord {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), command.to_string()],
+                cwd: utf8_path(root)?,
+                exit_code: output.status.code(),
+                status: RunStatus::Failed,
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: format!(
+                    "corpus replay command timed out after {}s\n{}",
+                    timeout.as_secs(),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+                duration_ms: start.elapsed().as_millis(),
+            });
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn skipped_command_record(root: &Path, command: &str, reason: &str) -> Result<CommandRecord> {
+    Ok(CommandRecord {
+        program: "veritas".to_string(),
+        args: vec!["replay-corpus".to_string(), command.to_string()],
+        cwd: utf8_path(root)?,
+        exit_code: None,
+        status: RunStatus::Skipped,
+        stdout: String::new(),
+        stderr: reason.to_string(),
+        duration_ms: 0,
+    })
+}
+
+fn corpus_replay_artifact(run: &TestRunResult) -> Result<GeneratedArtifact> {
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "mode": "corpus_replay",
+        "status": run.status,
+        "commands": run.commands.len(),
+        "passed": run.quality.regression.corpus_passed,
+        "failed": run.quality.regression.corpus_failed,
+        "skipped": run.quality.regression.corpus_skipped,
+    }))?;
+    Ok(GeneratedArtifact {
+        id: "corpus-replay".to_string(),
+        language: "corpus".to_string(),
+        kind: ArtifactKind::CorpusReplay,
+        target_id: "corpus:replay".to_string(),
+        path: Utf8PathBuf::from(".veritas/corpus/replay_result.json"),
+        contents,
+        description: "Corpus replay execution summary".to_string(),
+        status: ArtifactStatus::Planned,
+    })
+}
+
+fn excerpt_text(text: &str) -> String {
+    text.lines().take(40).collect::<Vec<_>>().join("\n")
 }
 
 fn changed_files(root: &Path) -> Result<Vec<ChangedFile>> {
@@ -1938,7 +2220,11 @@ fn regression_artifacts(language: &str, findings: &[Failure]) -> Vec<GeneratedAr
         .collect()
 }
 
-fn evolution_artifacts(language: &str, report: &VerificationReport) -> Vec<GeneratedArtifact> {
+fn evolution_artifacts(
+    language: &str,
+    report: &VerificationReport,
+    pending_artifacts: &[GeneratedArtifact],
+) -> Vec<GeneratedArtifact> {
     let mutation_findings = report
         .findings
         .iter()
@@ -1988,7 +2274,7 @@ fn evolution_artifacts(language: &str, report: &VerificationReport) -> Vec<Gener
         "- Keep candidates that raise score or convert a finding into a stable regression test.\n",
     );
 
-    vec![GeneratedArtifact {
+    let mut artifacts = vec![GeneratedArtifact {
         id: format!("{language}-evolution-plan"),
         language: language.to_string(),
         kind: ArtifactKind::EvolutionPlan,
@@ -1998,7 +2284,49 @@ fn evolution_artifacts(language: &str, report: &VerificationReport) -> Vec<Gener
         description: "Next-generation verification candidate plan from current findings"
             .to_string(),
         status: ArtifactStatus::Planned,
-    }]
+    }];
+
+    let candidates = report
+        .artifacts
+        .iter()
+        .chain(pending_artifacts.iter())
+        .filter(|artifact| artifact.kind == ArtifactKind::AssertionCandidate)
+        .map(|artifact| {
+            serde_json::json!({
+                "source_artifact": artifact.path,
+                "target_id": artifact.target_id,
+                "candidate_kind": "assertion",
+                "fitness_signal": "raises mutation score, reduces active findings, or converts a repro into corpus replay",
+                "keep_if": "the candidate kills a survivor, replays a corpus entry, or increases veritas score",
+            })
+        })
+        .collect::<Vec<_>>();
+    if !candidates.is_empty() {
+        artifacts.push(GeneratedArtifact {
+            id: format!("{language}-evolution-candidates"),
+            language: language.to_string(),
+            kind: ArtifactKind::EvolutionCandidate,
+            target_id: format!("{language}:evolution"),
+            path: Utf8PathBuf::from(format!(".veritas/evolution/{language}_candidates.json")),
+            contents: serde_json::to_string_pretty(&serde_json::json!({
+                "version": 1,
+                "language": language,
+                "fitness": [
+                    "mutation_score_delta",
+                    "surviving_mutants_delta",
+                    "corpus_replay_pass_rate",
+                    "confidence_score_delta"
+                ],
+                "candidates": candidates
+            }))
+            .unwrap_or_else(|_| "{\"version\":1,\"candidates\":[]}".to_string()),
+            description: "Structured evolutionary candidate queue for the next verification loop"
+                .to_string(),
+            status: ArtifactStatus::Planned,
+        });
+    }
+
+    artifacts
 }
 
 fn replay_result_artifacts(
@@ -2104,6 +2432,60 @@ fn budget_plan_artifacts(
         contents: serde_json::to_string_pretty(&budget)?,
         description: "Command budget and resource-limit metadata for large-repo execution"
             .to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
+fn mutation_trend_artifacts(
+    root: &Path,
+    language: &str,
+    report: &VerificationReport,
+) -> Result<Vec<GeneratedArtifact>> {
+    let mut quality = VerificationQuality::default();
+    for run in &report.runs {
+        quality.mutation.generated += run.quality.mutation.generated;
+        quality.mutation.executed += run.quality.mutation.executed;
+        quality.mutation.killed += run.quality.mutation.killed;
+        quality.mutation.survived += run.quality.mutation.survived;
+        quality.mutation.skipped += run.quality.mutation.skipped;
+        merge_mutation_attribution(
+            &mut quality.mutation.by_domain,
+            &run.quality.mutation.by_domain,
+        );
+        merge_mutation_attribution(
+            &mut quality.mutation.by_operator,
+            &run.quality.mutation.by_operator,
+        );
+    }
+    quality.mutation.score_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
+    if quality.mutation.generated == 0 {
+        return Ok(Vec::new());
+    }
+    let baseline = quality_baseline(root)?;
+    let delta = baseline
+        .as_ref()
+        .map(|baseline| quality_delta(&quality, 0, baseline));
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "mutation": quality.mutation,
+        "baseline_delta": delta,
+        "threshold_hints": {
+            "minimum_score": quality.mutation.score_percent,
+            "maximum_survivors": quality.mutation.survived,
+            "gate_on_regression": baseline.is_some()
+        }
+    }))?;
+    Ok(vec![GeneratedArtifact {
+        id: format!("{language}-mutation-trend"),
+        language: language.to_string(),
+        kind: ArtifactKind::MutationTrend,
+        target_id: format!("{language}:mutation"),
+        path: Utf8PathBuf::from(format!(".veritas/trends/{language}_mutation.json")),
+        contents,
+        description: "Mutation score attribution and baseline trend data".to_string(),
         status: ArtifactStatus::Planned,
     }])
 }
@@ -2389,6 +2771,15 @@ fn relative_utf8(root: &Path, path: &Path) -> Result<Utf8PathBuf> {
     })
 }
 
+fn utf8_path(path: &Path) -> Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path.to_path_buf()).map_err(|path| {
+        anyhow!(
+            "path contains non-UTF-8 data and cannot be represented: {}",
+            path.display()
+        )
+    })
+}
+
 fn remove_generated_path(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("failed to inspect generated artifact {}", path.display()))?;
@@ -2441,8 +2832,20 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         quality.mutation.killed += run.quality.mutation.killed;
         quality.mutation.survived += run.quality.mutation.survived;
         quality.mutation.skipped += run.quality.mutation.skipped;
+        merge_mutation_attribution(
+            &mut quality.mutation.by_domain,
+            &run.quality.mutation.by_domain,
+        );
+        merge_mutation_attribution(
+            &mut quality.mutation.by_operator,
+            &run.quality.mutation.by_operator,
+        );
         quality.fuzz.targets_executed += run.quality.fuzz.targets_executed;
         quality.fuzz.failures += run.quality.fuzz.failures;
+        quality.regression.corpus_replayed += run.quality.regression.corpus_replayed;
+        quality.regression.corpus_passed += run.quality.regression.corpus_passed;
+        quality.regression.corpus_failed += run.quality.regression.corpus_failed;
+        quality.regression.corpus_skipped += run.quality.regression.corpus_skipped;
     }
 
     quality.property.generated_artifacts = report
@@ -2450,6 +2853,17 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::PropertyTest)
         .count();
+    for artifact in report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::PropertyTest)
+    {
+        quality.property.no_panic_properties += artifact.contents.matches("does_not_panic").count();
+        quality.property.deterministic_properties +=
+            artifact.contents.matches("is_deterministic").count();
+        quality.property.invariant_properties += artifact.contents.matches("prop_assert").count();
+    }
+    quality.property.strength_score_percent = property_strength_score(&quality.property);
     quality.fuzz.generated_harnesses = report
         .artifacts
         .iter()
@@ -2475,6 +2889,20 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .iter()
         .filter(|artifact| artifact.kind == ArtifactKind::CorpusEntry)
         .count();
+    if quality.mutation.by_domain.is_empty() && quality.mutation.by_operator.is_empty() {
+        for finding in report
+            .findings
+            .iter()
+            .filter(|finding| finding.message.contains("mutation survived"))
+        {
+            let domain = mutation_domain_label(finding);
+            let operator = mutation_operator_label(finding);
+            let domain_entry = quality.mutation.by_domain.entry(domain).or_default();
+            domain_entry.survived += 1;
+            let operator_entry = quality.mutation.by_operator.entry(operator).or_default();
+            operator_entry.survived += 1;
+        }
+    }
     quality.replay.manifests = report
         .artifacts
         .iter()
@@ -2533,7 +2961,79 @@ fn refresh_report_quality(report: &mut VerificationReport) {
     report.quality = quality;
 }
 
+fn merge_mutation_attribution(
+    target: &mut BTreeMap<String, MutationAttribution>,
+    source: &BTreeMap<String, MutationAttribution>,
+) {
+    for (key, source) in source {
+        let target = target.entry(key.clone()).or_default();
+        target.generated += source.generated;
+        target.executed += source.executed;
+        target.killed += source.killed;
+        target.survived += source.survived;
+        target.skipped += source.skipped;
+    }
+}
+
+fn property_strength_score(property: &veritas_plugin_api::PropertyMetrics) -> Option<u8> {
+    if property.generated_artifacts == 0 {
+        return None;
+    }
+    let checks = property.no_panic_properties
+        + (property.deterministic_properties * 2)
+        + (property.invariant_properties * 2);
+    Some(((checks * 100) / (property.generated_artifacts * 6)).min(100) as u8)
+}
+
+fn mutation_domain_label(finding: &Failure) -> String {
+    let text = finding.message.to_ascii_lowercase();
+    for domain in [
+        "auth/permission",
+        "money",
+        "parsing/normalization",
+        "serialization",
+        "error handling",
+        "boundary",
+    ] {
+        if text.contains(domain) {
+            return domain.to_string();
+        }
+    }
+    "general".to_string()
+}
+
+fn mutation_operator_label(finding: &Failure) -> String {
+    let text = finding.message.to_ascii_lowercase();
+    for operator in [
+        "comparison",
+        "equality",
+        "boolean",
+        "arithmetic",
+        "default",
+        "nil",
+        "error",
+        "boundary",
+    ] {
+        if text.contains(operator) {
+            return operator.to_string();
+        }
+    }
+    "general".to_string()
+}
+
 pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
+    confidence_score_with_baseline(report, None)
+}
+
+pub fn confidence_score_for_root(root: &Path, report: &VerificationReport) -> ConfidenceScore {
+    let baseline = quality_baseline(root).ok().flatten();
+    confidence_score_with_baseline(report, baseline.as_ref())
+}
+
+fn confidence_score_with_baseline(
+    report: &VerificationReport,
+    baseline: Option<&QualityBaseline>,
+) -> ConfidenceScore {
     let mut score: i16 = 45;
     let mut positive_signals = Vec::new();
     let mut risks = Vec::new();
@@ -2603,6 +3103,34 @@ pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
     }
 
     let score = score.clamp(0, 100) as u8;
+    let baseline_delta =
+        baseline.map(|baseline| quality_delta(&report.quality, i16::from(score), baseline));
+    if let Some(delta) = &baseline_delta {
+        if let Some(mutation_delta) = delta.mutation_score_delta {
+            if mutation_delta < 0 {
+                risks.push(format!(
+                    "mutation score regressed by {} point(s) from baseline",
+                    mutation_delta.abs()
+                ));
+            } else if mutation_delta > 0 {
+                positive_signals.push(format!(
+                    "mutation score improved by {mutation_delta} point(s) from baseline"
+                ));
+            }
+        }
+        if delta.surviving_mutants_delta > 0 {
+            risks.push(format!(
+                "{} more surviving mutant(s) than baseline",
+                delta.surviving_mutants_delta
+            ));
+        }
+        if delta.confidence_delta < 0 {
+            risks.push(format!(
+                "confidence score regressed by {} point(s) from baseline",
+                delta.confidence_delta.abs()
+            ));
+        }
+    }
     let grade = if score >= 80 {
         ConfidenceGrade::High
     } else if score >= 55 {
@@ -2625,6 +3153,29 @@ pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
         positive_signals,
         risks,
         recommended_next_steps,
+        baseline_delta,
+    }
+}
+
+fn quality_delta(
+    quality: &VerificationQuality,
+    current_confidence_before_findings: i16,
+    baseline: &QualityBaseline,
+) -> QualityDelta {
+    let mutation_score_delta = match (
+        quality.mutation.score_percent,
+        baseline.quality.mutation.score_percent,
+    ) {
+        (Some(current), Some(previous)) => Some(i16::from(current) - i16::from(previous)),
+        _ => None,
+    };
+    QualityDelta {
+        mutation_score_delta,
+        confidence_delta: current_confidence_before_findings - i16::from(baseline.confidence),
+        surviving_mutants_delta: quality.mutation.survived as i64
+            - baseline.quality.mutation.survived as i64,
+        corpus_entries_delta: quality.regression.corpus_entries as i64
+            - baseline.quality.regression.corpus_entries as i64,
     }
 }
 

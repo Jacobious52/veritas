@@ -1,0 +1,12 @@
+[veritas]
+budget_seconds = 45
+fail_on_findings = false
+
+[plugins.go]
+coverage_enabled = false
+fuzz_existing = false
+fuzz_seconds = 1
+fuzz_concurrency = 1
+max_fuzz_targets = 4
+max_mutants = 12
+command_timeout_seconds = 20

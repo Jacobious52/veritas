@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use anyhow::Result;
 use camino::Utf8PathBuf;
@@ -216,6 +216,10 @@ pub enum ArtifactKind {
     ReplayResult,
     BudgetPlan,
     ConfidenceScore,
+    MutationTrend,
+    EvolutionCandidate,
+    CorpusReplay,
+    SiteAsset,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -363,6 +367,8 @@ pub struct ConfidenceScore {
     pub positive_signals: Vec<String>,
     pub risks: Vec<String>,
     pub recommended_next_steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_delta: Option<QualityDelta>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -371,6 +377,21 @@ pub enum ConfidenceGrade {
     Low,
     Medium,
     High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityBaseline {
+    pub version: u32,
+    pub quality: VerificationQuality,
+    pub confidence: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityDelta {
+    pub mutation_score_delta: Option<i16>,
+    pub confidence_delta: i16,
+    pub surviving_mutants_delta: i64,
+    pub corpus_entries_delta: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -439,12 +460,30 @@ pub struct MutationMetrics {
     pub skipped: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
+    #[serde(default)]
+    pub by_domain: BTreeMap<String, MutationAttribution>,
+    #[serde(default)]
+    pub by_operator: BTreeMap<String, MutationAttribution>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationAttribution {
+    pub generated: usize,
+    pub executed: usize,
+    pub killed: usize,
+    pub survived: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PropertyMetrics {
     pub generated_artifacts: usize,
     pub failed_generated_tests: usize,
+    pub no_panic_properties: usize,
+    pub deterministic_properties: usize,
+    pub invariant_properties: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strength_score_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -460,6 +499,10 @@ pub struct RegressionMetrics {
     pub assertion_candidates: usize,
     pub promoted_scaffolds: usize,
     pub corpus_entries: usize,
+    pub corpus_replayed: usize,
+    pub corpus_passed: usize,
+    pub corpus_failed: usize,
+    pub corpus_skipped: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

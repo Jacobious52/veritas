@@ -359,10 +359,12 @@ fn benchmark_suite_scores_seeded_examples() {
         .stdout(predicate::str::contains("rust-commerce"))
         .stdout(predicate::str::contains("go-api-service"))
         .stdout(predicate::str::contains("rust-mutation-score"))
+        .stdout(predicate::str::contains("rust-risk-suite"))
+        .stdout(predicate::str::contains("go-risk-suite"))
         .stdout(predicate::str::contains("Mutation score:"))
         .stdout(predicate::str::contains("Commands:"))
         .stdout(predicate::str::contains("Generated test failures:"))
-        .stdout(predicate::str::contains("Cases: `6/6` passed"));
+        .stdout(predicate::str::contains("Cases: `8/8` passed"));
 
     let mut json = veritas();
     json.current_dir(workspace_root())
@@ -372,6 +374,10 @@ fn benchmark_suite_scores_seeded_examples() {
         .stdout(predicate::str::contains("\"passed\": true"))
         .stdout(predicate::str::contains("\"command_count\""))
         .stdout(predicate::str::contains("\"mutation_score_percent\""))
+        .stdout(predicate::str::contains(
+            "\"property_strength_score_percent\"",
+        ))
+        .stdout(predicate::str::contains("\"corpus_entries\""))
         .stdout(predicate::str::contains("\"generated_test_failures\""))
         .stdout(predicate::str::contains("\"threshold_failures\": []"));
 }

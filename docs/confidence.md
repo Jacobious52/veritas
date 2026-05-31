@@ -16,6 +16,8 @@
    - `examples/go-api-service`: API parameter parsing, token normalization, status mapping, and read authorization.
    - `examples/rust-mutation-score`: killed and surviving Rust mutants for mutation-score calibration.
    - `examples/go-mutation-score`: killed and surviving Go mutants for mutation-score calibration.
+   - `examples/rust-risk-suite`: auth, money, parsing, serialization, and boundary mutants with known survivors.
+   - `examples/go-risk-suite`: Go fuzzing plus mutation-score attribution across auth, parsing, and serialization surfaces.
 5. Benchmark suites in `examples/veritas-bench.toml` run seeded examples in temporary copies and score expected findings, commands, thresholds, and metrics.
 
 ## Required Checks
@@ -50,9 +52,11 @@ cargo run -p veritas-cli -- --root examples bench --format json
 
 Each benchmark case declares expected finding-message substrings, artifact kinds, command substrings, and thresholds such as `min_findings`, `min_commands`, `min_generated_test_failures`, and `max_duration_ms`. The command copies each case to a temporary directory, runs `veritas verify`, writes the report inside that copy, and removes the copy when done. A case fails when an expected detection disappears, a required command is skipped, or a threshold is violated.
 
-Benchmark JSON includes command count, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure count, assertion candidate count, corpus entry count, replay case count, budget skip/timeout count, fuzz execution/failure counts, and persisted repro count. GitHub Actions runs the same seeded suite for benchmark-sensitive pull requests through `.github/workflows/benchmarks.yml`.
+Benchmark JSON includes command count, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, mutation trend artifacts, generated-test failure count, property strength metrics, assertion candidate count, corpus entry/replay count, replay case count, budget skip/timeout count, fuzz execution/failure counts, and persisted repro count. GitHub Actions runs the same seeded suite for benchmark-sensitive pull requests through `.github/workflows/benchmarks.yml`.
 
-After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving mutants, skipped commands, and timeouts.
+After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving mutants, skipped commands, and timeouts. Use `veritas accept-quality-baseline` only after a reviewed good state; later `veritas score` runs will show baseline deltas.
+
+Use `veritas replay-corpus --dry-run` to inspect persisted repro metadata. Executable commands such as `go test` or `cargo test` can be replayed directly; mutation guidance entries are skipped until promoted into package-owned tests.
 
 ## External Canaries
 
@@ -70,6 +74,8 @@ GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.ym
 Current pinned canaries:
 
 - Rust: `dtolnay/itoa` at `af77385d0daf4d0e949e81f2588be2e44f69f086`
+- Rust: `BurntSushi/memchr` at `ff7dca72388ade97ec536f550271fe5acab0a05f`
 - Go: `google/uuid` at `2d3c2a9cc518326daf99a383f07c4d3c44317e4d`
+- Go: `gorilla/mux` at `db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265`
 
 Update pins deliberately and in their own commit so canary drift is easy to review.

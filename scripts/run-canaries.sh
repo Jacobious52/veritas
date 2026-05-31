@@ -63,7 +63,19 @@ checkout_canary \
   https://github.com/google/uuid.git \
   2d3c2a9cc518326daf99a383f07c4d3c44317e4d
 
+checkout_canary \
+  rust-memchr \
+  https://github.com/BurntSushi/memchr.git \
+  ff7dca72388ade97ec536f550271fe5acab0a05f
+
+checkout_canary \
+  go-mux \
+  https://github.com/gorilla/mux.git \
+  db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265
+
 run_smoke rust-itoa rust
 run_smoke go-uuid go
+run_smoke rust-memchr rust
+run_smoke go-mux go
 
 echo "==> canaries complete (${mode})"

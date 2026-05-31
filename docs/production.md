@@ -137,7 +137,9 @@ Common generated paths:
 - `.veritas/differential/*.json`
 - `.veritas/assertions/*.json`
 - `.veritas/corpus/*.json`
+- `.veritas/corpus/replay_result.json`
 - `.veritas/budgets/*.json`
+- `.veritas/trends/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
 - `.veritas/package_graph/*.json`
@@ -146,6 +148,7 @@ Common generated paths:
 - `.veritas/patches/*.md`
 - `.veritas/regressions/*.md`
 - `.veritas/evolution/*.md`
+- `.veritas/evolution/*_candidates.json`
 - `.veritas/promotions/*.md`
 - Rust `tests/veritas_generated*`
 - Rust `tests/veritas_regression_*.rs`
@@ -172,7 +175,9 @@ veritas cleanup
 - Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
 - `veritas promote-regression` turns selected findings into ignored/skipped package-owned test scaffolds for Rust and Go; review and replace the placeholder before relying on them.
 - Differential checks persist API signatures, replay-case manifests, and replay result summaries. Treat them as the handoff point for comparing old/new behavior and promoting changed observations into assertions.
-- `veritas score` summarizes mutation score, findings, assertion candidates, corpus entries, replay cases, and budget health into one AI-change confidence view.
+- `veritas replay-corpus` replays executable persisted corpus commands and skips guidance-only mutation entries until they are promoted into owned tests.
+- `veritas score` summarizes mutation score, findings, assertion candidates, corpus entries/replay, replay cases, property strength, and budget health into one AI-change confidence view.
+- `veritas accept-quality-baseline` records the reviewed quality floor used for later mutation and confidence deltas.
 
 ## External Canaries
 

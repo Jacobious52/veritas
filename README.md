@@ -50,6 +50,7 @@ Use `veritas` on a changed branch:
 ```bash
 veritas review-ai
 veritas verify --changed --profile ci
+veritas score
 veritas report --format markdown
 ```
 
@@ -65,6 +66,8 @@ Explain and promote findings:
 ```bash
 veritas explain <finding-id>
 veritas promote-repro --dry-run
+veritas replay-corpus --dry-run
+veritas accept-quality-baseline
 veritas accept-baseline --id <finding-id>
 veritas cleanup
 ```
@@ -72,6 +75,7 @@ veritas cleanup
 ## Documentation
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
+- [Project Site](docs/index.html): GitHub Pages landing page and public overview.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
 - [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
 - [Confidence Guide](docs/confidence.md): fixture tiers, seeded examples, and external canaries.
@@ -92,6 +96,9 @@ veritas run
 veritas report --format markdown
 veritas report --format sarif
 veritas report --format junit
+veritas score
+veritas accept-quality-baseline
+veritas replay-corpus
 veritas explain <finding-id>
 veritas promote-repro
 veritas promote-repro --index 0
@@ -142,10 +149,10 @@ Reports and artifacts:
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
-- reports mutation score, assertion candidates, corpus entries, differential replay cases, budget skips/timeouts, property-test quality, fuzz execution, and persisted repro counts in `.veritas/report.json`
-- summarizes current confidence with `veritas score`
+- reports mutation score attribution/trends, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- summarizes current confidence and baseline deltas with `veritas score`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, evolution candidate queues, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
 
 CI behavior:
@@ -251,6 +258,10 @@ cargo test --manifest-path examples/rust-mutation-score/Cargo.toml
 cargo run -p veritas-cli -- verify --root examples/rust-mutation-score --lang rust --target src/lib.rs
 (cd examples/go-mutation-score && go test ./...)
 cargo run -p veritas-cli -- verify --root examples/go-mutation-score --lang go --target .
+cargo test --manifest-path examples/rust-risk-suite/Cargo.toml
+cargo run -p veritas-cli -- verify --root examples/rust-risk-suite --lang rust --target src/lib.rs
+(cd examples/go-risk-suite && go test ./...)
+cargo run -p veritas-cli -- verify --root examples/go-risk-suite --lang go --target .
 cargo run -p veritas-cli -- --root examples bench
 cargo run -p veritas-cli -- --root examples bench --format json
 ```

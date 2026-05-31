@@ -87,3 +87,39 @@ min_assertion_candidates = 1
 min_corpus_entries = 1
 min_replay_cases = 1
 max_duration_ms = 30000
+
+[[case]]
+name = "rust-risk-suite"
+path = "rust-risk-suite"
+language = "rust"
+target = "src/lib.rs"
+expect_findings = ["mutation survived"]
+expect_artifacts = ["property_test", "mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
+expect_commands = ["cargo test"]
+min_findings = 1
+min_commands = 2
+min_mutation_findings = 1
+min_mutants_executed = 4
+min_mutation_score = 40
+min_assertion_candidates = 1
+min_corpus_entries = 1
+min_replay_cases = 1
+max_duration_ms = 60000
+
+[[case]]
+name = "go-risk-suite"
+path = "go-risk-suite"
+language = "go"
+target = "."
+expect_findings = ["mutation survived"]
+expect_artifacts = ["fuzz_harness", "mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
+expect_commands = ["go test"]
+min_findings = 1
+min_commands = 2
+min_mutation_findings = 1
+min_mutants_executed = 4
+min_mutation_score = 40
+min_assertion_candidates = 1
+min_corpus_entries = 1
+min_replay_cases = 1
+max_duration_ms = 30000

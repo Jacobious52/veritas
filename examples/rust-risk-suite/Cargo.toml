@@ -1,0 +1,9 @@
+[package]
+name = "veritas-rust-risk-suite"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+proptest = "1"
+
+[workspace]

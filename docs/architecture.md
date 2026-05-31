@@ -24,6 +24,7 @@ examples/
   go-mutation-score/
   veritas-bench.toml
 docs/
+  index.html            # GitHub Pages landing page
 ```
 
 ## Core Flow
@@ -113,7 +114,7 @@ Go:
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 
-Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` for persistent repro seed metadata, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
+Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` plus `*_candidates.json` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 
@@ -126,4 +127,4 @@ Report formats:
 
 SARIF prefers target file and line range locations when a finding maps to a discovered target. JUnit trims long failure bodies for CI log hygiene.
 
-`veritas score` reads `.veritas/report.json` and produces a compact confidence score from mutation score, findings, assertion candidates, replay cases, corpus entries, and budget health. Use it as the AI-change decision view after `veritas verify`.
+`veritas score` reads `.veritas/report.json` and produces a compact confidence score from mutation score, findings, assertion candidates, replay cases, corpus entries/replay, and budget health. If `.veritas/baselines/quality.json` exists, the score includes mutation/confidence/survivor deltas. `veritas accept-quality-baseline` refreshes that baseline after a reviewed good state.
