@@ -141,7 +141,7 @@ Go verification:
 - writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types and edge-case seed rows
 - runs relevant `go test -run=^$ -fuzz=...` targets through a bounded scheduler within caps and timeouts
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
-- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic operators, and domain-labeled risk surfaces
+- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic and bitwise operators, assignment operators, increment/decrement statements, unary negation, loop control, literal flips, self-assignments, and domain-labeled risk surfaces
 - writes package graph, package-awareness, and symbol graph artifacts
 
 Reports and artifacts:
@@ -184,6 +184,7 @@ fail_on_severity = "error"
 fail_on_languages = []
 fail_on_artifact_kinds = []
 fail_on_target_risks = []
+min_mutation_score = 70
 
 [plugins.rust]
 property_framework = "proptest"

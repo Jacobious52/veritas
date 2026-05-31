@@ -110,7 +110,7 @@ Go:
 - records receivers, line ranges, signatures, and call hints
 - discovers fuzz targets from test files
 - uses AST spans for mutation probes
-- mutates comparison, nil/error, boolean connector, arithmetic, and return-default operators
+- mutates comparison, nil/error, boolean connector, arithmetic, bitwise, assignment, increment/decrement, unary negation, loop-control, literal, self-assignment, and return-default operators
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 

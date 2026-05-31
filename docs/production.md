@@ -58,6 +58,7 @@ fail_on_findings = true
 
 [policy]
 fail_on_severity = "error"
+min_mutation_score = 70
 
 [plugins.go]
 fuzz_seconds = 5
@@ -73,6 +74,8 @@ build_tags = []
 ```
 
 Use higher caps only for an explicit local investigation.
+
+Set `policy.min_mutation_score` when you want a Gremlins-style mutation quality gate. The threshold is enforced after the report is scored, and it is language-neutral so Rust, Go, and future plugins share the same CI contract.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 

@@ -1093,6 +1093,18 @@ fn print_cleanup_summary(summary: &CleanupSummary) {
 }
 
 fn enforce_failure_policy(config: &VeritasConfig, report: &VerificationReport) -> Result<()> {
+    if let Some(min_score) = config.policy.min_mutation_score {
+        match report.quality.mutation.score_percent {
+            Some(score) if score < min_score => {
+                bail!("mutation score {score}% is below policy minimum {min_score}%");
+            }
+            None => {
+                bail!("mutation score was unavailable but policy minimum is {min_score}%");
+            }
+            _ => {}
+        }
+    }
+
     if config.fail_on_findings {
         let accepted = report
             .project

@@ -1846,6 +1846,12 @@ fn mutation_operator_from_label(label: &str) -> String {
         "equality",
         "boolean",
         "arithmetic",
+        "bitwise",
+        "assignment",
+        "increment",
+        "loop",
+        "literal",
+        "negation",
         "default",
         "nil",
         "error",
@@ -1891,14 +1897,49 @@ fn collect_go_mutation_nodes(
     }
 
     if node.start_byte() >= function.start_byte && node.end_byte() <= function.end_byte {
-        if node.kind() == "binary_expression" {
-            if let Some(candidate) = mutation_candidate_from_binary(node, source, function)? {
-                candidates.push(candidate);
+        match node.kind() {
+            "binary_expression" => {
+                if let Some(candidate) = mutation_candidate_from_binary(node, source, function)? {
+                    candidates.push(candidate);
+                }
             }
-        } else if node.kind() == "return_statement" {
-            if let Some(candidate) = mutation_candidate_from_return(node, source, function)? {
-                candidates.push(candidate);
+            "return_statement" => {
+                if let Some(candidate) = mutation_candidate_from_return(node, source, function)? {
+                    candidates.push(candidate);
+                }
             }
+            "inc_statement" | "dec_statement" => {
+                if let Some(candidate) = mutation_candidate_from_update(node, source, function)? {
+                    candidates.push(candidate);
+                }
+            }
+            "assignment_statement" => {
+                if let Some(candidate) = mutation_candidate_from_assignment(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+                if let Some(candidate) =
+                    mutation_candidate_from_self_assignment(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "unary_expression" => {
+                if let Some(candidate) = mutation_candidate_from_unary(node, source, function)? {
+                    candidates.push(candidate);
+                }
+            }
+            "break_statement" | "continue_statement" => {
+                if let Some(candidate) = mutation_candidate_from_branch(node, source, function)? {
+                    candidates.push(candidate);
+                }
+            }
+            "true" | "false" | "int_literal" => {
+                if let Some(candidate) = mutation_candidate_from_literal(node, source, function)? {
+                    candidates.push(candidate);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1937,8 +1978,10 @@ fn mutation_candidate_from_binary(
         "boolean connector inversion"
     } else if matches!(op, "+" | "-") {
         "arithmetic direction mutation"
-    } else if matches!(op, "*" | "/") {
+    } else if matches!(op, "*" | "/" | "%") {
         "arithmetic operator mutation"
+    } else if matches!(op, "&" | "|" | "^" | "&^" | "<<" | ">>") {
+        "bitwise operator mutation"
     } else {
         "comparison boundary mutation"
     };
@@ -1980,12 +2023,185 @@ fn mutation_candidate_from_return(
     }))
 }
 
+fn mutation_candidate_from_update(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let statement = node_text(node, source)?;
+    let Some((from, to, offset)) = statement
+        .find("++")
+        .map(|offset| ("++", "--", offset))
+        .or_else(|| statement.find("--").map(|offset| ("--", "++", offset)))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "increment decrement mutation"),
+        from: from.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte() + offset,
+        end_byte: node.start_byte() + offset + from.len(),
+    }))
+}
+
+fn mutation_candidate_from_assignment(
+    node: Node<'_>,
+    _source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let Some(operator) = assignment_operator_node(node) else {
+        return Ok(None);
+    };
+    let op = operator.kind();
+    let Some(to) = assignment_operator_replacement(op) else {
+        return Ok(None);
+    };
+    let base_label = if matches!(op, "&=" | "|=" | "^=" | "&^=" | "<<=" | ">>=") {
+        "bitwise assignment mutation"
+    } else {
+        "arithmetic assignment mutation"
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, base_label),
+        from: op.to_string(),
+        to: to.to_string(),
+        start_byte: operator.start_byte(),
+        end_byte: operator.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_self_assignment(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let Some(operator) = assignment_operator_node(node) else {
+        return Ok(None);
+    };
+    if operator.kind() != "=" {
+        return Ok(None);
+    }
+    let Some(left) = node.child_by_field_name("left") else {
+        return Ok(None);
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return Ok(None);
+    };
+    let left_text = node_text(left, source)?.trim();
+    let right_text = node_text(right, source)?.trim();
+    if left_text.is_empty() || left_text != right_text {
+        return Ok(None);
+    }
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "remove self-assignment mutation"),
+        from: node_text(node, source)?.to_string(),
+        to: String::new(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_unary(
+    node: Node<'_>,
+    _source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let Some(operator) = unary_operator_node(node) else {
+        return Ok(None);
+    };
+    let op = operator.kind();
+    let base_label = match op {
+        "!" => "boolean negation removal",
+        "-" => "invert negative mutation",
+        "^" => "bitwise negation removal",
+        _ => return Ok(None),
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, base_label),
+        from: op.to_string(),
+        to: String::new(),
+        start_byte: operator.start_byte(),
+        end_byte: operator.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_branch(
+    node: Node<'_>,
+    _source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let (from, to) = match node.kind() {
+        "break_statement" => ("break", "continue"),
+        "continue_statement" => ("continue", "break"),
+        _ => return Ok(None),
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "loop control mutation"),
+        from: from.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_literal(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?.trim();
+    let to = match text {
+        "true" => "false",
+        "false" => "true",
+        "0" => "1",
+        "1" => "0",
+        _ => return Ok(None),
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "literal value mutation"),
+        from: text.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
 fn binary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
     let operator = node.children(&mut cursor).find(|child| {
         matches!(
             child.kind(),
-            "==" | "!=" | ">=" | "<=" | ">" | "<" | "&&" | "||" | "+" | "-" | "*" | "/"
+            "==" | "!="
+                | ">="
+                | "<="
+                | ">"
+                | "<"
+                | "&&"
+                | "||"
+                | "+"
+                | "-"
+                | "*"
+                | "/"
+                | "%"
+                | "&"
+                | "|"
+                | "^"
+                | "&^"
+                | "<<"
+                | ">>"
         )
     });
     operator
@@ -2005,8 +2221,51 @@ fn binary_operator_replacement(operator: &str) -> Option<&'static str> {
         "-" => Some("+"),
         "*" => Some("/"),
         "/" => Some("*"),
+        "%" => Some("*"),
+        "&" => Some("|"),
+        "|" => Some("&"),
+        "^" => Some("&"),
+        "&^" => Some("|"),
+        "<<" => Some(">>"),
+        ">>" => Some("<<"),
         _ => None,
     }
+}
+
+fn assignment_operator_node(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let operator = node.children(&mut cursor).find(|child| {
+        matches!(
+            child.kind(),
+            "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "&^=" | "<<=" | ">>="
+        )
+    });
+    operator
+}
+
+fn assignment_operator_replacement(operator: &str) -> Option<&'static str> {
+    match operator {
+        "+=" => Some("-="),
+        "-=" => Some("+="),
+        "*=" => Some("/="),
+        "/=" => Some("*="),
+        "%=" => Some("*="),
+        "&=" => Some("|="),
+        "|=" => Some("&="),
+        "^=" => Some("&="),
+        "&^=" => Some("|="),
+        "<<=" => Some(">>="),
+        ">>=" => Some("<<="),
+        _ => None,
+    }
+}
+
+fn unary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let operator = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "!" | "-" | "^"));
+    operator
 }
 
 fn is_err_nil_comparison(left: &str, right: &str) -> bool {
@@ -3123,7 +3382,7 @@ mod tests {
         write_file(
             root.path(),
             "invoice.go",
-            "package invoice\n\nfunc ParseInvoiceTotal(input string) int {\n\t_ = \"err != nil\"\n\tif input == \"\" || len(input)+1 > 10 {\n\t\treturn 0\n\t}\n\treturn len(input)+1\n}\n",
+            "package invoice\n\nfunc ParseInvoiceTotal(input string) int {\n\t_ = \"err != nil\"\n\ttotal := len(input)+1\n\ttotal += 2\n\tmask := total & 3\n\tmask ^= 1\n\tnegate := -total\n\tfor i := 0; i < 3; i++ {\n\t\tif i == 2 {\n\t\t\tbreak\n\t\t}\n\t\tcontinue\n\t}\n\tif !(input == \"\") || mask<<1 > 10 {\n\t\treturn 0\n\t}\n\ttotal = total\n\treturn total + negate\n}\n",
         );
         let functions = discover_functions(root.path()).expect("discover functions");
         let artifact = GeneratedArtifact {
@@ -3144,6 +3403,26 @@ mod tests {
         assert!(candidates.iter().any(|candidate| candidate.from == "||"));
         assert!(candidates.iter().any(|candidate| candidate.from == "+"));
         assert!(candidates.iter().any(|candidate| candidate.from == ">"));
+        assert!(candidates.iter().any(|candidate| candidate.from == "&"));
+        assert!(candidates.iter().any(|candidate| candidate.from == "<<"));
+        assert!(candidates.iter().any(|candidate| candidate.from == "+="));
+        assert!(candidates.iter().any(|candidate| candidate.from == "^="));
+        assert!(candidates.iter().any(|candidate| candidate.from == "++"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.from == "break" && candidate.to == "continue"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.from == "continue" && candidate.to == "break"));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.label.contains("negation")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.label.contains("literal")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.label.contains("self-assignment")));
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.from == "err != nil"));

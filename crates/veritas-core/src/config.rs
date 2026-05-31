@@ -68,6 +68,7 @@ pub struct PolicyConfig {
     pub fail_on_languages: Vec<String>,
     pub fail_on_artifact_kinds: Vec<String>,
     pub fail_on_target_risks: Vec<RiskLevel>,
+    pub min_mutation_score: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +100,7 @@ struct PolicySection {
     fail_on_languages: Option<Vec<String>>,
     fail_on_artifact_kinds: Option<Vec<String>>,
     fail_on_target_risks: Option<Vec<RiskLevel>>,
+    min_mutation_score: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +153,7 @@ impl Default for VeritasConfig {
                 fail_on_languages: Vec::new(),
                 fail_on_artifact_kinds: Vec::new(),
                 fail_on_target_risks: Vec::new(),
+                min_mutation_score: None,
             },
             plugins: PluginConfigs {
                 rust: RustPluginConfig {
@@ -232,6 +235,9 @@ impl VeritasConfig {
             }
             if let Some(value) = policy.fail_on_target_risks {
                 config.policy.fail_on_target_risks = value;
+            }
+            if let Some(value) = policy.min_mutation_score {
+                config.policy.min_mutation_score = Some(value.min(100));
             }
         }
 
@@ -332,6 +338,7 @@ fail_on_severity = "warning"
 fail_on_languages = ["go"]
 fail_on_artifact_kinds = ["mutation_check"]
 fail_on_target_risks = ["high"]
+min_mutation_score = 70
 
 [plugins.go]
 fuzz_seconds = 3
@@ -365,6 +372,7 @@ cpu_quota = "150%"
         assert_eq!(config.policy.fail_on_languages, vec!["go"]);
         assert_eq!(config.policy.fail_on_artifact_kinds, vec!["mutation_check"]);
         assert_eq!(config.policy.fail_on_target_risks, vec![RiskLevel::High]);
+        assert_eq!(config.policy.min_mutation_score, Some(70));
         assert_eq!(config.plugins.go.fuzz_seconds, 3);
         assert!(!config.plugins.go.fuzz_existing);
         assert_eq!(config.plugins.go.fuzz_concurrency, 3);

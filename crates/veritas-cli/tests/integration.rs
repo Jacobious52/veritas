@@ -156,6 +156,36 @@ fn verifies_go_fixture_and_writes_fuzz_test() {
 }
 
 #[test]
+fn go_mutation_score_policy_can_gate_ci() {
+    if !go_available() {
+        return;
+    }
+
+    let fixture = copy_fixture("sample-go");
+    fs::write(
+        fixture.path().join("veritas.toml"),
+        r#"
+[policy]
+min_mutation_score = 100
+
+[plugins.go]
+coverage_enabled = false
+fuzz_existing = false
+max_mutants = 4
+command_timeout_seconds = 20
+"#,
+    )
+    .expect("write veritas config");
+
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path())
+        .args(["verify", "--lang", "go", "--target", "."]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("mutation score"));
+}
+
+#[test]
 fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
     if !go_available() {
         return;
