@@ -283,6 +283,16 @@ fn seeded_rust_example_supports_explain_baseline_promotion_and_reports() {
         .success()
         .stdout(predicate::str::contains("Wrote promotion artifacts"));
 
+    let mut promote_regression = veritas();
+    promote_regression
+        .current_dir(fixture.path())
+        .args(["promote-regression", "--index", "0"]);
+    promote_regression
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote promotion artifacts"))
+        .stdout(predicate::str::contains("veritas_regression_0"));
+
     let mut accept = veritas();
     accept
         .current_dir(fixture.path())
@@ -296,6 +306,10 @@ fn seeded_rust_example_supports_explain_baseline_promotion_and_reports() {
         .path()
         .join(".veritas/promotions/rust_0.md")
         .exists());
+    assert!(has_file_with_prefix(
+        &fixture.path().join("tests"),
+        "veritas_regression_0"
+    ));
     assert!(fixture
         .path()
         .join(".veritas/baselines/findings.json")
@@ -484,4 +498,14 @@ fn should_skip_copy_entry(name: &std::ffi::OsStr) -> bool {
             | "veritas_generated"
             | "veritas_generated.rs"
     ) || name.to_string_lossy().ends_with(".proptest-regressions")
+        || name.to_string_lossy().starts_with("veritas_regression_")
+}
+
+fn has_file_with_prefix(directory: &Path, prefix: &str) -> bool {
+    fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
 }

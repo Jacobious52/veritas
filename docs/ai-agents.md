@@ -23,8 +23,9 @@ After making code or test changes:
 If veritas reports findings:
   1. Use veritas explain <finding-id>.
   2. Prefer adding focused regression tests or fuzz corpus entries before changing production code.
-  3. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/promotions/, and .veritas/symbol_graph/.
-  4. Rerun veritas verify --changed --profile ci.
+  3. Run veritas promote-regression --index <finding-index> when a finding should become an owned test scaffold.
+  4. Inspect .veritas/patches/, .veritas/repros/, .veritas/regressions/, .veritas/differential/, .veritas/promotions/, and .veritas/symbol_graph/.
+  5. Rerun veritas verify --changed --profile ci.
 
 Do not ignore warning/error findings without explaining why. Only accept a finding baseline with:
   veritas accept-baseline --id <finding-id>
@@ -42,7 +43,8 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 5. Run `veritas verify --changed --profile ci`.
 6. For each finding, run `veritas explain <finding-id>`.
 7. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
-8. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
+8. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
+9. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## AI-Facing Artifacts
 
@@ -58,6 +60,7 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/patches/*.md`: candidate verification patch guidance
 - `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs
 - `.veritas/promotions/*.md`: repro promotion notes created by `veritas promote-repro`
+- Rust `tests/veritas_regression_*.rs` and Go `veritas_regression_*_test.go`: ignored/skipped executable scaffolds created by `veritas promote-regression`
 
 Generated tests are reviewable artifacts, not automatically trusted source.
 

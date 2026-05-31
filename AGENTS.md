@@ -101,7 +101,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 
 - `verify --changed` parses git diff hunks, staged changes, and untracked files, then maps changed lines to discovered target line ranges when possible.
 - `review-ai` writes AI digest and feedback artifacts under `.veritas/ai/`.
-- `explain`, `promote-repro`, `accept-baseline`, and `cleanup` are implemented CLI commands.
+- `explain`, `promote-repro`, `promote-regression`, `accept-baseline`, and `cleanup` are implemented CLI commands.
 - Findings carry stable IDs and severity. Policy can filter by severity, language, artifact kind, and target risk.
 - Accepted finding baselines are stored under `.veritas/baselines/findings.json`.
 - Rust workspace roots are supported. Rust scans package `src/` directories inside virtual workspaces.
@@ -112,6 +112,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
+- `promote-regression` asks language plugins to create package-owned regression test scaffolds. Rust writes ignored `tests/veritas_regression_*.rs` tests; Go writes skipped `veritas_regression_*_test.go` tests.
 - Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
@@ -137,7 +138,9 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/regressions/*.md`
 - `.veritas/promotions/*.md`
 - Rust generated tests under `tests/veritas_generated*` or package-local equivalents
+- Rust promoted regression scaffolds under `tests/veritas_regression_*.rs` or package-local equivalents
 - Go generated fuzz files such as `veritas_fuzz_test.go`
+- Go promoted regression scaffolds such as `veritas_regression_*_test.go`
 
 Treat generated tests as reviewable artifacts, not automatically trusted source.
 

@@ -95,6 +95,8 @@ veritas report --format junit
 veritas explain <finding-id>
 veritas promote-repro
 veritas promote-repro --index 0
+veritas promote-regression
+veritas promote-regression --index 0
 veritas accept-baseline --id <finding-id>
 veritas accept-baseline --all
 veritas cleanup
@@ -114,7 +116,7 @@ Rust verification:
 
 - detects packages and virtual workspaces through `Cargo.toml`
 - discovers public free functions and public methods with Tree-sitter
-- writes package-local `proptest` integration harnesses for supported public free functions
+- writes package-local `proptest` integration harnesses for supported public free functions, including no-panic and deterministic-output properties where signatures allow them
 - runs `cargo test --all-targets` with configurable jobs, test threads, command timeouts, and optional systemd scope limits
 - runs AST-scoped mutation probes and reports surviving mutants
 - collects `cargo llvm-cov --summary-only` when enabled
@@ -127,7 +129,7 @@ Go verification:
 - builds package graphs with `go list -json ./...`
 - runs scoped `go test` commands for selected packages plus configurable reverse dependencies
 - discovers handwritten and generated fuzz targets
-- writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types
+- writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types and edge-case seed rows
 - runs relevant `go test -run=^$ -fuzz=...` targets within caps and timeouts
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
 - runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic operators, and domain-labeled risk surfaces
@@ -138,7 +140,7 @@ Reports and artifacts:
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, replay manifests, repro notes, candidate verification patches, regression notes, and promotion notes
+- writes coverage feedback, mutation feedback, replay manifests, repro notes, candidate verification patches, regression notes, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
 
 CI behavior:

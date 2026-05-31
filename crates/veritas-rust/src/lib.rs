@@ -16,7 +16,8 @@ use veritas_core::config::RustPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase, RiskLevel, RunStatus,
-    TargetKind, TestRunResult, VerificationPlan, VerificationStrategy, VerificationTarget,
+    TargetKind, TestRunResult, VerificationPlan, VerificationReport, VerificationStrategy,
+    VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -41,6 +42,7 @@ struct RustFunction {
     path: Utf8PathBuf,
     params: Vec<RustParam>,
     returns_value: bool,
+    return_type: Option<String>,
     signature: String,
     line_range: LineRange,
     start_byte: usize,
@@ -253,6 +255,16 @@ impl LanguagePlugin for RustPlugin {
         }
 
         Ok(artifacts)
+    }
+
+    fn promote_regression(
+        &self,
+        root: &Path,
+        report: &VerificationReport,
+        finding: &Failure,
+        index: usize,
+    ) -> Result<Vec<GeneratedArtifact>> {
+        promoted_rust_regression_artifacts(root, report, finding, index)
     }
 
     fn run_tests(
@@ -520,7 +532,8 @@ fn parse_rust_function(
         .map(|parameters| parse_rust_params(node_text(parameters, source).unwrap_or_default()))
         .unwrap_or_default();
     let signature = signature_text(node, source)?.trim().to_string();
-    let returns_value = signature.contains("->");
+    let return_type = rust_return_type(&signature);
+    let returns_value = return_type.is_some();
 
     Ok(Some(RustFunction {
         name,
@@ -529,6 +542,7 @@ fn parse_rust_function(
         path: path.clone(),
         params,
         returns_value,
+        return_type,
         signature,
         line_range: LineRange {
             start: node.start_position().row + 1,
@@ -673,6 +687,22 @@ fn signature_text<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
     Ok(&function_text[..signature_end])
 }
 
+fn rust_return_type(signature: &str) -> Option<String> {
+    let (_, return_type) = signature.split_once("->")?;
+    let return_type = return_type
+        .split("where")
+        .next()
+        .unwrap_or(return_type)
+        .trim()
+        .trim_end_matches('{')
+        .trim();
+    if return_type.is_empty() {
+        None
+    } else {
+        Some(normalize_rust_type(return_type))
+    }
+}
+
 fn node_text<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
     source
         .get(node.start_byte()..node.end_byte())
@@ -782,6 +812,43 @@ fn render_property_module(crate_name: &str, functions: &[RustFunction]) -> Strin
         out.push_str("        });\n");
         out.push_str("        prop_assert!(result.is_ok());\n");
         out.push_str("    }\n");
+
+        if comparable_return_type(function.return_type.as_deref()) {
+            out.push_str("    #[test]\n");
+            if params.is_empty() {
+                out.push_str(&format!(
+                    "    fn veritas_{}_is_deterministic() {{\n",
+                    safe_ident(&function.name)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    fn veritas_{}_is_deterministic({params}) {{\n",
+                    safe_ident(&function.name)
+                ));
+            }
+            let first_args = function
+                .params
+                .iter()
+                .map(render_reusable_call_arg)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let second_args = function
+                .params
+                .iter()
+                .map(render_call_arg)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "        let first = {}({first_args});\n",
+                function.name
+            ));
+            out.push_str(&format!(
+                "        let second = {}({second_args});\n",
+                function.name
+            ));
+            out.push_str("        prop_assert_eq!(first, second);\n");
+            out.push_str("    }\n");
+        }
     }
     out.push_str("}\n");
     out
@@ -793,12 +860,138 @@ fn render_index(module_name: &str) -> String {
     )
 }
 
+fn promoted_rust_regression_artifacts(
+    root: &Path,
+    report: &VerificationReport,
+    finding: &Failure,
+    index: usize,
+) -> Result<Vec<GeneratedArtifact>> {
+    let target = finding
+        .target_id
+        .as_ref()
+        .and_then(|target_id| report.targets.iter().find(|target| &target.id == target_id));
+    let functions = discover_functions(root).unwrap_or_default();
+    let function = target.and_then(|target| {
+        let symbol = target.symbol.as_deref()?;
+        functions
+            .iter()
+            .find(|function| function.path == target.path && function.symbol == symbol)
+    });
+    let package_root = function
+        .map(|function| function.package_root.clone())
+        .unwrap_or_else(|| Utf8PathBuf::from("."));
+    let test_dir = if package_root.as_str() == "." {
+        Utf8PathBuf::from("tests")
+    } else {
+        package_root.join("tests")
+    };
+    let slug = function
+        .map(|function| module_slug(&function.path, Some(&function.symbol)))
+        .or_else(|| target.map(|target| module_slug(&target.path, target.symbol.as_deref())))
+        .unwrap_or_else(|| format!("finding_{index}"));
+    let path = test_dir.join(format!("veritas_regression_{index}_{slug}.rs"));
+    let contents = render_rust_regression_scaffold(finding, target, function, index);
+
+    Ok(vec![GeneratedArtifact {
+        id: format!("rust-promoted-regression-{index}"),
+        language: "rust".to_string(),
+        kind: ArtifactKind::RegressionTest,
+        target_id: finding
+            .target_id
+            .clone()
+            .unwrap_or_else(|| "rust:unknown".to_string()),
+        path,
+        contents,
+        description: "Reviewable Rust regression test scaffold promoted from a veritas finding"
+            .to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
+fn render_rust_regression_scaffold(
+    finding: &Failure,
+    target: Option<&VerificationTarget>,
+    function: Option<&RustFunction>,
+    index: usize,
+) -> String {
+    let name = function
+        .map(|function| safe_ident(&function.symbol))
+        .or_else(|| target.and_then(|target| target.symbol.as_deref().map(safe_ident)))
+        .unwrap_or_else(|| "target".to_string());
+    let mut out = String::new();
+    out.push_str("// Generated by veritas. Review before committing.\n");
+    out.push_str("// Replace the ignored placeholder with an assertion that fails for the recorded finding.\n");
+    push_rust_comment(&mut out, &format!("Finding: {}", finding.message));
+    push_rust_comment(&mut out, &format!("Command: {}", finding.command));
+    if let Some(target_id) = &finding.target_id {
+        push_rust_comment(&mut out, &format!("Target: {target_id}"));
+    }
+    if let Some(repro) = &finding.repro {
+        push_rust_comment(&mut out, &format!("Repro: {}", repro.command));
+        if let Some(input) = &repro.input {
+            push_rust_comment(&mut out, &format!("Input: {}", input.trim()));
+        }
+    }
+    out.push('\n');
+    out.push_str("#[test]\n");
+    out.push_str(
+        "#[ignore = \"review and replace the veritas placeholder with a real assertion\"]\n",
+    );
+    out.push_str(&format!("fn veritas_regression_{index}_{name}() {{\n"));
+    out.push_str("    // Arrange the smallest input or state that exposes the finding.\n");
+    out.push_str(
+        "    // Assert the exact expected behavior so the original mutant or repro is killed.\n",
+    );
+    out.push_str("    panic!(\"veritas regression scaffold requires a reviewed assertion\");\n");
+    out.push_str("}\n");
+    out
+}
+
+fn push_rust_comment(out: &mut String, line: &str) {
+    for line in line.lines() {
+        out.push_str("// ");
+        out.push_str(line.trim());
+        out.push('\n');
+    }
+}
+
 fn render_call_arg(param: &RustParam) -> String {
     let ident = safe_ident(&param.name);
     match param.type_name.as_str() {
         "&str" => format!("{ident}.as_str()"),
         _ => ident,
     }
+}
+
+fn render_reusable_call_arg(param: &RustParam) -> String {
+    let ident = safe_ident(&param.name);
+    match param.type_name.as_str() {
+        "String" => format!("{ident}.clone()"),
+        "&str" => format!("{ident}.as_str()"),
+        _ => ident,
+    }
+}
+
+fn comparable_return_type(return_type: Option<&str>) -> bool {
+    let Some(return_type) = return_type else {
+        return false;
+    };
+    matches!(
+        return_type,
+        "bool"
+            | "String"
+            | "&str"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "usize"
+    )
 }
 
 fn proptest_strategy(type_name: &str) -> Option<&'static str> {

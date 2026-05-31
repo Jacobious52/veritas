@@ -17,8 +17,8 @@ use veritas_core::config::GoPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
     FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase,
-    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationStrategy,
-    VerificationTarget,
+    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -383,6 +383,16 @@ impl LanguagePlugin for GoPlugin {
         }
 
         Ok(artifacts)
+    }
+
+    fn promote_regression(
+        &self,
+        root: &Path,
+        report: &VerificationReport,
+        finding: &Failure,
+        index: usize,
+    ) -> Result<Vec<GeneratedArtifact>> {
+        promoted_go_regression_artifacts(root, &self.config, report, finding, index)
     }
 
     fn run_tests(
@@ -1471,14 +1481,10 @@ fn render_fuzz_file(functions: &[GoFunction]) -> String {
             .map(|(index, param)| fuzz_param_name(param, index))
             .collect::<Vec<_>>()
             .join(", ");
-        let seeds = function
-            .params
-            .iter()
-            .map(|param| fuzz_seed(&param.type_name))
-            .collect::<Vec<_>>()
-            .join(", ");
         out.push_str(&format!("func {fuzz_name}(f *testing.F) {{\n"));
-        out.push_str(&format!("\tf.Add({seeds})\n"));
+        for seeds in fuzz_seed_rows(&function.params) {
+            out.push_str(&format!("\tf.Add({seeds})\n"));
+        }
         out.push_str(&format!("\tf.Fuzz(func(t *testing.T, {params}) {{\n"));
         out.push_str("\t\tdefer func() {\n");
         out.push_str("\t\t\tif r := recover(); r != nil {\n");
@@ -1533,6 +1539,54 @@ fn fuzz_seed(type_name: &str) -> &'static str {
         "int32" => "int32(1)",
         "int64" => "int64(1)",
         _ => "1",
+    }
+}
+
+fn fuzz_seed_rows(params: &[GoParam]) -> Vec<String> {
+    if params.is_empty() {
+        return Vec::new();
+    }
+    let per_param = params
+        .iter()
+        .map(|param| fuzz_seed_values(&param.type_name))
+        .collect::<Vec<_>>();
+    let rows = per_param.iter().map(Vec::len).max().unwrap_or(1).min(4);
+    (0..rows)
+        .map(|row| {
+            per_param
+                .iter()
+                .map(|seeds| seeds.get(row).copied().unwrap_or(seeds[0]))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .collect()
+}
+
+fn fuzz_seed_values(type_name: &str) -> Vec<&'static str> {
+    match type_name {
+        "string" => vec!["\"veritas-seed\"", "\"\"", "\" 0 \"", "\"not-a-number\""],
+        "[]byte" => vec![
+            "[]byte(\"veritas-seed\")",
+            "[]byte(\"\")",
+            "[]byte(\" 0 \")",
+            "[]byte(\"not-a-number\")",
+        ],
+        "bool" => vec!["true", "false"],
+        "byte" => vec!["byte(1)", "byte(0)", "byte(255)"],
+        "rune" => vec!["rune('v')", "rune(0)", "rune('0')"],
+        "float32" => vec!["float32(1.25)", "float32(0)", "float32(-1.25)"],
+        "float64" => vec!["float64(1.25)", "float64(0)", "float64(-1.25)"],
+        "uint" => vec!["uint(1)", "uint(0)"],
+        "uint8" => vec!["uint8(1)", "uint8(0)", "uint8(255)"],
+        "uint16" => vec!["uint16(1)", "uint16(0)"],
+        "uint32" => vec!["uint32(1)", "uint32(0)"],
+        "uint64" => vec!["uint64(1)", "uint64(0)"],
+        "int" => vec!["1", "0", "-1"],
+        "int8" => vec!["int8(1)", "int8(0)", "int8(-1)"],
+        "int16" => vec!["int16(1)", "int16(0)", "int16(-1)"],
+        "int32" => vec!["int32(1)", "int32(0)", "int32(-1)"],
+        "int64" => vec!["int64(1)", "int64(0)", "int64(-1)"],
+        _ => vec![fuzz_seed(type_name)],
     }
 }
 
@@ -2264,6 +2318,141 @@ fn package_dir(path: &Utf8PathBuf) -> Utf8PathBuf {
     }
 }
 
+fn promoted_go_regression_artifacts(
+    root: &Path,
+    config: &GoPluginConfig,
+    report: &VerificationReport,
+    finding: &Failure,
+    index: usize,
+) -> Result<Vec<GeneratedArtifact>> {
+    let context = GoVerificationContext::discover(root, config)?;
+    let target = finding
+        .target_id
+        .as_ref()
+        .and_then(|target_id| report.targets.iter().find(|target| &target.id == target_id));
+    let function = target.and_then(|target| {
+        let symbol = target.symbol.as_deref()?;
+        context
+            .functions
+            .iter()
+            .find(|function| function.path == target.path && function.symbol == symbol)
+    });
+    let package = function
+        .map(|function| package_dir(&function.path))
+        .or_else(|| target.map(|target| package_dir(&target.path)))
+        .unwrap_or_else(|| Utf8PathBuf::from("."));
+    let package_name = function
+        .map(|function| function.package_name.clone())
+        .or_else(|| {
+            context
+                .packages
+                .iter()
+                .find(|candidate| candidate.dir == package)
+                .map(|candidate| package_name_from_import_path(&candidate.import_path))
+        });
+    let Some(package_name) = package_name else {
+        return Ok(generic_go_regression_promotion(finding, index));
+    };
+    let file_name = format!("veritas_regression_{index}_test.go");
+    let path = if package.as_str() == "." {
+        Utf8PathBuf::from(file_name)
+    } else {
+        package.join(file_name)
+    };
+    let contents = render_go_regression_scaffold(&package_name, finding, target, function, index);
+
+    Ok(vec![GeneratedArtifact {
+        id: format!("go-promoted-regression-{index}"),
+        language: "go".to_string(),
+        kind: ArtifactKind::RegressionTest,
+        target_id: finding
+            .target_id
+            .clone()
+            .unwrap_or_else(|| "go:unknown".to_string()),
+        path,
+        contents,
+        description: "Reviewable Go regression test scaffold promoted from a veritas finding"
+            .to_string(),
+        status: ArtifactStatus::Planned,
+    }])
+}
+
+fn generic_go_regression_promotion(finding: &Failure, index: usize) -> Vec<GeneratedArtifact> {
+    let mut contents = String::from("# Go Regression Promotion\n\n");
+    contents.push_str("Generated by veritas. Review before committing.\n\n");
+    contents.push_str(&format!("- Finding: {}\n", finding.message));
+    contents.push_str(&format!("- Command: `{}`\n", finding.command));
+    contents.push_str("\nThe Go plugin could not resolve the target package for this finding. Add a package-owned `*_test.go` regression manually, then rerun `veritas verify`.\n");
+    vec![GeneratedArtifact {
+        id: format!("go-promoted-regression-{index}"),
+        language: "go".to_string(),
+        kind: ArtifactKind::RegressionTest,
+        target_id: finding
+            .target_id
+            .clone()
+            .unwrap_or_else(|| "go:unknown".to_string()),
+        path: Utf8PathBuf::from(format!(".veritas/regressions/promoted/go_{index}.md")),
+        contents,
+        description: "Go regression promotion guidance".to_string(),
+        status: ArtifactStatus::Planned,
+    }]
+}
+
+fn render_go_regression_scaffold(
+    package_name: &str,
+    finding: &Failure,
+    target: Option<&VerificationTarget>,
+    function: Option<&GoFunction>,
+    index: usize,
+) -> String {
+    let name = function
+        .map(|function| safe_ident(&function.symbol))
+        .or_else(|| target.and_then(|target| target.symbol.as_deref().map(safe_ident)))
+        .unwrap_or_else(|| "Target".to_string());
+    let mut out = String::new();
+    out.push_str("// Generated by veritas. Review before committing.\n");
+    out.push_str("// Replace t.Skip with an assertion that fails for the recorded finding.\n");
+    push_go_comment(&mut out, &format!("Finding: {}", finding.message));
+    push_go_comment(&mut out, &format!("Command: {}", finding.command));
+    if let Some(target_id) = &finding.target_id {
+        push_go_comment(&mut out, &format!("Target: {target_id}"));
+    }
+    if let Some(repro) = &finding.repro {
+        push_go_comment(&mut out, &format!("Repro: {}", repro.command));
+        if let Some(input) = &repro.input {
+            push_go_comment(&mut out, &format!("Input: {}", input.trim()));
+        }
+    }
+    out.push('\n');
+    out.push_str(&format!("package {package_name}\n\n"));
+    out.push_str("import \"testing\"\n\n");
+    out.push_str(&format!(
+        "func TestVeritasRegression{index}{name}(t *testing.T) {{\n"
+    ));
+    out.push_str(
+        "\tt.Skip(\"review and replace the veritas placeholder with a real assertion\")\n",
+    );
+    out.push_str("}\n");
+    out
+}
+
+fn push_go_comment(out: &mut String, line: &str) {
+    for line in line.lines() {
+        out.push_str("// ");
+        out.push_str(line.trim());
+        out.push('\n');
+    }
+}
+
+fn package_name_from_import_path(import_path: &str) -> String {
+    import_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(safe_ident)
+        .unwrap_or_else(|| "main".to_string())
+}
+
 fn module_slug(path: &Utf8PathBuf, symbol: Option<&str>) -> String {
     let base = format!("{}_{}", path, symbol.unwrap_or("target"));
     safe_ident(&base)
@@ -2442,6 +2631,8 @@ mod tests {
 
         assert!(rendered.contains("package invoice"));
         assert!(rendered.contains("f.Add(\"veritas-seed\", true)"));
+        assert!(rendered.contains("f.Add(\"\", false)"));
+        assert!(rendered.contains("f.Add(\" 0 \", true)"));
         assert!(rendered.contains("func(t *testing.T, input0 string, round bool)"));
         assert!(rendered.contains("ParseTotal(input0, round)"));
     }

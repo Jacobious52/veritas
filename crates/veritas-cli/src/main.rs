@@ -80,6 +80,13 @@ enum Command {
         #[arg(long)]
         index: Option<usize>,
     },
+    PromoteRegression {
+        #[arg(long)]
+        dry_run: bool,
+
+        #[arg(long)]
+        index: Option<usize>,
+    },
     AcceptBaseline {
         #[arg(long)]
         id: Vec<String>,
@@ -209,6 +216,10 @@ fn main() -> Result<()> {
             let summary = promote_repros(&root, dry_run, index)?;
             print_promotion_summary(&summary);
         }
+        Command::PromoteRegression { dry_run, index } => {
+            let summary = engine.promote_regressions(&root, dry_run, index)?;
+            print_named_promotion_summary("promote-regression", &summary);
+        }
         Command::AcceptBaseline { id, all } => {
             if id.is_empty() && !all {
                 bail!("pass --id <finding-id> or --all");
@@ -222,14 +233,18 @@ fn main() -> Result<()> {
 }
 
 fn print_promotion_summary(summary: &PromotionSummary) {
+    print_named_promotion_summary("promote-repro", summary);
+}
+
+fn print_named_promotion_summary(command: &str, summary: &PromotionSummary) {
     if summary.dry_run {
-        println!("# veritas promote-repro (dry run)\n");
+        println!("# veritas {command} (dry run)\n");
     } else {
-        println!("# veritas promote-repro\n");
+        println!("# veritas {command}\n");
     }
 
     if summary.paths.is_empty() {
-        println!("No saved repro findings were available to promote.");
+        println!("No saved findings were available to promote.");
         return;
     }
 

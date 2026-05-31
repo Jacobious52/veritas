@@ -133,7 +133,9 @@ Common generated paths:
 - `.veritas/regressions/*.md`
 - `.veritas/promotions/*.md`
 - Rust `tests/veritas_generated*`
+- Rust `tests/veritas_regression_*.rs`
 - Go `veritas_fuzz_test.go`
+- Go `veritas_regression_*_test.go`
 
 Clean generated artifacts with:
 
@@ -153,6 +155,7 @@ veritas cleanup
 - Methods, unsupported signatures, and richer types are still included in target discovery, symbol graphs, mutation checks, package graphs, policy, and baselines.
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
 - Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
+- `veritas promote-regression` turns selected findings into ignored/skipped package-owned test scaffolds for Rust and Go; review and replace the placeholder before relying on them.
 - Differential checks persist API signatures and replay-case manifests; they do not yet execute old/new binaries automatically.
 
 ## External Canaries

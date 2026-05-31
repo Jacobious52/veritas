@@ -43,6 +43,7 @@ Each language plugin implements:
 - `generate_tests(target, plan) -> Vec<GeneratedArtifact>`
 - `run_tests(root, artifacts, plan) -> TestRunResult`
 - `collect_coverage(root) -> Option<CoverageReport>`
+- `promote_regression(root, report, finding, index) -> Vec<GeneratedArtifact>`
 
 Targets carry:
 
@@ -62,6 +63,8 @@ Artifacts carry:
 - path
 - contents
 - planned/written/skipped status
+
+Plugins can override regression promotion to emit language-owned executable scaffolds. The default plugin contract falls back to Markdown guidance, so future language plugins can adopt promotion incrementally.
 
 ## Planning
 
@@ -95,7 +98,7 @@ Go:
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 
-Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning and `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests.
+Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning and `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 
