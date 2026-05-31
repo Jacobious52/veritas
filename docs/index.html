@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Veritas | Adversarial verification for AI-written code</title>
-  <meta name="description" content="Veritas is a Rust and Go verification harness for AI-written and AI-modified software: mutation scoring, fuzzing, replay, assertions, and confidence reports.">
+  <meta name="description" content="Veritas is a verification hub for AI-written and AI-modified software: mutation testing, property testing, fuzzing, replay, coverage, and confidence reports.">
   <meta property="og:title" content="Veritas">
   <meta property="og:description" content="Adversarial verification for AI-written code.">
   <meta property="og:image" content="assets/veritas-hero.png">
@@ -13,14 +13,17 @@
       color-scheme: dark;
       --bg: #090b10;
       --panel: #111722;
+      --panel-2: #0d121a;
       --ink: #f3f7fb;
       --muted: #aab7c4;
       --line: #263244;
       --accent: #42d3a5;
       --accent-2: #6ba8ff;
       --warn: #f5c76b;
+      --bad: #ff7a90;
     }
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
       font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -29,15 +32,6 @@
       line-height: 1.55;
     }
     a { color: inherit; }
-    .hero {
-      min-height: 92vh;
-      display: grid;
-      align-items: end;
-      background:
-        linear-gradient(180deg, rgba(9, 11, 16, .18), rgba(9, 11, 16, .9)),
-        url("assets/veritas-hero.png") center / cover no-repeat;
-      border-bottom: 1px solid var(--line);
-    }
     .wrap {
       width: min(1120px, calc(100vw - 40px));
       margin: 0 auto;
@@ -46,7 +40,7 @@
       position: fixed;
       inset: 0 0 auto 0;
       z-index: 3;
-      background: rgba(9, 11, 16, .78);
+      background: rgba(9, 11, 16, .8);
       backdrop-filter: blur(14px);
       border-bottom: 1px solid rgba(255,255,255,.08);
     }
@@ -59,7 +53,6 @@
     }
     .brand {
       font-weight: 800;
-      letter-spacing: 0;
       display: flex;
       align-items: center;
       gap: 10px;
@@ -77,29 +70,91 @@
       gap: 18px;
       color: var(--muted);
       font-size: 14px;
+      white-space: nowrap;
     }
     .links a { text-decoration: none; }
+    .hero {
+      min-height: 96vh;
+      display: grid;
+      align-items: end;
+      background:
+        linear-gradient(180deg, rgba(9, 11, 16, .08), rgba(9, 11, 16, .96)),
+        url("assets/veritas-hero.png") center / cover no-repeat;
+      border-bottom: 1px solid var(--line);
+    }
     .hero-copy {
-      padding: 150px 0 72px;
-      max-width: 780px;
+      padding: 138px 0 52px;
     }
     h1 {
       margin: 0;
-      font-size: clamp(46px, 8vw, 88px);
+      max-width: 900px;
+      font-size: clamp(44px, 7.6vw, 86px);
       line-height: .95;
       letter-spacing: 0;
     }
     .lede {
-      margin: 24px 0 0;
-      max-width: 700px;
+      margin: 22px 0 0;
+      max-width: 760px;
       color: #d7e0ea;
-      font-size: 22px;
+      font-size: 21px;
     }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, .72fr);
+      gap: 18px;
+      align-items: stretch;
+      margin-top: 34px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      background: rgba(13, 18, 26, .88);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .panel h2,
+    .panel h3 {
+      margin-top: 0;
+    }
+    .kicker {
+      color: var(--accent);
+      font-weight: 800;
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: .08em;
+    }
+    .copy-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    button.copy {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      background: #151d29;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 0 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    pre {
+      overflow: auto;
+      margin: 0;
+      background: #05070b;
+      color: #e8f2ff;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      font-size: 14px;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .actions {
       display: flex;
       flex-wrap: wrap;
       gap: 12px;
-      margin-top: 32px;
+      margin-top: 18px;
     }
     .button {
       display: inline-flex;
@@ -108,7 +163,7 @@
       min-height: 44px;
       padding: 0 18px;
       border: 1px solid var(--line);
-      background: rgba(17, 23, 34, .82);
+      background: rgba(17, 23, 34, .86);
       color: var(--ink);
       text-decoration: none;
       font-weight: 700;
@@ -120,13 +175,19 @@
       color: #06110d;
     }
     section {
-      padding: 72px 0;
+      padding: 64px 0;
       border-bottom: 1px solid var(--line);
     }
     h2 {
       font-size: 32px;
-      margin: 0 0 20px;
+      margin: 0 0 18px;
       letter-spacing: 0;
+    }
+    .subhead {
+      margin: -4px 0 24px;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 18px;
     }
     .grid {
       display: grid;
@@ -140,28 +201,52 @@
       padding: 20px;
     }
     .card strong { color: var(--accent); }
-    pre {
-      overflow: auto;
-      background: #05070b;
-      color: #e8f2ff;
-      padding: 18px;
-      border-radius: 8px;
+    .example {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+    .mutant {
+      display: grid;
+      gap: 12px;
+    }
+    .tag {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
       border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
     }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .metric {
+    .score {
       color: var(--warn);
-      font-weight: 800;
-      font-size: 28px;
+      font-weight: 850;
+      font-size: 38px;
+      line-height: 1;
     }
+    .bad { color: var(--bad); }
+    .good { color: var(--accent); }
     footer {
       padding: 36px 0;
       color: var(--muted);
     }
-    @media (max-width: 800px) {
+    footer a {
+      color: var(--ink);
+      margin-right: 14px;
+    }
+    @media (max-width: 900px) {
       .links { display: none; }
-      .grid { grid-template-columns: 1fr; }
-      .hero-copy { padding-top: 120px; }
+      .hero-grid,
+      .example,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .hero-copy { padding-top: 118px; }
       .lede { font-size: 18px; }
     }
   </style>
@@ -171,10 +256,11 @@
     <div class="wrap">
       <div class="brand"><span class="mark"></span><span>Veritas</span></div>
       <div class="links">
+        <a href="#install">Install</a>
+        <a href="#agent">Agent Prompt</a>
+        <a href="#example">Example</a>
+        <a href="#testing">Testing</a>
         <a href="https://github.com/Jacobious52/veritas">GitHub</a>
-        <a href="ai-agents.html">AI Agents</a>
-        <a href="confidence.html">Confidence</a>
-        <a href="architecture.html">Architecture</a>
       </div>
     </div>
   </nav>
@@ -182,63 +268,102 @@
   <main>
     <header class="hero">
       <div class="wrap hero-copy">
-        <h1>Veritas</h1>
-        <p class="lede">Adversarial verification for AI-written and AI-modified code: mutation scoring, fuzzing, corpus replay, generated assertions, and a confidence score for every change.</p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/Jacobious52/veritas">View on GitHub</a>
-          <a class="button" href="#install">Install</a>
-          <a class="button" href="#loop">See the loop</a>
+        <h1>Ship AI code with adversarial proof, not vibes.</h1>
+        <p class="lede">Veritas turns every AI-written change into a verification loop: mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential checks, and a confidence score an agent can act on.</p>
+
+        <div class="hero-grid">
+          <div id="install" class="panel">
+            <div class="copy-row">
+              <span class="kicker">Install</span>
+              <button class="copy" type="button" data-copy="install-code">Copy</button>
+            </div>
+            <pre><code id="install-code">cargo install veritas-cli --locked</code></pre>
+            <div class="actions">
+              <a class="button primary" href="https://github.com/Jacobious52/veritas">View on GitHub</a>
+              <a class="button" href="#agent">Paste this for your agent</a>
+            </div>
+          </div>
+
+          <div id="agent" class="panel">
+            <div class="copy-row">
+              <span class="kicker">Paste This For Your Agent</span>
+              <button class="copy" type="button" data-copy="agent-code">Copy</button>
+            </div>
+            <pre><code id="agent-code">Install and use Veritas for this repo.
+
+Run:
+cargo install veritas-cli --locked
+veritas review-ai
+veritas verify --changed --profile ci
+veritas score
+
+Use the generated .veritas/ feedback to add or improve tests before marking the change done.</code></pre>
+          </div>
         </div>
       </div>
     </header>
 
-    <section id="loop">
+    <section id="example">
       <div class="wrap">
-        <h2>The AI Verification Loop</h2>
-        <div class="grid">
-          <div class="card"><strong>Review</strong><br>Map changed files to symbols, risks, and agent instructions.</div>
-          <div class="card"><strong>Attack</strong><br>Run tests, fuzzing, mutation probes, coverage, and replay manifests.</div>
-          <div class="card"><strong>Close</strong><br>Promote assertion candidates, corpus seeds, and regression scaffolds.</div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="wrap">
-        <h2>Confidence Signals</h2>
-        <div class="grid">
-          <div class="card"><div class="metric">85%</div>mutation score example with killed and surviving mutants</div>
-          <div class="card"><div class="metric">8</div>seeded Rust and Go benchmark projects</div>
-          <div class="card"><div class="metric">1 cmd</div><code>veritas score</code> summarizes readiness</div>
-        </div>
-      </div>
-    </section>
-
-    <section id="install">
-      <div class="wrap">
-        <h2>Install</h2>
-        <pre><code>cargo install veritas-cli --locked
-
-# Until the crate release is available:
-cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked</code></pre>
-      </div>
-    </section>
-
-    <section>
-      <div class="wrap">
-        <h2>Use With An AI Agent</h2>
-        <pre><code>veritas review-ai
-veritas verify --changed --profile ci
+        <h2>A tangible failure it catches</h2>
+        <p class="subhead">AI often makes tiny, plausible edits that compile and pass happy-path tests. Veritas mutates the same risk boundary and asks whether your suite would notice.</p>
+        <div class="example">
+          <div class="card mutant">
+            <span class="tag">money / permissions / parsing</span>
+            <pre><code>if refund_cents &lt;= available_cents {
+    approve_refund()
+}</code></pre>
+            <pre><code class="bad">if refund_cents &lt; available_cents {
+    approve_refund()
+}</code></pre>
+          </div>
+          <div class="card">
+            <div class="score">mutation survived</div>
+            <p>Veritas records the survivor, writes an assertion candidate, persists a replayable corpus entry, and tells your agent exactly what regression test would kill it.</p>
+            <pre><code>veritas verify --changed --profile ci
 veritas score
-
-# Promote useful findings into reviewed tests:
 veritas promote-regression --index 0</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="testing">
+      <div class="wrap">
+        <h2>The testing hub for AI development</h2>
+        <p class="subhead">Rust and Go work today. The architecture is language-plugin based, with tree-sitter symbol discovery so more languages can join without changing the core verification model.</p>
+        <div class="grid">
+          <div class="card"><strong>Mutation testing</strong><br>Domain-aware mutants for auth, money, parsing, serialization, permissions, booleans, comparisons, returns, and error paths.</div>
+          <div class="card"><strong>Property testing</strong><br>Generated and discovered properties are scored for assertion strength, determinism, and no-panic coverage.</div>
+          <div class="card"><strong>Fuzzing</strong><br>Go fuzz targets and Rust repro paths feed persistent corpus entries and replay commands.</div>
+          <div class="card"><strong>Coverage feedback</strong><br>Coverage gaps become agent-readable prompts for the next test-generation pass.</div>
+          <div class="card"><strong>Differential replay</strong><br>Public API behavior cases make old/new semantic drift reviewable before acceptance.</div>
+          <div class="card"><strong>Confidence score</strong><br><code>veritas score</code> rolls findings, survivors, corpus replay, properties, budgets, and generated tests into one readiness signal.</div>
+        </div>
       </div>
     </section>
   </main>
 
   <footer>
-    <div class="wrap">Built for developers who want AI to move fast without moving blindly.</div>
+    <div class="wrap">
+      <a href="https://github.com/Jacobious52/veritas/blob/main/docs/ai-agents.md">AI Agents</a>
+      <a href="https://github.com/Jacobious52/veritas/blob/main/docs/confidence.md">Confidence</a>
+      <a href="https://github.com/Jacobious52/veritas/blob/main/docs/architecture.md">Architecture</a>
+      <span>Built for developers who want AI to move fast without moving blindly.</span>
+    </div>
   </footer>
+
+  <script>
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const target = document.getElementById(button.dataset.copy);
+        if (!target) return;
+        await navigator.clipboard.writeText(target.textContent.trim());
+        const label = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = label; }, 1200);
+      });
+    });
+  </script>
 </body>
 </html>
