@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/app",
+    "crates/auth",
+    "crates/invoice",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+auth = { path = "crates/auth" }
+invoice = { path = "crates/invoice" }
+proptest = "1.6"

@@ -23,6 +23,7 @@ examples/
   rust-invoice/         # richer Rust test bed with hidden parser assumptions
   go-invoice/           # richer Go test bed with hidden parser assumptions
 docs/                   # durable user, production, AI-agent, architecture, release docs
+scripts/run-canaries.sh # pinned external repo smoke/verify checks
 ```
 
 ## Tooling
@@ -63,9 +64,13 @@ Run fixture checks:
 cargo run -p veritas-cli -- scan --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-rust
+cargo run -p veritas-cli -- verify --root fixtures/rust-workspace --lang rust --target .
+cargo run -p veritas-cli -- cleanup --root fixtures/rust-workspace
 cargo run -p veritas-cli -- scan --root fixtures/sample-go
 cargo run -p veritas-cli -- verify --root fixtures/sample-go --lang go --target .
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-go
+cargo run -p veritas-cli -- verify --root fixtures/go-multimodule --lang go --target services/billing/pkg/invoice
+cargo run -p veritas-cli -- cleanup --root fixtures/go-multimodule
 ```
 
 Run example test beds:
@@ -104,7 +109,10 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust property generation is intentionally limited to supported public free functions in packages whose manifest mentions `proptest`.
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, fuzz target caps, and AST-scoped mutation probes.
+- Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
+- Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
+- Pinned external canaries run through `./scripts/run-canaries.sh smoke` or `./scripts/run-canaries.sh verify`.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
 - GitHub Actions release workflow exists. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
@@ -135,6 +143,7 @@ Use `veritas cleanup` after fixture, example, and dogfood runs unless the genera
 - `docs/ai-agents.md`: copy-paste AI agent workflow
 - `docs/production.md`: large-repo and CI operating guide
 - `docs/architecture.md`: plugin contract and artifact model
+- `docs/confidence.md`: fixture tiers, seeded examples, and external canaries
 - `docs/releasing.md`: crates.io release workflow
 
 Keep these docs current when behavior changes. Do not reintroduce temporary roadmap docs for completed work; convert durable knowledge into the docs above.

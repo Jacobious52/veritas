@@ -74,6 +74,7 @@ veritas cleanup
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
 - [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
+- [Confidence Guide](docs/confidence.md): fixture tiers, seeded examples, and external canaries.
 - [Releasing](docs/releasing.md): crates.io publishing through GitHub Actions.
 
 ## CLI Surface
@@ -221,8 +222,10 @@ Run fixture checks:
 cargo run -p veritas-cli -- scan --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-rust --dry-run
+cargo run -p veritas-cli -- verify --root fixtures/rust-workspace --lang rust --target .
 cargo run -p veritas-cli -- scan --root fixtures/sample-go
 cargo run -p veritas-cli -- verify --root fixtures/sample-go --lang go --target .
+cargo run -p veritas-cli -- verify --root fixtures/go-multimodule --lang go --target services/billing/pkg/invoice
 ```
 
 Run the richer example beds:
@@ -235,3 +238,9 @@ cargo run -p veritas-cli -- verify --root examples/go-invoice --lang go --target
 ```
 
 The example projects intentionally contain hidden assumptions while their handwritten tests pass, so they are useful for validating generated property/fuzz artifacts and report output.
+
+Run external canary smoke checks when you want confidence against real pinned repositories:
+
+```bash
+./scripts/run-canaries.sh smoke
+```

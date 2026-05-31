@@ -329,10 +329,11 @@ impl LanguagePlugin for GoPlugin {
                 if function.receiver.is_some() || function.params.is_empty() {
                     continue;
                 }
-                by_package
-                    .entry(package_dir(&function.path))
-                    .or_default()
-                    .push(function);
+                let package = package_dir(&function.path);
+                if handwritten_fuzz_exists(&context, &package, &function) {
+                    continue;
+                }
+                by_package.entry(package).or_default().push(function);
             }
 
             for (package, functions) in by_package {
@@ -1491,6 +1492,19 @@ fn render_fuzz_file(functions: &[GoFunction]) -> String {
     out
 }
 
+fn handwritten_fuzz_exists(
+    context: &GoVerificationContext,
+    package: &Utf8PathBuf,
+    function: &GoFunction,
+) -> bool {
+    let fuzz_name = format!("Fuzz{}", function.name);
+    context
+        .fuzz_targets
+        .handwritten
+        .get(package)
+        .is_some_and(|names| names.iter().any(|name| name == &fuzz_name))
+}
+
 fn fuzz_param_name(param: &GoParam, index: usize) -> String {
     let candidate = safe_ident(&param.name);
     if candidate == "input" {
@@ -2415,6 +2429,37 @@ mod tests {
         assert!(rendered.contains("f.Add(\"veritas-seed\", true)"));
         assert!(rendered.contains("func(t *testing.T, input0 string, round bool)"));
         assert!(rendered.contains("ParseTotal(input0, round)"));
+    }
+
+    #[test]
+    fn handwritten_fuzz_targets_suppress_duplicate_generated_harnesses() {
+        let function = GoFunction {
+            package_name: "invoice".to_string(),
+            path: Utf8PathBuf::from("pkg/invoice/invoice.go"),
+            name: "ParseTotal".to_string(),
+            symbol: "ParseTotal".to_string(),
+            receiver: None,
+            params: vec![GoParam {
+                name: "input".to_string(),
+                type_name: "string".to_string(),
+            }],
+            signature: "func ParseTotal(input string)".to_string(),
+            line_range: LineRange { start: 1, end: 3 },
+            start_byte: 0,
+            end_byte: 10,
+            calls: vec![],
+        };
+        let mut context = GoVerificationContext::default();
+        context.fuzz_targets.handwritten.insert(
+            Utf8PathBuf::from("pkg/invoice"),
+            vec!["FuzzParseTotal".to_string()],
+        );
+
+        assert!(handwritten_fuzz_exists(
+            &context,
+            &Utf8PathBuf::from("pkg/invoice"),
+            &function
+        ));
     }
 
     #[test]

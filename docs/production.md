@@ -65,6 +65,8 @@ build_tags = []
 
 Use higher caps only for an explicit local investigation.
 
+`fixtures/go-multimodule` is the local confidence fixture for this path. It has two Go modules, a cross-module import, a selected billing package, and a gateway reverse dependency. It also keeps a handwritten fuzz target so the generated-fuzz path proves it does not emit duplicate fuzz names.
+
 ## Rust Host Safety
 
 Rust validation can be expensive on large workspaces. On Linux hosts with systemd user scopes, use:
@@ -148,3 +150,14 @@ veritas cleanup
 - Go fuzz generation targets exported free functions with supported primitive fuzz parameter types.
 - Methods, unsupported signatures, and richer types are still included in target discovery, symbol graphs, mutation checks, package graphs, policy, and baselines.
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
+
+## External Canaries
+
+Use pinned external canaries outside the normal fast loop:
+
+```bash
+./scripts/run-canaries.sh smoke
+./scripts/run-canaries.sh verify
+```
+
+See `docs/confidence.md` for pins and expected use.
