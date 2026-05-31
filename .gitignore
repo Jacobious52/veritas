@@ -1,0 +1,9 @@
+/target/
+**/target/
+/.veritas/
+**/.veritas/
+**/veritas_fuzz_test.go
+**/tests/veritas_generated/
+**/tests/veritas_generated.rs
+**/*.proptest-regressions
+

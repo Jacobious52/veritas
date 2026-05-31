@@ -1,0 +1,17 @@
+[package]
+name = "veritas-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust language plugin for veritas"
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+serde.workspace = true
+toml.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust = "0.24.2"
+veritas-core = { path = "../veritas-core" }
+veritas-plugin-api = { path = "../veritas-plugin-api" }
+walkdir.workspace = true

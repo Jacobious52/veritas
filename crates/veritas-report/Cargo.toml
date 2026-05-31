@@ -1,0 +1,12 @@
+[package]
+name = "veritas-report"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Report rendering for veritas"
+
+[dependencies]
+veritas-plugin-api = { path = "../veritas-plugin-api" }
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,36 @@
+[veritas]
+budget_seconds = 120
+write_generated_tests = true
+fail_on_generated_test_failure = true
+fail_on_findings = false
+
+[policy]
+fail_on_severity = "error"
+fail_on_languages = []
+fail_on_artifact_kinds = []
+fail_on_target_risks = []
+
+[planner]
+mode = "deterministic"
+
+[plugins.rust]
+property_framework = "proptest"
+command_timeout_seconds = 120
+coverage_enabled = false
+coverage_timeout_seconds = 120
+cargo_jobs = 1
+test_threads = 1
+systemd_scope = true
+memory_max = "4G"
+cpu_quota = "200%"
+
+[plugins.go]
+fuzz_seconds = 10
+fuzz_existing = true
+coverage_enabled = true
+reverse_dependency_depth = 1
+max_fuzz_targets = 20
+command_timeout_seconds = 120
+max_packages = 64
+max_mutants = 8
+build_tags = []

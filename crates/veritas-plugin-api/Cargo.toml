@@ -1,0 +1,11 @@
+[package]
+name = "veritas-plugin-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared plugin API and data model for veritas"
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+serde.workspace = true
