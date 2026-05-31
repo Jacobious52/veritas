@@ -7,7 +7,6 @@
   <meta name="description" content="Veritas is a verification hub for AI-written and AI-modified software: mutation testing, property testing, fuzzing, replay, coverage, and confidence reports.">
   <meta property="og:title" content="Veritas">
   <meta property="og:description" content="Adversarial verification for AI-written code.">
-  <meta property="og:image" content="assets/veritas-hero.png">
   <style>
     :root {
       color-scheme: dark;
@@ -21,6 +20,7 @@
       --accent-2: #6ba8ff;
       --warn: #f5c76b;
       --bad: #ff7a90;
+      --violet: #b190ff;
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -75,14 +75,43 @@
     .links a { text-decoration: none; }
     .hero {
       min-height: 96vh;
+      position: relative;
       display: grid;
       align-items: end;
-      background:
-        linear-gradient(180deg, rgba(9, 11, 16, .08), rgba(9, 11, 16, .96)),
-        url("assets/veritas-hero.png") center / cover no-repeat;
+      overflow: hidden;
+      background: #070a0e;
       border-bottom: 1px solid var(--line);
     }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background:
+        linear-gradient(90deg, rgba(7, 10, 14, .97), rgba(7, 10, 14, .74) 52%, rgba(7, 10, 14, .94)),
+        linear-gradient(180deg, rgba(7, 10, 14, .72), rgba(7, 10, 14, .98));
+      pointer-events: none;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      z-index: 1;
+      height: 34%;
+      background: linear-gradient(180deg, rgba(7, 10, 14, 0), #090b10 78%);
+      pointer-events: none;
+    }
+    #hero-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      opacity: .92;
+    }
     .hero-copy {
+      position: relative;
+      z-index: 2;
       padding: 138px 0 52px;
     }
     h1 {
@@ -97,6 +126,7 @@
       max-width: 760px;
       color: #d7e0ea;
       font-size: 21px;
+      text-shadow: 0 2px 18px rgba(0,0,0,.8);
     }
     .hero-grid {
       display: grid;
@@ -107,7 +137,8 @@
     }
     .panel {
       border: 1px solid var(--line);
-      background: rgba(13, 18, 26, .88);
+      background: rgba(13, 18, 26, .94);
+      box-shadow: 0 18px 60px rgba(0,0,0,.32);
       border-radius: 8px;
       padding: 20px;
     }
@@ -207,6 +238,69 @@
       gap: 18px;
       align-items: stretch;
     }
+    .examples {
+      display: grid;
+      gap: 18px;
+    }
+    .scenario {
+      display: grid;
+      grid-template-columns: 220px minmax(0, 1fr) minmax(320px, .86fr);
+      gap: 18px;
+      align-items: stretch;
+      border-top: 1px solid var(--line);
+      padding-top: 18px;
+    }
+    .scenario:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+    .level {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .level b {
+      display: block;
+      color: var(--ink);
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .snapshot {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .metric b {
+      display: block;
+      margin-top: 4px;
+      color: var(--ink);
+      font-size: 22px;
+    }
     .mutant {
       display: grid;
       gap: 12px;
@@ -243,11 +337,16 @@
       .links { display: none; }
       .hero-grid,
       .example,
+      .scenario,
       .grid {
         grid-template-columns: 1fr;
       }
+      .snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .hero-copy { padding-top: 118px; }
       .lede { font-size: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #hero-canvas { opacity: .45; }
     }
   </style>
 </head>
@@ -267,6 +366,7 @@
 
   <main>
     <header class="hero">
+      <canvas id="hero-canvas" aria-hidden="true"></canvas>
       <div class="wrap hero-copy">
         <h1>Ship AI code with adversarial proof, not vibes.</h1>
         <p class="lede">Veritas turns every AI-written change into a verification loop: mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential checks, and a confidence score an agent can act on.</p>
@@ -305,24 +405,98 @@ Use the generated .veritas/ feedback to add or improve tests before marking the 
 
     <section id="example">
       <div class="wrap">
-        <h2>A tangible failure it catches</h2>
-        <p class="subhead">AI often makes tiny, plausible edits that compile and pass happy-path tests. Veritas mutates the same risk boundary and asks whether your suite would notice.</p>
-        <div class="example">
-          <div class="card mutant">
-            <span class="tag">money / permissions / parsing</span>
-            <pre><code>if refund_cents &lt;= available_cents {
+        <h2>Examples that scale with the risk</h2>
+        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on.</p>
+        <div class="examples">
+          <div class="scenario">
+            <div class="level"><b>1. Boundary mutant</b>Small function, high consequence.</div>
+            <div class="card mutant">
+              <span class="tag">money / permissions</span>
+              <pre><code>if refund_cents &lt;= available_cents {
     approve_refund()
 }</code></pre>
-            <pre><code class="bad">if refund_cents &lt; available_cents {
+              <pre><code class="bad">if refund_cents &lt; available_cents {
     approve_refund()
 }</code></pre>
-          </div>
-          <div class="card">
-            <div class="score">mutation survived</div>
-            <p>Veritas records the survivor, writes an assertion candidate, persists a replayable corpus entry, and tells your agent exactly what regression test would kill it.</p>
-            <pre><code>veritas verify --changed --profile ci
-veritas score
+            </div>
+            <div class="card">
+              <div class="score">mutation survived</div>
+              <p>Veritas records the survivor, writes an assertion candidate, persists a repro note, and ranks a test that should kill the mutant.</p>
+              <pre><code>veritas verify --changed --profile ci
 veritas promote-regression --index 0</code></pre>
+            </div>
+          </div>
+
+          <div class="scenario">
+            <div class="level"><b>2. Properties and fuzzing</b>Inputs are messy, generated code is optimistic.</div>
+            <div class="card">
+              <p>A parser accepts totals from invoices. Veritas generates no-panic and deterministic properties, creates Go fuzz targets where possible, and persists minimized repros as corpus entries.</p>
+              <div class="flow">
+                <span class="pill">property test</span>
+                <span class="pill">fuzz harness</span>
+                <span class="pill">corpus entry</span>
+              </div>
+            </div>
+            <div class="card">
+              <pre><code>.veritas/assertions/go_0.json
+.veritas/corpus/go_0.json
+.veritas/repros/go_0.md</code></pre>
+              <p class="good">The next run can replay the same seed instead of rediscovering it by luck.</p>
+            </div>
+          </div>
+
+          <div class="scenario">
+            <div class="level"><b>3. Behavior replay</b>Review old/new semantics, not just signatures.</div>
+            <div class="card">
+              <p>For public APIs, Veritas emits replay cases around empty strings, numeric boundaries, booleans, and auth-like roles so AI edits can be compared against expected behavior.</p>
+              <div class="flow">
+                <span class="pill">differential replay</span>
+                <span class="pill">public API</span>
+                <span class="pill">old/new behavior</span>
+              </div>
+            </div>
+            <div class="card">
+              <pre><code>.veritas/differential/go_replay.json
+.veritas/differential/go_result.json</code></pre>
+              <p>Replay results become assertion candidates when behavior drift matters.</p>
+            </div>
+          </div>
+
+          <div class="scenario">
+            <div class="level"><b>4. Evolution suite</b>Let the report choose the next best tests.</div>
+            <div class="card">
+              <p>Veritas combines survivors, uncovered mutants, corpus entries, replay opportunities, and generated harness failures into a ranked suite for the next agent loop.</p>
+              <div class="snapshot">
+                <div class="metric"><span>candidates</span><b>8</b></div>
+                <div class="metric"><span>selected</span><b>6</b></div>
+                <div class="metric"><span>fitness</span><b>73%</b></div>
+                <div class="metric"><span>top action</span><b>kill mutant</b></div>
+              </div>
+            </div>
+            <div class="card">
+              <pre><code>.veritas/evolution/go_suite.json
+{
+  "strategy": "add_assertion",
+  "status": "selected",
+  "keep_if": "mutant moves from lived to killed"
+}</code></pre>
+            </div>
+          </div>
+
+          <div class="scenario">
+            <div class="level"><b>5. AI verification loop</b>The agent gets a work queue, not a vague warning.</div>
+            <div class="card">
+              <pre><code>veritas review-ai
+veritas verify --changed --profile ci
+veritas score</code></pre>
+              <p>The agent reads `.veritas/ai/agent_feedback.md`, promotes selected evolution candidates into tests, reruns Veritas, and keeps only improvements.</p>
+            </div>
+            <div class="card">
+              <pre><code>Confidence: medium
+Positive: 6 selected evolutionary candidates
+Risk: 2 surviving mutants
+Next: add assertions for top survivors</code></pre>
+            </div>
           </div>
         </div>
       </div>
@@ -338,6 +512,7 @@ veritas promote-regression --index 0</code></pre>
           <div class="card"><strong>Fuzzing</strong><br>Go fuzz targets and Rust repro paths feed persistent corpus entries and replay commands.</div>
           <div class="card"><strong>Coverage feedback</strong><br>Coverage gaps become agent-readable prompts for the next test-generation pass.</div>
           <div class="card"><strong>Differential replay</strong><br>Public API behavior cases make old/new semantic drift reviewable before acceptance.</div>
+          <div class="card"><strong>Evolution suites</strong><br>Ranked next-generation candidates tell agents which assertions, seeds, replay checks, or budget fixes to try first.</div>
           <div class="card"><strong>Confidence score</strong><br><code>veritas score</code> rolls findings, survivors, corpus replay, properties, budgets, and generated tests into one readiness signal.</div>
         </div>
       </div>
@@ -354,6 +529,115 @@ veritas promote-regression --index 0</code></pre>
   </footer>
 
   <script>
+    (() => {
+      const canvas = document.getElementById("hero-canvas");
+      const context = canvas.getContext("2d");
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let width = 0;
+      let height = 0;
+      let dpr = 1;
+      const nodes = [];
+      const labels = ["test", "mutant", "seed", "replay", "score", "select", "assert", "fuzz"];
+      const colors = ["#42d3a5", "#6ba8ff", "#f5c76b", "#ff7a90", "#b190ff"];
+
+      function resize() {
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        width = canvas.clientWidth;
+        height = canvas.clientHeight;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        context.setTransform(dpr, 0, 0, dpr, 0, 0);
+        seed();
+      }
+
+      function seed() {
+        nodes.length = 0;
+        const count = Math.max(28, Math.floor(width / 38));
+        for (let index = 0; index < count; index += 1) {
+          nodes.push({
+            x: Math.random() * width,
+            y: Math.random() * height,
+            r: 2 + Math.random() * 3,
+            vx: (Math.random() - .5) * .18,
+            vy: (Math.random() - .5) * .14,
+            label: labels[index % labels.length],
+            color: colors[index % colors.length],
+            phase: Math.random() * Math.PI * 2
+          });
+        }
+      }
+
+      function draw(time = 0) {
+        context.clearRect(0, 0, width, height);
+        context.fillStyle = "#070a0e";
+        context.fillRect(0, 0, width, height);
+
+        const t = time * .001;
+        for (const node of nodes) {
+          if (!reduceMotion) {
+            node.x += node.vx + Math.sin(t + node.phase) * .05;
+            node.y += node.vy + Math.cos(t * .9 + node.phase) * .04;
+          }
+          if (node.x < -20) node.x = width + 20;
+          if (node.x > width + 20) node.x = -20;
+          if (node.y < -20) node.y = height + 20;
+          if (node.y > height + 20) node.y = -20;
+        }
+
+        for (let a = 0; a < nodes.length; a += 1) {
+          for (let b = a + 1; b < nodes.length; b += 1) {
+            const left = nodes[a];
+            const right = nodes[b];
+            const dx = left.x - right.x;
+            const dy = left.y - right.y;
+            const distance = Math.hypot(dx, dy);
+            if (distance > 150) continue;
+            const alpha = (1 - distance / 150) * .16;
+            context.strokeStyle = `rgba(107,168,255,${alpha})`;
+            context.lineWidth = 1;
+            context.beginPath();
+            context.moveTo(left.x, left.y);
+            context.lineTo(right.x, right.y);
+            context.stroke();
+          }
+        }
+
+        for (const [index, node] of nodes.entries()) {
+          const pulse = reduceMotion ? 0 : Math.sin(t * 1.7 + node.phase) * 1.3;
+          context.fillStyle = node.color;
+          context.globalAlpha = .54;
+          context.beginPath();
+          context.arc(node.x, node.y, node.r + pulse * .25, 0, Math.PI * 2);
+          context.fill();
+          if (index % 4 === 0) {
+            context.globalAlpha = .26;
+            context.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+            context.fillText(node.label, node.x + 8, node.y - 8);
+          }
+        }
+
+        context.globalAlpha = .18;
+        context.strokeStyle = "#42d3a5";
+        context.lineWidth = 1;
+        for (let row = 96; row < height; row += 88) {
+          context.beginPath();
+          for (let x = 0; x <= width; x += 28) {
+            const y = row + Math.sin((x * .018) + t) * 12;
+            if (x === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+          }
+          context.stroke();
+        }
+        context.globalAlpha = 1;
+
+        if (!reduceMotion) requestAnimationFrame(draw);
+      }
+
+      window.addEventListener("resize", resize);
+      resize();
+      draw();
+    })();
+
     document.querySelectorAll("[data-copy]").forEach((button) => {
       button.addEventListener("click", async () => {
         const target = document.getElementById(button.dataset.copy);
