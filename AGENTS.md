@@ -161,6 +161,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/evolution/*.md`
 - `.veritas/evolution/*_candidates.json`
 - `.veritas/evolution/*_suite.json`
+- `.veritas/evolution/*_generation_*.json`
 - `.veritas/promotions/*.md`
 - Rust generated tests under `tests/veritas_generated*` or package-local equivalents
 - Rust promoted regression scaffolds under `tests/veritas_regression_*.rs` or package-local equivalents

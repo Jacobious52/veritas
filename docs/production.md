@@ -167,6 +167,7 @@ Common generated paths:
 - `.veritas/evolution/*.md`
 - `.veritas/evolution/*_candidates.json`
 - `.veritas/evolution/*_suite.json`
+- `.veritas/evolution/*_generation_*.json`
 - `.veritas/promotions/*.md`
 - Rust `tests/veritas_generated*`
 - Rust `tests/veritas_regression_*.rs`

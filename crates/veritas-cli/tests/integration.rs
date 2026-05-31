@@ -485,6 +485,27 @@ fn evolve_dry_run_and_apply_rust_candidate() {
         &fixture.path().join("tests"),
         "veritas_regression_0"
     ));
+    assert!(fixture
+        .path()
+        .join(".veritas/evolution/rust_generation_1.json")
+        .exists());
+
+    let mut second = veritas();
+    second
+        .current_dir(fixture.path())
+        .args(["evolve", "--lang", "rust", "--index", "0"]);
+    second.assert().success();
+    assert!(fixture
+        .path()
+        .join(".veritas/evolution/rust_generation_2.json")
+        .exists());
+
+    let mut score = veritas();
+    score.current_dir(fixture.path()).arg("score");
+    score
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("latest evolution generation"));
 }
 
 #[test]

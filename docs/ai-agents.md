@@ -73,6 +73,7 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/mutations/*_campaign.json`: per-mutant status records for killed, lived, runnable, timed-out, not-viable, and skipped mutants
 - `.veritas/evolution/*_candidates.json`: typed candidate queue with fitness signals for the next generation loop
 - `.veritas/evolution/*_suite.json`: selected evolutionary testing suite. Candidates are ranked by expected mutation, replay, finding, confidence, and review-cost impact so an agent can promote the highest-value assertions, corpus seeds, replay checks, or budget refinements first.
+- `.veritas/evolution/*_generation_*.json`: persisted evolution attempts with applied candidates, status transitions, quality deltas, and outcome.
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance
 - `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs
@@ -87,6 +88,6 @@ Generated tests are reviewable artifacts, not automatically trusted source.
 - Treat warning-level surviving mutants as evidence of missing assertions, not as proof of production defects.
 - Prefer a small regression test before editing production code when a generated or fuzz repro exposes behavior.
 - Turn `.veritas/assertions/*.json`, `.veritas/regressions/*.md`, and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
-- Treat `.veritas/evolution/*_suite.json` as the next-generation work queue. Use `veritas evolve --dry-run` first, apply selected candidates one at a time with `--evaluate`, rerun `veritas verify` when needed, and keep only candidates that improve mutation, replay, finding, or confidence metrics.
+- Treat `.veritas/evolution/*_suite.json` as the next-generation work queue. Use `veritas evolve --dry-run` first, apply selected candidates one at a time with `--evaluate`, inspect `.veritas/evolution/*_generation_*.json`, rerun `veritas verify` when needed, and keep only candidates that improve mutation, replay, finding, or confidence metrics.
 - Do not widen fuzz time, reverse dependency depth, package caps, or coverage scope without explaining the runtime tradeoff.
 - On shared hosts, keep Rust coverage disabled and use systemd scope limits when running broad Rust verification.

@@ -19,11 +19,11 @@ use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
     CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry,
     EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
-    EvolutionOutcome, EvolutionQualityDelta, EvolutionStrategy, EvolutionSuite, Failure,
-    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
-    MutationStatus, ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind,
-    TestRunResult, VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    EvolutionGeneration, EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta,
+    EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
+    LineRange, MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta,
+    ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
+    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -400,7 +400,7 @@ impl CoreEngine {
             bail!("no evolution candidates matched the requested selection");
         }
 
-        let written_paths = artifacts
+        let mut written_paths = artifacts
             .iter()
             .map(|artifact| artifact.path.clone())
             .collect::<Vec<_>>();
@@ -412,6 +412,19 @@ impl CoreEngine {
         } else {
             None
         };
+        if !dry_run {
+            let generation_artifact = evolution_generation_artifact(
+                root,
+                &language,
+                &suite_path,
+                &summaries,
+                evaluation.as_ref(),
+                &written_paths,
+            )?;
+            written_paths.push(generation_artifact.path.clone());
+            let mut generation_artifacts = vec![generation_artifact];
+            write_artifacts(root, &mut generation_artifacts)?;
+        }
 
         Ok(EvolveSummary {
             dry_run,
@@ -1344,6 +1357,156 @@ fn applied_evolution_candidate_artifact(
         description: "Reviewable applied evolution candidate guidance".to_string(),
         status: ArtifactStatus::Planned,
     }
+}
+
+fn evolution_generation_artifact(
+    root: &Path,
+    language: &str,
+    suite_path: &Utf8PathBuf,
+    candidates: &[EvolveCandidateSummary],
+    evaluation: Option<&EvolveEvaluationSummary>,
+    written_paths: &[Utf8PathBuf],
+) -> Result<GeneratedArtifact> {
+    let generation = next_evolution_generation(root, language)?;
+    let outcome = evaluation
+        .map(|evaluation| evaluation.outcome)
+        .unwrap_or_else(|| {
+            if candidates.iter().any(|candidate| candidate.applied) {
+                EvolutionOutcome::Neutral
+            } else {
+                EvolutionOutcome::FailedToEvaluate
+            }
+        });
+    let generation = EvolutionGeneration {
+        version: 1,
+        language: language.to_string(),
+        generation,
+        parent_suite: suite_path.clone(),
+        created_unix_seconds: unix_timestamp_seconds(),
+        outcome,
+        candidates: candidates
+            .iter()
+            .map(|candidate| EvolutionGenerationCandidate {
+                id: candidate.id.clone(),
+                target_id: candidate.target_id.clone(),
+                previous_status: candidate.status,
+                status: generation_candidate_status(candidate, outcome),
+                outcome: if candidate.applied {
+                    outcome
+                } else {
+                    EvolutionOutcome::FailedToEvaluate
+                },
+                applied: candidate.applied,
+                written_paths: candidate.written_paths.clone(),
+                skipped_reason: candidate.skipped_reason.clone(),
+            })
+            .collect(),
+        delta: evaluation.map(|evaluation| evaluation.delta.clone()),
+        written_paths: written_paths.to_vec(),
+    };
+    let contents = serde_json::to_string_pretty(&generation)?;
+    Ok(GeneratedArtifact {
+        id: format!("{language}-evolution-generation-{}", generation.generation),
+        language: language.to_string(),
+        kind: ArtifactKind::EvolutionCandidate,
+        target_id: format!("{language}:evolution"),
+        path: Utf8PathBuf::from(format!(
+            ".veritas/evolution/{}_generation_{}.json",
+            language, generation.generation
+        )),
+        contents,
+        description: "Persisted evolutionary generation outcome and quality deltas".to_string(),
+        status: ArtifactStatus::Planned,
+    })
+}
+
+fn generation_candidate_status(
+    candidate: &EvolveCandidateSummary,
+    outcome: EvolutionOutcome,
+) -> EvolutionCandidateStatus {
+    if !candidate.applied {
+        return EvolutionCandidateStatus::Rejected;
+    }
+    match outcome {
+        EvolutionOutcome::Improved => EvolutionCandidateStatus::Kept,
+        EvolutionOutcome::Neutral | EvolutionOutcome::FailedToEvaluate => {
+            EvolutionCandidateStatus::Applied
+        }
+        EvolutionOutcome::Regressed => EvolutionCandidateStatus::Rejected,
+    }
+}
+
+fn next_evolution_generation(root: &Path, language: &str) -> Result<u32> {
+    let evolution_dir = root.join(".veritas/evolution");
+    let prefix = format!("{language}_generation_");
+    let mut max_generation = 0;
+    if evolution_dir.exists() {
+        for entry in fs::read_dir(&evolution_dir)
+            .with_context(|| format!("failed to read {}", evolution_dir.display()))?
+        {
+            let entry = entry
+                .with_context(|| format!("failed to read entry in {}", evolution_dir.display()))?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some(number) = rest.strip_suffix(".json") else {
+                continue;
+            };
+            if let Ok(generation) = number.parse::<u32>() {
+                max_generation = max_generation.max(generation);
+            }
+        }
+    }
+    Ok(max_generation + 1)
+}
+
+fn latest_evolution_generation(root: &Path) -> Result<Option<EvolutionGeneration>> {
+    let evolution_dir = root.join(".veritas/evolution");
+    if !evolution_dir.exists() {
+        return Ok(None);
+    }
+    let mut latest: Option<(Utf8PathBuf, u32)> = None;
+    for entry in fs::read_dir(&evolution_dir)
+        .with_context(|| format!("failed to read {}", evolution_dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read entry in {}", evolution_dir.display()))?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(number) = name
+            .rsplit_once("_generation_")
+            .and_then(|(_, rest)| rest.strip_suffix(".json"))
+            .and_then(|number| number.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let path = relative_utf8(root, &path)?;
+        if latest
+            .as_ref()
+            .is_none_or(|(_, latest_number)| number > *latest_number)
+        {
+            latest = Some((path, number));
+        }
+    }
+    let Some((path, _)) = latest else {
+        return Ok(None);
+    };
+    let contents =
+        fs::read_to_string(root.join(&path)).with_context(|| format!("failed to read {}", path))?;
+    serde_json::from_str(&contents)
+        .map(Some)
+        .with_context(|| format!("failed to parse {}", path))
+}
+
+fn unix_timestamp_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 fn generic_regression_promotion_artifact(
@@ -3866,7 +4029,27 @@ pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
 
 pub fn confidence_score_for_root(root: &Path, report: &VerificationReport) -> ConfidenceScore {
     let baseline = quality_baseline(root).ok().flatten();
-    confidence_score_with_baseline(report, baseline.as_ref())
+    let mut score = confidence_score_with_baseline(report, baseline.as_ref());
+    if let Some(generation) = latest_evolution_generation(root).ok().flatten() {
+        let signal = format!(
+            "latest evolution generation {} ended as {:?} with {} applied candidate(s)",
+            generation.generation,
+            generation.outcome,
+            generation
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.applied)
+                .count()
+        );
+        match generation.outcome {
+            EvolutionOutcome::Improved => score.positive_signals.push(signal),
+            EvolutionOutcome::Regressed | EvolutionOutcome::FailedToEvaluate => {
+                score.risks.push(signal)
+            }
+            EvolutionOutcome::Neutral => score.recommended_next_steps.push(signal),
+        }
+    }
+    score
 }
 
 fn confidence_score_with_baseline(

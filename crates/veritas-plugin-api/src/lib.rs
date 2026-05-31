@@ -645,6 +645,8 @@ pub enum EvolutionStrategy {
 pub enum EvolutionCandidateStatus {
     Proposed,
     Selected,
+    Applied,
+    Kept,
     Superseded,
     Rejected,
 }
@@ -681,4 +683,31 @@ pub struct EvolutionQualityDelta {
     pub budget_timed_out_delta: i64,
     pub budget_skipped_delta: i64,
     pub confidence_delta: i16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionGeneration {
+    pub version: u8,
+    pub language: String,
+    pub generation: u32,
+    pub parent_suite: Utf8PathBuf,
+    pub created_unix_seconds: u64,
+    pub outcome: EvolutionOutcome,
+    pub candidates: Vec<EvolutionGenerationCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<EvolutionQualityDelta>,
+    pub written_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionGenerationCandidate {
+    pub id: String,
+    pub target_id: String,
+    pub previous_status: EvolutionCandidateStatus,
+    pub status: EvolutionCandidateStatus,
+    pub outcome: EvolutionOutcome,
+    pub applied: bool,
+    pub written_paths: Vec<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
 }
