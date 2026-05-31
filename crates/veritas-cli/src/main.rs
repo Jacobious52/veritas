@@ -19,6 +19,7 @@ use veritas_go::GoPlugin;
 use veritas_plugin_api::{
     ArtifactKind, FailureSeverity, RiskLevel, VerificationReport, VerificationStrategy,
 };
+use veritas_python::PythonPlugin;
 use veritas_report::{render_junit, render_markdown, render_sarif};
 use veritas_rust::RustPlugin;
 
@@ -279,7 +280,7 @@ fn main() -> Result<()> {
                 findings: vec![],
                 quality: veritas_plugin_api::VerificationQuality::default(),
                 suggested_next_steps: vec![
-                    "Run `veritas verify --lang rust --target <path>` or `veritas verify --lang go --target <path>`.".to_string(),
+                    "Run `veritas verify --lang rust --target <path>`, `veritas verify --lang go --target <path>`, or `veritas verify --lang python --target <path>`.".to_string(),
                 ],
             };
             print_report(&report, format)?;
@@ -1111,6 +1112,7 @@ fn engine(config: VeritasConfig) -> CoreEngine {
     let registry = PluginRegistry::new(vec![
         Arc::new(RustPlugin::new(config.plugins.rust.clone())),
         Arc::new(GoPlugin::new(config.plugins.go.clone())),
+        Arc::new(PythonPlugin::new(config.plugins.python.clone())),
     ]);
     CoreEngine::new(registry, config)
 }
@@ -1411,6 +1413,9 @@ fn infer_language(
         if target.extension().and_then(|ext| ext.to_str()) == Some("go") {
             return Ok("go".to_string());
         }
+        if target.extension().and_then(|ext| ext.to_str()) == Some("py") {
+            return Ok("python".to_string());
+        }
     }
     if matches!(strategy, VerificationStrategy::Fuzzing) && root.join("go.mod").exists() {
         return Ok("go".to_string());
@@ -1421,7 +1426,13 @@ fn infer_language(
     if root.join("go.mod").exists() {
         return Ok("go".to_string());
     }
-    bail!("could not infer language; pass --lang rust or --lang go")
+    if root.join("pyproject.toml").exists()
+        || root.join("setup.py").exists()
+        || root.join("setup.cfg").exists()
+    {
+        return Ok("python".to_string());
+    }
+    bail!("could not infer language; pass --lang rust, --lang go, or --lang python")
 }
 
 fn with_current_dir<T>(root: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {

@@ -96,7 +96,7 @@ Returned plans are clamped to the provided target, allowed strategy list, genera
 
 Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it through `plugins.go.fuzz_concurrency`.
 
-Core also exposes a plugin-generic isolated mutation root helper. A language plugin can copy the target project into a temporary root, apply one mutant there, run the owning test command, and let cleanup happen on drop. Go mutation uses this path when `[mutation].workers > 1`; `workers = 1` keeps the previous serial source-rewrite path. Rust mutation remains conservative until it grows equivalent isolation. Mutation metrics record requested workers, effective workers, timed-out mutants, skipped mutants, and isolation failures so CI can separate performance behavior from mutation quality.
+Core also exposes a plugin-generic isolated mutation root helper. A language plugin can copy the target project into a temporary root, apply one mutant there, run the owning test command, and let cleanup happen on drop. Go and Rust mutation use this path when `[mutation].workers > 1`; `workers = 1` keeps the serial source-rewrite path for smaller local runs. Mutation metrics record requested workers, effective workers, timed-out mutants, skipped mutants, and isolation failures so CI can separate performance behavior from mutation quality.
 
 ## Benchmark Suites
 
@@ -119,7 +119,14 @@ Go:
 - uses AST spans for mutation probes
 - mutates comparison, nil/error, boolean connector, arithmetic, bitwise, assignment, increment/decrement, unary negation, loop-control, literal, self-assignment, and return-default operators
 
-Both plugins write symbol graph artifacts for AI and tooling consumption.
+Python:
+
+- discovers production functions and methods with Tree-sitter
+- records class owners, line ranges, signatures, and call hints
+- runs `python3 -m unittest discover`
+- executes differential replay for single-argument free functions
+
+All language plugins write symbol graph artifacts for AI and tooling consumption. Rust and Go include mutation and richer generated-test paths today; Python is the third-language SDK spike that proves the core contract is not Rust/Go-specific.
 
 Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/mutations/*_campaign.json` for per-mutant campaign records, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md`, `*_candidates.json`, and `*_suite.json` for the next AI candidate-generation loop. Evolution suites are plugin-neutral ranked work queues: Rust, Go, and future Tree-sitter plugins feed the same candidate model with mutation survivors, uncovered mutants, assertion candidates, corpus seeds, replay opportunities, and budget risks. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 

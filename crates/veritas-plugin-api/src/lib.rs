@@ -38,6 +38,15 @@ pub trait LanguagePlugin: Send + Sync {
 
     fn collect_coverage(&self, root: &Path) -> Result<Option<CoverageReport>>;
 
+    fn replay_behavior(
+        &self,
+        _root: &Path,
+        _target: &VerificationTarget,
+        _case: &BehaviorReplayCase,
+    ) -> Result<Option<BehaviorReplayObservation>> {
+        Ok(None)
+    }
+
     fn promote_regression(
         &self,
         _root: &Path,
@@ -304,6 +313,31 @@ pub struct ReproCase {
     pub command: String,
     pub input: Option<String>,
     pub path: Option<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorReplayCase {
+    pub name: String,
+    pub inputs: Vec<serde_json::Value>,
+    pub assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BehaviorReplayStatus {
+    Observed,
+    Unsupported,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviorReplayObservation {
+    pub status: BehaviorReplayStatus,
+    pub output: serde_json::Value,
+    pub command: Option<String>,
+    pub stdout_excerpt: Option<String>,
+    pub stderr_excerpt: Option<String>,
+    pub duration_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

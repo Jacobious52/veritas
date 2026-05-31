@@ -6,4 +6,6 @@
 **/tests/veritas_generated/
 **/tests/veritas_generated.rs
 **/*.proptest-regressions
+**/__pycache__/
+**/*.pyc
 .env

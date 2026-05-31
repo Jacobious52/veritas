@@ -42,3 +42,15 @@ jobs:
         env:
           VERITAS_BIN: ${{ github.workspace }}/target/debug/veritas
         run: ./scripts/run-canaries.sh "${VERITAS_CANARY_MODE}"
+
+      - name: Upload canary dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-canary-dashboard-${{ env.VERITAS_CANARY_MODE }}
+          path: |
+            target/external-fixtures/reports/canary-dashboard.md
+            target/external-fixtures/reports/canary-summary.json
+            target/external-fixtures/reports/*-scan.json
+            target/external-fixtures/reports/*-report.json
+            target/external-fixtures/reports/*-verify.md
+          if-no-files-found: error

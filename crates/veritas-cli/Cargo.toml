@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 veritas-core = { version = "0.1.1", path = "../veritas-core" }
 veritas-go = { version = "0.1.1", path = "../veritas-go" }
 veritas-plugin-api = { version = "0.1.1", path = "../veritas-plugin-api" }
+veritas-python = { version = "0.1.1", path = "../veritas-python" }
 veritas-report = { version = "0.1.1", path = "../veritas-report" }
 veritas-rust = { version = "0.1.1", path = "../veritas-rust" }
 

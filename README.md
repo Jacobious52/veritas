@@ -59,6 +59,7 @@ Verify a specific target:
 ```bash
 veritas verify --lang rust --target src/lib.rs
 veritas verify --lang go --target ./pkg/invoice
+veritas verify --lang python --target invoice.py
 ```
 
 Explain and promote findings:
@@ -82,6 +83,7 @@ veritas cleanup
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
 - [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
+- [Plugin SDK](docs/plugin-sdk.md): language plugin contract and the Python spike.
 - [Confidence Guide](docs/confidence.md): fixture tiers, seeded examples, and external canaries.
 - [Releasing](docs/releasing.md): crates.io publishing through GitHub Actions.
 
@@ -94,6 +96,7 @@ veritas verify --changed
 veritas verify --changed --profile ci
 veritas verify --lang rust --target path/to/file.rs
 veritas verify --lang go --target ./pkg/foo
+veritas verify --lang python --target path/to/file.py
 veritas generate --kind property --target path
 veritas generate --kind fuzz --target path
 veritas run
@@ -125,7 +128,7 @@ veritas cleanup --dry-run
 Changed-target verification:
 
 - reads git diffs, staged changes, and untracked files
-- maps changed lines to discovered Rust/Go symbols when line ranges are available
+- maps changed lines to discovered Rust/Go/Python symbols when line ranges are available
 - scopes package commands to changed packages and selected reverse dependencies where graph data exists
 - writes AI review artifacts with change digests and verification guidance
 
@@ -143,6 +146,7 @@ Go verification:
 
 - detects one or more `go.mod` roots
 - discovers exported functions and methods with Tree-sitter
+- supports Tree-sitter language plugins through a stable target/report contract; Rust and Go are production paths, and Python is the third-language SDK spike
 - builds package graphs with `go list -json ./...`
 - runs scoped `go test` commands for selected packages plus configurable reverse dependencies
 - discovers handwritten and generated fuzz targets
@@ -204,7 +208,7 @@ enabled_operators = []
 disabled_operators = []
 exclude_paths = []
 dry_run = false
-workers = 1 # Go uses isolated temp roots when workers > 1; source-rewrite plugins may stay serial
+workers = 1 # Rust/Go use isolated temp roots when workers > 1; keep small repos serial by default
 test_cpu = 1
 timeout_coefficient = 0
 output_statuses = [] # e.g. ["lived", "not_covered", "timed_out"]
@@ -308,4 +312,4 @@ Run external canary smoke checks when you want confidence against real pinned re
 ./scripts/run-canaries.sh smoke
 ```
 
-The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow.
+The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas.

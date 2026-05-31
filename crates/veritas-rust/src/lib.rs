@@ -12,9 +12,10 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 use tree_sitter::{Node, Parser};
-use veritas_core::config::RustPluginConfig;
+use veritas_core::{config::RustPluginConfig, isolated_mutation_root, run_parallel_jobs};
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
+    ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
+    BehaviorReplayStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
     MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind,
     TestRunResult, VerificationPlan, VerificationQuality, VerificationReport, VerificationStrategy,
@@ -397,6 +398,196 @@ impl LanguagePlugin for RustPlugin {
             files: vec![],
         }))
     }
+
+    fn replay_behavior(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        case: &BehaviorReplayCase,
+    ) -> Result<Option<BehaviorReplayObservation>> {
+        let functions = discover_functions(root)?;
+        let Some(function) = functions
+            .iter()
+            .find(|function| rust_target_matches_function(&target.id, function))
+        else {
+            return Ok(None);
+        };
+        replay_rust_function(root, function, case, &self.config).map(Some)
+    }
+}
+
+fn replay_rust_function(
+    root: &Path,
+    function: &RustFunction,
+    case: &BehaviorReplayCase,
+    config: &RustPluginConfig,
+) -> Result<BehaviorReplayObservation> {
+    if function.owner.is_some() {
+        return Ok(unsupported_rust_replay(
+            "method replay requires receiver construction",
+        ));
+    }
+    if !rust_replay_is_worth_compiling(function) {
+        return Ok(unsupported_rust_replay(
+            "Rust executable replay is limited to parser and money-style free functions",
+        ));
+    }
+    if function.params.len() != 1 {
+        return Ok(unsupported_rust_replay(
+            "executable replay currently supports single-argument functions",
+        ));
+    }
+    let Some(contents) = render_rust_replay_test(function, case) else {
+        return Ok(unsupported_rust_replay(
+            "no executable replay renderer for this target signature",
+        ));
+    };
+
+    let test_name = format!(
+        "veritas_replay_{}_{}",
+        std::process::id(),
+        safe_ident(&format!("{}_{}", function.symbol, case.name))
+    );
+    let package_root = root.join(&function.package_root);
+    let test_dir = package_root.join("tests");
+    fs::create_dir_all(&test_dir)
+        .with_context(|| format!("failed to create {}", test_dir.display()))?;
+    let test_path = test_dir.join(format!("{test_name}.rs"));
+    fs::write(&test_path, contents)
+        .with_context(|| format!("failed to write {}", test_path.display()))?;
+
+    let args = vec![
+        "test".to_string(),
+        "--test".to_string(),
+        test_name.clone(),
+        "--".to_string(),
+        "--nocapture".to_string(),
+    ];
+    let command = run_command(
+        &package_root,
+        "cargo",
+        &args,
+        config,
+        config.command_timeout_seconds.min(30),
+    );
+    let cleanup = fs::remove_file(&test_path)
+        .with_context(|| format!("failed to remove {}", test_path.display()));
+    let command = command?;
+    cleanup?;
+
+    let outputs = parse_replay_marker_output(&command.stdout);
+    let output = if outputs.is_empty() {
+        serde_json::json!({
+            "observations": [],
+            "stderr": excerpt(&command.stderr),
+        })
+    } else {
+        serde_json::json!({ "observations": outputs })
+    };
+    let status = if command.status == RunStatus::Passed && !outputs.is_empty() {
+        BehaviorReplayStatus::Observed
+    } else {
+        BehaviorReplayStatus::Failed
+    };
+    Ok(BehaviorReplayObservation {
+        status,
+        output,
+        command: Some(command_line(&command.program, &command.args)),
+        stdout_excerpt: Some(excerpt(&command.stdout)),
+        stderr_excerpt: Some(excerpt(&command.stderr)),
+        duration_ms: Some(command.duration_ms),
+    })
+}
+
+fn rust_replay_is_worth_compiling(function: &RustFunction) -> bool {
+    let lowered = function.symbol.to_ascii_lowercase();
+    lowered.contains("parse")
+        || lowered.contains("invoice")
+        || lowered.contains("total")
+        || lowered.contains("money")
+        || lowered.contains("price")
+}
+
+fn render_rust_replay_test(function: &RustFunction, case: &BehaviorReplayCase) -> Option<String> {
+    if case.inputs.is_empty() {
+        return None;
+    }
+    let mut observations = String::new();
+    for input in &case.inputs {
+        let label = replay_input_label(input);
+        let arg = rust_replay_arg(function.params.first()?, input)?;
+        observations.push_str(&format!(
+            "    emit({}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({arg}))));\n",
+            rust_string_literal(&label),
+            function.crate_name,
+            function.name
+        ));
+    }
+
+    let test_name = safe_ident(&format!("{}_{}", function.symbol, case.name));
+    Some(format!(
+        "#[test]\nfn veritas_behavior_replay_{test_name}() {{\n    fn emit(input: &str, observed: std::thread::Result<String>) {{\n        match observed {{\n            Ok(output) => println!(\"__VERITAS_REPLAY__{{}}\\tobserved\\t{{}}\", input.escape_debug(), output.escape_debug()),\n            Err(_) => println!(\"__VERITAS_REPLAY__{{}}\\tpanic\\tpanic\", input.escape_debug()),\n        }}\n    }}\n{observations}}}\n"
+    ))
+}
+
+fn rust_replay_arg(param: &RustParam, input: &serde_json::Value) -> Option<String> {
+    match param.type_name.as_str() {
+        "&str" => Some(rust_string_literal(&replay_input_label(input))),
+        "String" => Some(format!(
+            "{}.to_string()",
+            rust_string_literal(&replay_input_label(input))
+        )),
+        "bool" => input.as_bool().map(|value| value.to_string()),
+        type_name => {
+            let value = input
+                .as_i64()
+                .map(|value| value.to_string())
+                .or_else(|| input.as_u64().map(|value| value.to_string()))
+                .or_else(|| input.as_str().map(ToString::to_string))?;
+            numeric_literal_for_rust_type(type_name, &value)
+        }
+    }
+}
+
+fn unsupported_rust_replay(reason: &str) -> BehaviorReplayObservation {
+    BehaviorReplayObservation {
+        status: BehaviorReplayStatus::Unsupported,
+        output: serde_json::json!({ "reason": reason }),
+        command: None,
+        stdout_excerpt: None,
+        stderr_excerpt: None,
+        duration_ms: None,
+    }
+}
+
+fn replay_input_label(input: &serde_json::Value) -> String {
+    input
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| input.to_string())
+}
+
+fn rust_string_literal(value: &str) -> String {
+    format!("{value:?}")
+}
+
+fn parse_replay_marker_output(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let marker = line.find("__VERITAS_REPLAY__")?;
+            let payload = &line[marker + "__VERITAS_REPLAY__".len()..];
+            let mut parts = payload.splitn(3, '\t');
+            let input = parts.next()?.to_string();
+            let status = parts.next()?.to_string();
+            let output = parts.next().unwrap_or_default().to_string();
+            Some(serde_json::json!({
+                "input": input,
+                "status": status,
+                "output": output,
+            }))
+        })
+        .collect()
 }
 
 fn package_supports_proptest(root: &Path, package_root: &Utf8PathBuf) -> Result<bool> {
@@ -953,6 +1144,12 @@ fn render_rust_regression_scaffold(
         }
     }
     out.push('\n');
+    if let Some(function) = function {
+        if let Some(concrete) = render_concrete_rust_regression(function, index, &name) {
+            out.push_str(&concrete);
+            return out;
+        }
+    }
     out.push_str("#[test]\n");
     out.push_str(
         "#[ignore = \"review and replace the veritas placeholder with a real assertion\"]\n",
@@ -979,6 +1176,69 @@ fn render_rust_regression_scaffold(
     out.push_str("    panic!(\"veritas regression scaffold requires a reviewed assertion\");\n");
     out.push_str("}\n");
     out
+}
+
+fn render_concrete_rust_regression(
+    function: &RustFunction,
+    index: usize,
+    name: &str,
+) -> Option<String> {
+    if function.owner.is_some() || !function.symbol.to_ascii_lowercase().contains("parse") {
+        return None;
+    }
+    let first_param = function.params.first()?;
+    if !matches!(first_param.type_name.as_str(), "&str" | "String") {
+        return None;
+    }
+    let call = |input: &str| -> String {
+        let arg = if first_param.type_name == "String" {
+            format!("\"{input}\".to_string()")
+        } else {
+            format!("\"{input}\"")
+        };
+        format!("{}::{}({arg})", function.crate_name, function.name)
+    };
+    let return_type = function.return_type.as_deref()?;
+    let mut out = String::new();
+    out.push_str("#[test]\n");
+    out.push_str(&format!("fn veritas_regression_{index}_{name}() {{\n"));
+    if return_type.starts_with("Option<") {
+        let inner = return_type
+            .trim_start_matches("Option<")
+            .trim_end_matches('>')
+            .trim();
+        let boundary = numeric_literal_for_rust_type(inner, "1000000")?;
+        out.push_str(&format!(
+            "    assert_eq!({}, None);\n",
+            call("not-a-number")
+        ));
+        out.push_str(&format!(
+            "    assert_eq!({}, Some({boundary}));\n",
+            call("1000000")
+        ));
+        out.push_str(&format!("    assert_eq!({}, None);\n", call("1000001")));
+    } else if numeric_literal_for_rust_type(return_type, "42").is_some() {
+        let parsed = numeric_literal_for_rust_type(return_type, "42")?;
+        let zero = numeric_literal_for_rust_type(return_type, "0")?;
+        out.push_str(&format!(
+            "    assert_eq!({}, {zero});\n",
+            call("not-a-number")
+        ));
+        out.push_str(&format!("    assert_eq!({}, {parsed});\n", call("42")));
+    } else {
+        return None;
+    }
+    out.push_str("}\n");
+    Some(out)
+}
+
+fn numeric_literal_for_rust_type(type_name: &str, value: &str) -> Option<String> {
+    match type_name {
+        "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" => {
+            Some(format!("{value}_{type_name}"))
+        }
+        _ => None,
+    }
 }
 
 fn rust_regression_seed_args(function: &RustFunction) -> Vec<String> {
@@ -1075,6 +1335,24 @@ struct MutationCandidate {
     end_byte: usize,
 }
 
+#[derive(Debug, Clone)]
+struct RustMutationJob {
+    index: usize,
+    candidate: MutationCandidate,
+    package_roots: BTreeSet<Utf8PathBuf>,
+    config: RustPluginConfig,
+    root: Utf8PathBuf,
+}
+
+#[derive(Debug)]
+struct RustMutationOutcome {
+    candidate: MutationCandidate,
+    commands: Vec<CommandRecord>,
+    status: MutationStatus,
+    isolation_failed: bool,
+    error: Option<String>,
+}
+
 fn run_mutation_checks(
     root: &Path,
     artifacts: &[GeneratedArtifact],
@@ -1095,6 +1373,22 @@ fn run_mutation_checks(
     let mut status = RunStatus::Passed;
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = generated;
+    quality.mutation.requested_workers = config.mutation.workers;
+    quality.mutation.effective_workers = 1;
+
+    if config.mutation.workers > 1 && !config.mutation.dry_run {
+        return run_parallel_mutation_checks(
+            root,
+            artifacts,
+            config,
+            run_start,
+            plan,
+            package_roots,
+            start,
+            candidates,
+            generated,
+        );
+    }
 
     for candidate in candidates.into_iter().take(8) {
         let domain = mutation_domain_from_label(&candidate.label);
@@ -1282,6 +1576,340 @@ fn run_mutation_checks(
         duration_ms: start.elapsed().as_millis(),
         quality,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_parallel_mutation_checks(
+    root: &Path,
+    artifacts: &[GeneratedArtifact],
+    config: &RustPluginConfig,
+    run_start: Instant,
+    plan: &VerificationPlan,
+    package_roots: &BTreeSet<Utf8PathBuf>,
+    start: Instant,
+    candidates: Vec<MutationCandidate>,
+    generated: usize,
+) -> Result<TestRunResult> {
+    let mut commands = Vec::new();
+    let mut failures = Vec::new();
+    let mut run_status = RunStatus::Passed;
+    let mut quality = VerificationQuality::default();
+    quality.mutation.generated = generated;
+    quality.mutation.requested_workers = config.mutation.workers;
+
+    let mut jobs = Vec::new();
+    let root_utf8 = utf8_path(root)?;
+    for (index, candidate) in candidates.into_iter().take(8).enumerate() {
+        let domain = mutation_domain_from_label(&candidate.label);
+        let operator = mutation_operator_from_label(&candidate.label);
+        record_mutation_generated(&mut quality.mutation.by_domain, &domain);
+        record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if package_roots.is_empty() {
+            quality.mutation.not_covered += 1;
+            record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
+            record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::NotCovered,
+                None,
+                0,
+            ));
+            continue;
+        }
+        if budget_nearly_spent(run_start, plan.budget_seconds) {
+            commands.push(skipped_command(
+                root,
+                "rust mutation checks",
+                "global budget nearly exhausted before remaining mutants",
+            )?);
+            break;
+        }
+        jobs.push(RustMutationJob {
+            index,
+            candidate,
+            package_roots: package_roots.clone(),
+            config: config.clone(),
+            root: root_utf8.clone(),
+        });
+    }
+
+    let (outcomes, summary) =
+        run_parallel_jobs(jobs, config.mutation.workers, run_rust_mutation_job);
+    quality.mutation.effective_workers = summary.max_concurrency;
+    for outcome in outcomes {
+        let candidate = outcome.candidate;
+        let domain = mutation_domain_from_label(&candidate.label);
+        let operator = mutation_operator_from_label(&candidate.label);
+        if outcome.isolation_failed {
+            quality.mutation.isolation_failures += 1;
+            commands.push(skipped_command(
+                root,
+                "rust mutation isolation",
+                outcome
+                    .error
+                    .as_deref()
+                    .unwrap_or("failed to prepare isolated mutation root"),
+            )?);
+            quality.mutation.records.push(mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                0,
+            ));
+            continue;
+        }
+
+        quality.mutation.executed += 1;
+        quality.mutation.runnable += 1;
+        record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
+        record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
+        record_mutation_executed(&mut quality.mutation.by_domain, &domain);
+        record_mutation_executed(&mut quality.mutation.by_operator, &operator);
+
+        if outcome.commands.is_empty() {
+            commands.push(skipped_command(
+                root,
+                "rust mutation worker",
+                outcome
+                    .error
+                    .as_deref()
+                    .unwrap_or("mutation worker did not return a command"),
+            )?);
+        }
+        let representative_command = outcome.commands.first().cloned();
+        commands.extend(outcome.commands.clone());
+        match outcome.status {
+            MutationStatus::Lived => {
+                quality.mutation.survived += 1;
+                record_mutation_survived(&mut quality.mutation.by_domain, &domain);
+                record_mutation_survived(&mut quality.mutation.by_operator, &operator);
+                let command = representative_command.unwrap_or(skipped_command(
+                    root,
+                    "rust mutation checks",
+                    "no package commands were selected for mutant",
+                )?);
+                run_status = RunStatus::Failed;
+                failures.push(rust_mutation_failure(artifacts, &candidate, &command));
+                quality.mutation.records.push(mutation_record(
+                    &candidate,
+                    &domain,
+                    &operator,
+                    MutationStatus::Lived,
+                    Some(&command_line(&command.program, &command.args)),
+                    command.duration_ms,
+                ));
+            }
+            MutationStatus::TimedOut => {
+                quality.mutation.timed_out += 1;
+                record_mutation_timed_out(&mut quality.mutation.by_domain, &domain);
+                record_mutation_timed_out(&mut quality.mutation.by_operator, &operator);
+                push_rust_mutation_record(
+                    &mut quality,
+                    &candidate,
+                    &domain,
+                    &operator,
+                    MutationStatus::TimedOut,
+                    representative_command.as_ref(),
+                );
+            }
+            MutationStatus::NotViable => {
+                quality.mutation.not_viable += 1;
+                record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
+                record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
+                push_rust_mutation_record(
+                    &mut quality,
+                    &candidate,
+                    &domain,
+                    &operator,
+                    MutationStatus::NotViable,
+                    representative_command.as_ref(),
+                );
+            }
+            _ => {
+                quality.mutation.killed += 1;
+                record_mutation_killed(&mut quality.mutation.by_domain, &domain);
+                record_mutation_killed(&mut quality.mutation.by_operator, &operator);
+                push_rust_mutation_record(
+                    &mut quality,
+                    &candidate,
+                    &domain,
+                    &operator,
+                    MutationStatus::Killed,
+                    representative_command.as_ref(),
+                );
+            }
+        }
+    }
+
+    quality.mutation.skipped = quality
+        .mutation
+        .generated
+        .saturating_sub(quality.mutation.executed);
+    quality.mutation.score_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.killed + quality.mutation.survived)
+        .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.mutant_coverage_percent =
+        ((quality.mutation.killed + quality.mutation.survived) * 100)
+            .checked_div(
+                quality.mutation.killed + quality.mutation.survived + quality.mutation.not_covered,
+            )
+            .map(|score| score.try_into().unwrap_or(100));
+    finalize_mutation_skips(&mut quality.mutation.by_domain);
+    finalize_mutation_skips(&mut quality.mutation.by_operator);
+
+    Ok(TestRunResult {
+        language: "rust".to_string(),
+        status: run_status,
+        commands,
+        failures,
+        duration_ms: start.elapsed().as_millis(),
+        quality,
+    })
+}
+
+fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
+    let candidate = job.candidate;
+    let isolated = match isolated_mutation_root(job.root.as_std_path(), "rust", job.index) {
+        Ok(isolated) => isolated,
+        Err(error) => {
+            return RustMutationOutcome {
+                candidate,
+                commands: Vec::new(),
+                status: MutationStatus::Skipped,
+                isolation_failed: true,
+                error: Some(error.to_string()),
+            };
+        }
+    };
+    match execute_rust_mutation(isolated.path(), &candidate, &job.package_roots, &job.config) {
+        Ok(commands) => {
+            let status = classify_rust_mutation_status(&commands);
+            RustMutationOutcome {
+                candidate,
+                commands,
+                status,
+                isolation_failed: false,
+                error: None,
+            }
+        }
+        Err(error) => RustMutationOutcome {
+            candidate,
+            commands: Vec::new(),
+            status: MutationStatus::NotViable,
+            isolation_failed: false,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn execute_rust_mutation(
+    root: &Path,
+    candidate: &MutationCandidate,
+    package_roots: &BTreeSet<Utf8PathBuf>,
+    config: &RustPluginConfig,
+) -> Result<Vec<CommandRecord>> {
+    let path = root.join(&candidate.path);
+    let original =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut mutated = original;
+    mutated.replace_range(candidate.start_byte..candidate.end_byte, &candidate.to);
+    fs::write(&path, mutated).with_context(|| {
+        format!(
+            "failed to write Rust mutation {} in {}",
+            candidate.label,
+            path.display()
+        )
+    })?;
+    run_cargo_tests_with_timeout(
+        root,
+        package_roots,
+        config,
+        mutation_timeout_seconds(config),
+    )
+}
+
+fn classify_rust_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
+    let mut mutant_survived = true;
+    let mut mutant_timed_out = false;
+    let mut mutant_not_viable = false;
+    for command in commands {
+        if command.status == RunStatus::Failed {
+            mutant_survived = false;
+            if command.stderr.contains("timed out after") {
+                mutant_timed_out = true;
+            }
+            if mutation_not_viable(command) {
+                mutant_not_viable = true;
+            }
+        }
+    }
+    if mutant_survived {
+        MutationStatus::Lived
+    } else if mutant_timed_out {
+        MutationStatus::TimedOut
+    } else if mutant_not_viable {
+        MutationStatus::NotViable
+    } else {
+        MutationStatus::Killed
+    }
+}
+
+fn push_rust_mutation_record(
+    quality: &mut VerificationQuality,
+    candidate: &MutationCandidate,
+    domain: &str,
+    operator: &str,
+    status: MutationStatus,
+    command: Option<&CommandRecord>,
+) {
+    quality.mutation.records.push(mutation_record(
+        candidate,
+        domain,
+        operator,
+        status,
+        command
+            .map(|command| command_line(&command.program, &command.args))
+            .as_deref(),
+        command.map(|command| command.duration_ms).unwrap_or(0),
+    ));
+}
+
+fn rust_mutation_failure(
+    artifacts: &[GeneratedArtifact],
+    candidate: &MutationCandidate,
+    command: &CommandRecord,
+) -> Failure {
+    Failure {
+        id: None,
+        message: format!(
+            "mutation survived in Rust function `{}`: {}",
+            candidate.function, candidate.label
+        ),
+        severity: FailureSeverity::Warning,
+        target_id: Some(format!("rust:{}:{}", candidate.path, candidate.function)),
+        artifact_id: artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::MutationCheck)
+            .map(|artifact| artifact.id.clone()),
+        command: command_line(&command.program, &command.args),
+        stdout_excerpt: excerpt(&command.stdout),
+        stderr_excerpt: excerpt(&command.stderr),
+        repro: Some(ReproCase {
+            command: format!(
+                "replace `{}` with `{}` in {} and run cargo test --all-targets",
+                candidate.from, candidate.to, candidate.path
+            ),
+            input: None,
+            path: Some(candidate.path.clone()),
+        }),
+    }
 }
 
 fn cargo_test_args(root: &Path, config: &RustPluginConfig) -> Result<Vec<String>> {

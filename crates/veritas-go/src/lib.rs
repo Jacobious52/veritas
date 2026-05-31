@@ -15,11 +15,12 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 use veritas_core::{config::GoPluginConfig, isolated_mutation_root, run_parallel_jobs};
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
-    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
-    MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
-    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
+    BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
+    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
+    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind,
+    TestRunResult, VerificationPlan, VerificationQuality, VerificationReport, VerificationStrategy,
+    VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -586,6 +587,205 @@ impl LanguagePlugin for GoPlugin {
             files,
         }))
     }
+
+    fn replay_behavior(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        case: &BehaviorReplayCase,
+    ) -> Result<Option<BehaviorReplayObservation>> {
+        let context = GoVerificationContext::discover(root, &self.config)?;
+        let Some(function) = context
+            .functions
+            .iter()
+            .find(|function| go_target_matches_function(&target.id, function))
+        else {
+            return Ok(None);
+        };
+        replay_go_function(root, &context, function, case, &self.config).map(Some)
+    }
+}
+
+fn replay_go_function(
+    root: &Path,
+    context: &GoVerificationContext,
+    function: &GoFunction,
+    case: &BehaviorReplayCase,
+    config: &GoPluginConfig,
+) -> Result<BehaviorReplayObservation> {
+    if function.receiver.is_some() {
+        return Ok(unsupported_go_replay(
+            "method replay requires receiver construction",
+        ));
+    }
+    if function.params.len() != 1 {
+        return Ok(unsupported_go_replay(
+            "executable replay currently supports single-argument functions",
+        ));
+    }
+    let Some(contents) = render_go_replay_test(function, case) else {
+        return Ok(unsupported_go_replay(
+            "no executable replay renderer for this target signature",
+        ));
+    };
+
+    let module = module_for_go_path(&context.modules, &function.path)
+        .ok_or_else(|| anyhow!("no Go module owns {}", function.path))?;
+    let package_dir = package_dir_relative_to_module(module, &function.path);
+    let test_name = format!(
+        "veritas_replay_{}_{}",
+        std::process::id(),
+        safe_ident(&format!("{}_{}", function.symbol, case.name))
+    );
+    let package_root = root.join(&module.root).join(&package_dir);
+    fs::create_dir_all(&package_root)
+        .with_context(|| format!("failed to create {}", package_root.display()))?;
+    let test_path = package_root.join(format!("{test_name}_test.go"));
+    fs::write(&test_path, contents)
+        .with_context(|| format!("failed to write {}", test_path.display()))?;
+
+    let package_arg = if package_dir.as_str() == "." {
+        ".".to_string()
+    } else {
+        format!("./{}", package_dir)
+    };
+    let args = vec![
+        "test".to_string(),
+        package_arg,
+        "-run".to_string(),
+        format!("^TestVeritasBehaviorReplay{}$", safe_ident(&case.name)),
+        "-count=1".to_string(),
+        "-v".to_string(),
+    ];
+    let command = run_command(
+        &root.join(&module.root),
+        "go",
+        args,
+        config.command_timeout_seconds.min(30),
+    );
+    let cleanup = fs::remove_file(&test_path)
+        .with_context(|| format!("failed to remove {}", test_path.display()));
+    let command = command?;
+    cleanup?;
+
+    let outputs = parse_replay_marker_output(&command.stdout);
+    let output = if outputs.is_empty() {
+        serde_json::json!({
+            "observations": [],
+            "stderr": excerpt(&command.stderr),
+        })
+    } else {
+        serde_json::json!({ "observations": outputs })
+    };
+    let status = if command.status == RunStatus::Passed && !outputs.is_empty() {
+        BehaviorReplayStatus::Observed
+    } else {
+        BehaviorReplayStatus::Failed
+    };
+    Ok(BehaviorReplayObservation {
+        status,
+        output,
+        command: Some(command_line(&command.program, &command.args)),
+        stdout_excerpt: Some(excerpt(&command.stdout)),
+        stderr_excerpt: Some(excerpt(&command.stderr)),
+        duration_ms: Some(command.duration_ms),
+    })
+}
+
+fn render_go_replay_test(function: &GoFunction, case: &BehaviorReplayCase) -> Option<String> {
+    if case.inputs.is_empty() {
+        return None;
+    }
+    let test_name = safe_ident(&case.name);
+    let mut observations = String::new();
+    for input in &case.inputs {
+        let label = replay_input_label(input);
+        let arg = go_replay_arg(function.params.first()?, input)?;
+        observations.push_str(&format!(
+            "\tobserve({}, func() string {{ return fmt.Sprint({}({arg})) }})\n",
+            go_string_literal(&label),
+            function.name
+        ));
+    }
+
+    Some(format!(
+        "package {}\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n)\n\nfunc TestVeritasBehaviorReplay{test_name}(t *testing.T) {{\n\tobserve := func(input string, call func() string) {{\n\t\tstatus := \"observed\"\n\t\toutput := \"\"\n\t\tfunc() {{\n\t\t\tdefer func() {{\n\t\t\t\tif recovered := recover(); recovered != nil {{\n\t\t\t\t\tstatus = \"panic\"\n\t\t\t\t\toutput = fmt.Sprint(recovered)\n\t\t\t\t}}\n\t\t\t}}()\n\t\t\toutput = call()\n\t\t}}()\n\t\tfmt.Printf(\"__VERITAS_REPLAY__%s\\t%s\\t%s\\n\", input, status, output)\n\t}}\n{observations}}}\n",
+        function.package_name
+    ))
+}
+
+fn go_replay_arg(param: &GoParam, input: &serde_json::Value) -> Option<String> {
+    match param.type_name.as_str() {
+        "string" => Some(go_string_literal(&replay_input_label(input))),
+        "bool" => input.as_bool().map(|value| value.to_string()),
+        "int" | "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32"
+        | "uint64" | "uintptr" => input
+            .as_i64()
+            .map(|value| value.to_string())
+            .or_else(|| input.as_u64().map(|value| value.to_string()))
+            .or_else(|| input.as_str().map(ToString::to_string))
+            .map(|value| format!("{}({value})", param.type_name)),
+        _ => None,
+    }
+}
+
+fn unsupported_go_replay(reason: &str) -> BehaviorReplayObservation {
+    BehaviorReplayObservation {
+        status: BehaviorReplayStatus::Unsupported,
+        output: serde_json::json!({ "reason": reason }),
+        command: None,
+        stdout_excerpt: None,
+        stderr_excerpt: None,
+        duration_ms: None,
+    }
+}
+
+fn module_for_go_path<'a>(modules: &'a [GoModule], path: &Utf8PathBuf) -> Option<&'a GoModule> {
+    modules
+        .iter()
+        .filter(|module| module.root.as_str() == "." || path.starts_with(&module.root))
+        .max_by_key(|module| module.root.as_str().len())
+}
+
+fn package_dir_relative_to_module(module: &GoModule, path: &Utf8PathBuf) -> Utf8PathBuf {
+    let relative = if module.root.as_str() == "." {
+        path.clone()
+    } else {
+        path.strip_prefix(&module.root)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|_| path.clone())
+    };
+    package_dir(&relative)
+}
+
+fn replay_input_label(input: &serde_json::Value) -> String {
+    input
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| input.to_string())
+}
+
+fn go_string_literal(value: &str) -> String {
+    format!("{value:?}")
+}
+
+fn parse_replay_marker_output(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let marker = line.find("__VERITAS_REPLAY__")?;
+            let payload = &line[marker + "__VERITAS_REPLAY__".len()..];
+            let mut parts = payload.splitn(3, '\t');
+            let input = parts.next()?.to_string();
+            let status = parts.next()?.to_string();
+            let output = parts.next().unwrap_or_default().to_string();
+            Some(serde_json::json!({
+                "input": input,
+                "status": status,
+                "output": output,
+            }))
+        })
+        .collect()
 }
 
 fn parse_go_module(root: &Path, module_root: Utf8PathBuf) -> Result<GoModule> {
@@ -3396,6 +3596,12 @@ fn render_go_regression_scaffold(
     out.push('\n');
     out.push_str(&format!("package {package_name}\n\n"));
     out.push_str("import \"testing\"\n\n");
+    if let Some(function) = function {
+        if let Some(concrete) = render_concrete_go_regression(function, index, &name) {
+            out.push_str(&concrete);
+            return out;
+        }
+    }
     out.push_str(&format!(
         "func TestVeritasRegression{index}{name}(t *testing.T) {{\n"
     ));
@@ -3416,6 +3622,58 @@ fn render_go_regression_scaffold(
     );
     out.push_str("}\n");
     out
+}
+
+fn render_concrete_go_regression(
+    function: &GoFunction,
+    index: usize,
+    name: &str,
+) -> Option<String> {
+    if function.receiver.is_some() || !function.name.to_ascii_lowercase().contains("parse") {
+        return None;
+    }
+    let first_param = function.params.first()?;
+    if first_param.type_name != "string" {
+        return None;
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "func TestVeritasRegression{index}{name}(t *testing.T) {{\n"
+    ));
+    let normalized_signature = function.signature.replace(' ', "");
+    if normalized_signature.contains(")(int,bool)")
+        || normalized_signature.contains("(inputstring)(int,bool)")
+        || normalized_signature.contains("(rawstring)(int,bool)")
+    {
+        out.push_str("\tcases := []struct {\n");
+        out.push_str("\t\tinput string\n\t\twant int\n\t\tok bool\n\t}{\n");
+        out.push_str("\t\t{input: \"not-a-number\", want: 0, ok: false},\n");
+        out.push_str("\t\t{input: \"1000000\", want: 1000000, ok: true},\n");
+        out.push_str("\t\t{input: \"1000001\", want: 0, ok: false},\n");
+        out.push_str("\t}\n");
+        out.push_str("\tfor _, tc := range cases {\n");
+        out.push_str(&format!("\t\tgot, ok := {}(tc.input)\n", function.name));
+        out.push_str("\t\tif got != tc.want || ok != tc.ok {\n");
+        out.push_str(
+            "\t\t\tt.Fatalf(\"%s: got %d ok=%v, want %d ok=%v\", tc.input, got, ok, tc.want, tc.ok)\n",
+        );
+        out.push_str("\t\t}\n\t}\n");
+    } else if normalized_signature.ends_with(")int") {
+        out.push_str(&format!(
+            "\tif got := {}(\"not-a-number\"); got != 0 {{\n",
+            function.name
+        ));
+        out.push_str("\t\tt.Fatalf(\"invalid input returned %d, want 0\", got)\n\t}\n");
+        out.push_str(&format!(
+            "\tif got := {}(\"42\"); got != 42 {{\n",
+            function.name
+        ));
+        out.push_str("\t\tt.Fatalf(\"valid input returned %d, want 42\", got)\n\t}\n");
+    } else {
+        return None;
+    }
+    out.push_str("}\n");
+    Some(out)
 }
 
 fn go_regression_seed_args(function: &GoFunction) -> Vec<String> {

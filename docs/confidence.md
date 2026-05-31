@@ -71,9 +71,19 @@ External canaries clone pinned public repositories into `target/external-fixture
 ./scripts/run-canaries.sh verify
 ```
 
-Smoke mode only scans. Verify mode runs `veritas verify --target .` and then cleans generated artifacts.
+Smoke mode scans each repository and writes JSON scan summaries. Verify mode runs `veritas verify --target .`, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
 
-GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`. Start the same workflow manually with `mode=verify` when validating a larger release or a plugin behavior change.
+Both modes write a dashboard:
+
+```text
+target/external-fixtures/reports/canary-dashboard.md
+target/external-fixtures/reports/canary-summary.json
+target/external-fixtures/reports/canary-history.jsonl
+```
+
+The dashboard assigns a real-repo tier per canary. `scan` means target discovery completed. Verify-mode `high`, `medium`, and `low` tiers come from the saved confidence score and finding count. If local history exists, the dashboard includes confidence, mutation, and finding deltas against the previous run for the same canary.
+
+GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`, uploads the dashboard and per-canary reports as artifacts, and can be started manually with `mode=verify` when validating a larger release or a plugin behavior change.
 
 Current pinned canaries:
 

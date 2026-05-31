@@ -33,6 +33,7 @@ pub enum PlannerMode {
 pub struct PluginConfigs {
     pub rust: RustPluginConfig,
     pub go: GoPluginConfig,
+    pub python: PythonPluginConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +63,12 @@ pub struct GoPluginConfig {
     pub max_mutants: usize,
     pub build_tags: Vec<String>,
     pub mutation: MutationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PythonPluginConfig {
+    pub command_timeout_seconds: u64,
+    pub coverage_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +133,7 @@ struct PolicySection {
 struct PluginSection {
     rust: Option<RustPluginConfigPartial>,
     go: Option<GoPluginConfigPartial>,
+    python: Option<PythonPluginConfigPartial>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,6 +163,12 @@ struct GoPluginConfigPartial {
     max_mutants: Option<usize>,
     build_tags: Option<Vec<String>>,
     mutation: Option<MutationConfigPartial>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PythonPluginConfigPartial {
+    command_timeout_seconds: Option<u64>,
+    coverage_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,6 +229,10 @@ impl Default for VeritasConfig {
                     max_mutants: 8,
                     build_tags: Vec::new(),
                     mutation: MutationConfig::default(),
+                },
+                python: PythonPluginConfig {
+                    command_timeout_seconds: 120,
+                    coverage_enabled: false,
                 },
             },
         }
@@ -355,6 +373,14 @@ impl VeritasConfig {
                 }
                 if let Some(value) = go.mutation {
                     apply_mutation_config(&mut config.plugins.go.mutation, &value);
+                }
+            }
+            if let Some(python) = plugins.python {
+                if let Some(value) = python.command_timeout_seconds {
+                    config.plugins.python.command_timeout_seconds = value;
+                }
+                if let Some(value) = python.coverage_enabled {
+                    config.plugins.python.coverage_enabled = value;
                 }
             }
         }

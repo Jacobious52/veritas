@@ -17,12 +17,13 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
-    CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry,
-    EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
-    EvolutionGeneration, EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta,
-    EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
-    LineRange, MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta,
-    ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
+    BehaviorReplayCase, BehaviorReplayObservation, BehaviorReplayStatus, CommandBudget,
+    CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry, EvolutionCandidateKind,
+    EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness, EvolutionGeneration,
+    EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta, EvolutionStrategy,
+    EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange,
+    MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta, ReproCase,
+    RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
     VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 
@@ -682,6 +683,7 @@ impl CoreEngine {
         self.add_observation_artifacts(
             root,
             language,
+            Some(plugin.as_ref()),
             &mut report,
             plan.write_generated_tests,
             plan.strategies
@@ -810,10 +812,12 @@ impl CoreEngine {
                 .iter()
                 .any(|strategy| matches!(strategy, VerificationStrategy::DifferentialTests))
         });
+        let replay_plugin = language.and_then(|language| self.registry.get(language).ok());
         assign_finding_ids(&mut report);
         self.add_observation_artifacts(
             root,
             language.unwrap_or("changed"),
+            replay_plugin.as_deref(),
             &mut report,
             write_observations,
             differential_enabled,
@@ -960,6 +964,7 @@ impl CoreEngine {
         &self,
         root: &Path,
         language: &str,
+        plugin: Option<&dyn LanguagePlugin>,
         report: &mut VerificationReport,
         write_artifacts_flag: bool,
         differential_enabled: bool,
@@ -973,6 +978,10 @@ impl CoreEngine {
             report.findings.append(&mut failures);
         }
 
+        let (replay_results, mut replay_failures) =
+            replay_result_artifacts(root, language, plugin, report, &artifacts)?;
+        artifacts.extend(replay_results);
+        report.findings.append(&mut replay_failures);
         artifacts.extend(feedback_artifacts(language, report));
         artifacts.extend(repro_artifacts(language, &report.findings));
         artifacts.extend(assertion_candidate_artifacts(language, &report.findings)?);
@@ -980,7 +989,6 @@ impl CoreEngine {
         artifacts.extend(candidate_patch_artifacts(language, &report.findings));
         artifacts.extend(regression_artifacts(language, &report.findings));
         artifacts.extend(evolution_artifacts(language, report, &artifacts));
-        artifacts.extend(replay_result_artifacts(language, report, &artifacts)?);
         artifacts.extend(budget_plan_artifacts(language, report)?);
         artifacts.extend(mutation_trend_artifacts(root, language, report)?);
         artifacts.extend(mutation_campaign_artifacts(
@@ -2291,14 +2299,16 @@ fn differential_replay_artifact(
 
 fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<serde_json::Value> {
     let signature = target.signature.as_deref().unwrap_or_default();
+    let input_signature = signature_input_section(language, signature);
     let mut cases = Vec::new();
     let lowered_symbol = target
         .symbol
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let has_string_input = signature_contains_string_input(language, &input_signature);
 
-    if signature.contains("&str") || signature.contains("String") || signature.contains("string") {
+    if has_string_input {
         cases.push(serde_json::json!({
             "name": "empty_string",
             "inputs": [""],
@@ -2310,7 +2320,7 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
             "assertion": "replay old/new behavior for whitespace-normalized input"
         }));
     }
-    if signature_contains_numeric(signature) {
+    if signature_contains_numeric(&input_signature) {
         cases.push(serde_json::json!({
             "name": "zero_boundary",
             "inputs": [0],
@@ -2322,7 +2332,7 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
             "assertion": "replay old/new behavior at one boundary"
         }));
     }
-    if signature.contains("bool") {
+    if input_signature.contains("bool") {
         cases.push(serde_json::json!({
             "name": "boolean_edges",
             "inputs": [false, true],
@@ -2343,6 +2353,13 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
         || lowered_symbol.contains("invoice")
         || lowered_symbol.contains("total")
     {
+        if has_string_input {
+            cases.push(serde_json::json!({
+                "name": "numeric_string_boundaries",
+                "inputs": ["0", "1", "1000000", "1000001"],
+                "assertion": "assert parser numeric string boundaries are intentional before accepting the replay"
+            }));
+        }
         cases.push(serde_json::json!({
             "name": "parser_invalid_input",
             "inputs": ["", "total=0", "not-a-total"],
@@ -2358,6 +2375,32 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
         }));
     }
     cases
+}
+
+fn signature_contains_string_input(language: &str, signature: &str) -> bool {
+    signature.contains("&str")
+        || signature.contains("String")
+        || signature.contains("string")
+        || (language == "python"
+            && signature
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .any(|token| token == "str"))
+}
+
+fn signature_input_section(language: &str, signature: &str) -> String {
+    match language {
+        "rust" => signature
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(params, _)| params))
+            .unwrap_or(signature)
+            .to_string(),
+        "go" | "python" => signature
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')').map(|(params, _)| params))
+            .unwrap_or(signature)
+            .to_string(),
+        _ => signature.to_string(),
+    }
 }
 
 fn signature_contains_numeric(signature: &str) -> bool {
@@ -3269,10 +3312,12 @@ fn stable_slug(value: &str) -> String {
 }
 
 fn replay_result_artifacts(
+    root: &Path,
     language: &str,
+    plugin: Option<&dyn LanguagePlugin>,
     report: &VerificationReport,
     pending_artifacts: &[GeneratedArtifact],
-) -> Result<Vec<GeneratedArtifact>> {
+) -> Result<(Vec<GeneratedArtifact>, Vec<Failure>)> {
     let replay_artifacts = report
         .artifacts
         .iter()
@@ -3280,47 +3325,291 @@ fn replay_result_artifacts(
         .filter(|artifact| artifact.kind == ArtifactKind::DifferentialReplay)
         .collect::<Vec<_>>();
     if replay_artifacts.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let mut targets = 0usize;
     let mut cases = 0usize;
+    let previous_path = Utf8PathBuf::from(format!(".veritas/baselines/{language}_behavior.json"));
+    let previous = load_behavior_baseline(root, &previous_path);
+    let target_by_id = report
+        .targets
+        .iter()
+        .map(|target| (target.id.as_str(), target))
+        .collect::<BTreeMap<_, _>>();
+    let mut observations = BTreeMap::new();
+    let mut comparisons = Vec::new();
+    let mut failures = Vec::new();
+
     for artifact in &replay_artifacts {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&artifact.contents) else {
             continue;
         };
-        let replay_targets = value["targets"].as_array().map(Vec::len).unwrap_or(0);
-        targets += replay_targets;
-        cases += value["targets"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|target| target["cases"].as_array())
-            .map(Vec::len)
-            .sum::<usize>();
+        let replay_targets = value["targets"].as_array().cloned().unwrap_or_default();
+        targets += replay_targets.len();
+        for replay_target in replay_targets {
+            let target_id = replay_target["target_id"].as_str().unwrap_or_default();
+            let Some(target) = target_by_id.get(target_id) else {
+                continue;
+            };
+            let replay_cases = replay_target["cases"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            cases += replay_cases.len();
+            for replay_case in replay_cases {
+                let case_name = replay_case["name"].as_str().unwrap_or("case");
+                let observation_id = format!("{target_id}::{case_name}");
+                let replay_case = behavior_replay_case(&replay_case);
+                let plugin_observation = plugin.and_then(|plugin| {
+                    plugin
+                        .replay_behavior(root, target, &replay_case)
+                        .ok()
+                        .flatten()
+                });
+                let observation = behavior_observation(
+                    root,
+                    language,
+                    target,
+                    &replay_case,
+                    &observation_id,
+                    plugin_observation.as_ref(),
+                );
+                let previous_observation = previous.get(&observation_id).cloned();
+                let outcome = match previous_observation.as_ref().and_then(|value| {
+                    value["behavior_hash"]
+                        .as_str()
+                        .map(|hash| hash == observation["behavior_hash"].as_str().unwrap_or(""))
+                }) {
+                    Some(true) => "unchanged",
+                    Some(false) => {
+                        failures.push(behavior_drift_failure(
+                            language,
+                            target,
+                            case_name,
+                            &previous_path,
+                            previous_observation.as_ref(),
+                            &observation,
+                        ));
+                        "changed"
+                    }
+                    None => "new",
+                };
+                comparisons.push(serde_json::json!({
+                    "id": observation_id,
+                    "target_id": target_id,
+                    "case": replay_case,
+                    "outcome": outcome,
+                    "previous": previous_observation,
+                    "current": observation,
+                }));
+                observations.insert(observation_id, observation);
+            }
+        }
     }
 
-    let contents = serde_json::to_string_pretty(&serde_json::json!({
+    let baseline_contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "mode": "behavioral_replay_baseline",
+        "observations": observations,
+    }))?;
+    let result_contents = serde_json::to_string_pretty(&serde_json::json!({
         "version": 1,
         "language": language,
         "mode": "differential_replay_result",
         "manifests": replay_artifacts.len(),
         "targets": targets,
         "cases": cases,
-        "status": "planned",
-        "next_step": "Persist this result with the pre-change manifest, rerun after the AI change, and promote changed observations into assertion candidates."
+        "changed": failures.len(),
+        "status": if failures.is_empty() { "unchanged_or_new" } else { "changed" },
+        "comparisons": comparisons,
+        "next_step": "Review changed observations, promote intentional behavior into assertions, or accept the updated behavior baseline after review."
     }))?;
 
-    Ok(vec![GeneratedArtifact {
-        id: format!("{language}-differential-replay-result"),
-        language: language.to_string(),
-        kind: ArtifactKind::ReplayResult,
-        target_id: format!("{language}:differential"),
-        path: Utf8PathBuf::from(format!(".veritas/differential/{language}_result.json")),
-        contents,
-        description: "Differential replay execution summary for selected public APIs".to_string(),
-        status: ArtifactStatus::Planned,
-    }])
+    Ok((
+        vec![
+            GeneratedArtifact {
+                id: format!("{language}-behavior-baseline"),
+                language: language.to_string(),
+                kind: ArtifactKind::DifferentialBaseline,
+                target_id: format!("{language}:project"),
+                path: previous_path,
+                contents: baseline_contents,
+                description: "Behavioral replay baseline for selected public APIs".to_string(),
+                status: ArtifactStatus::Planned,
+            },
+            GeneratedArtifact {
+                id: format!("{language}-differential-replay-result"),
+                language: language.to_string(),
+                kind: ArtifactKind::ReplayResult,
+                target_id: format!("{language}:differential"),
+                path: Utf8PathBuf::from(format!(".veritas/differential/{language}_result.json")),
+                contents: result_contents,
+                description: "Differential replay comparison summary for selected public APIs"
+                    .to_string(),
+                status: ArtifactStatus::Planned,
+            },
+        ],
+        failures,
+    ))
+}
+
+fn load_behavior_baseline(root: &Path, path: &Utf8PathBuf) -> BTreeMap<String, serde_json::Value> {
+    fs::read_to_string(root.join(path))
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .and_then(|value| value["observations"].as_object().cloned())
+        .map(|observations| observations.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn behavior_replay_case(value: &serde_json::Value) -> BehaviorReplayCase {
+    BehaviorReplayCase {
+        name: value["name"].as_str().unwrap_or("case").to_string(),
+        inputs: value["inputs"].as_array().cloned().unwrap_or_default(),
+        assertion: value["assertion"].as_str().map(ToString::to_string),
+    }
+}
+
+fn behavior_observation(
+    root: &Path,
+    language: &str,
+    target: &VerificationTarget,
+    replay_case: &BehaviorReplayCase,
+    observation_id: &str,
+    replay_observation: Option<&BehaviorReplayObservation>,
+) -> serde_json::Value {
+    let source = target_source_fragment(root, target).unwrap_or_else(|error| error.to_string());
+    let inputs = serde_json::Value::Array(replay_case.inputs.clone());
+    let status = match replay_observation.map(|observation| observation.status) {
+        Some(BehaviorReplayStatus::Observed) => "observed",
+        Some(BehaviorReplayStatus::Failed) => "failed",
+        Some(BehaviorReplayStatus::Unsupported) => "unsupported",
+        None if source.starts_with("failed to") => "missing_target",
+        None => "fingerprint_only",
+    };
+    let uses_executable_output = replay_observation
+        .is_some_and(|observation| observation.status != BehaviorReplayStatus::Unsupported);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(language.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(target.id.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(target.signature.as_deref().unwrap_or_default().as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(inputs.to_string().as_bytes());
+    if uses_executable_output {
+        bytes.push(0);
+        bytes.extend_from_slice(
+            replay_observation
+                .map(|observation| observation.output.to_string())
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+    } else {
+        bytes.push(0);
+        bytes.extend_from_slice(source.as_bytes());
+    }
+    let behavior_hash = format!("{:016x}", fnv1a64(&bytes));
+    let source_hash = format!("{:016x}", fnv1a64(source.as_bytes()));
+    let mut observation = serde_json::json!({
+        "id": observation_id,
+        "status": status,
+        "target_id": target.id,
+        "path": target.path,
+        "symbol": target.symbol,
+        "signature": target.signature,
+        "inputs": inputs,
+        "behavior_hash": behavior_hash,
+        "source_hash": source_hash,
+        "line_range": target.line_range,
+        "observation": if uses_executable_output {
+            "executable replay output fingerprint from plugin-owned harness"
+        } else {
+            "stable fallback fingerprint from target source, signature, and replay inputs"
+        },
+    });
+    if let Some(replay_observation) = replay_observation {
+        observation["output"] = replay_observation.output.clone();
+        observation["command"] = replay_observation
+            .command
+            .as_ref()
+            .map(|command| serde_json::Value::String(command.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        observation["duration_ms"] = replay_observation
+            .duration_ms
+            .map(|duration| serde_json::json!(duration))
+            .unwrap_or(serde_json::Value::Null);
+        observation["stdout_excerpt"] = replay_observation
+            .stdout_excerpt
+            .as_ref()
+            .map(|stdout| serde_json::Value::String(stdout.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        observation["stderr_excerpt"] = replay_observation
+            .stderr_excerpt
+            .as_ref()
+            .map(|stderr| serde_json::Value::String(stderr.clone()))
+            .unwrap_or(serde_json::Value::Null);
+    }
+    observation
+}
+
+fn target_source_fragment(root: &Path, target: &VerificationTarget) -> Result<String> {
+    let source_path = root.join(&target.path);
+    let contents = fs::read_to_string(&source_path)
+        .with_context(|| format!("failed to read {}", source_path.display()))?;
+    if let Some(range) = &target.line_range {
+        let lines = contents
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let line_number = index + 1;
+                (line_number >= range.start && line_number <= range.end).then_some(line)
+            })
+            .collect::<Vec<_>>();
+        if !lines.is_empty() {
+            return Ok(lines.join("\n"));
+        }
+    }
+    Ok(contents)
+}
+
+fn behavior_drift_failure(
+    language: &str,
+    target: &VerificationTarget,
+    case_name: &str,
+    baseline_path: &Utf8PathBuf,
+    previous: Option<&serde_json::Value>,
+    current: &serde_json::Value,
+) -> Failure {
+    Failure {
+        id: None,
+        message: format!(
+            "behavioral replay drift for `{}` case `{case_name}`",
+            target.id
+        ),
+        severity: FailureSeverity::Warning,
+        target_id: Some(target.id.clone()),
+        artifact_id: Some(format!("{language}-differential-replay-result")),
+        command: format!("veritas verify --lang {language} --target {}", target.path),
+        stdout_excerpt: format!(
+            "previous: {}\ncurrent: {}",
+            previous
+                .and_then(|value| value["behavior_hash"].as_str())
+                .unwrap_or("missing"),
+            current["behavior_hash"].as_str().unwrap_or("missing")
+        ),
+        stderr_excerpt: String::new(),
+        repro: Some(ReproCase {
+            command: format!(
+                "review behavior drift for `{}` case `{case_name}` and promote or accept the baseline",
+                target.id
+            ),
+            input: Some(current["inputs"].to_string()),
+            path: Some(baseline_path.clone()),
+        }),
+    }
 }
 
 fn budget_plan_artifacts(
@@ -3535,6 +3824,7 @@ fn should_generate_regression_artifact(failure: &Failure) -> bool {
         || failure.message.contains("minimal failing input")
         || failure.message.contains("cargo test failed")
         || failure.message.contains("go test failed")
+        || failure.message.contains("behavioral replay drift")
 }
 
 fn mutation_regression_text(language: &str, failure: &Failure) -> String {
@@ -4526,7 +4816,7 @@ pub fn strategy_from_kind(kind: &str) -> Result<VerificationStrategy> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         fs,
         path::{Path, PathBuf},
         process,
@@ -4545,8 +4835,8 @@ mod tests {
         cleanup_generated_artifacts, confidence_score, corpus_entry_artifacts,
         differential_replay_artifact, evolution_artifacts, evolution_metrics_from_artifacts,
         filtered_mutation_records, isolated_mutation_root, parse_unified_diff,
-        regression_artifacts, run_parallel_jobs, targets_for_changed_files, ChangedFile,
-        TargetKind, VerificationTarget,
+        regression_artifacts, replay_cases_for_target, replay_result_artifacts, run_parallel_jobs,
+        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -4860,7 +5150,7 @@ index 3333333..4444444 100644
     fn differential_replay_artifact_includes_seeded_behavior_cases() {
         let targets = vec![function_target_with_signature(
             "rust:src/lib.rs::parse_total",
-            "pub fn parse_total(input: &str, cents: u64) -> bool",
+            "pub fn parse_total(input: &str, cents: u64, strict: bool) -> bool",
         )];
 
         let artifact =
@@ -4884,6 +5174,99 @@ index 3333333..4444444 100644
         assert!(names.contains(&"zero_boundary"));
         assert!(names.contains(&"boolean_edges"));
         assert!(names.contains(&"parser_invalid_input"));
+    }
+
+    #[test]
+    fn replay_cases_use_parameter_types_not_return_types() {
+        let target = VerificationTarget {
+            id: "go:evolution.go:SettlementState".to_string(),
+            language: "go".to_string(),
+            kind: TargetKind::Function,
+            path: Utf8PathBuf::from("evolution.go"),
+            symbol: Some("SettlementState".to_string()),
+            signature: Some("func SettlementState(statusCode int) string".to_string()),
+            line_range: Some(LineRange { start: 1, end: 4 }),
+            description: "state".to_string(),
+            risk: RiskLevel::Medium,
+        };
+        let cases = replay_cases_for_target("go", &target);
+        let names = cases
+            .iter()
+            .filter_map(|case| case["name"].as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(names.contains("zero_boundary"));
+        assert!(names.contains("one_boundary"));
+        assert!(!names.contains("empty_string"));
+        assert!(!names.contains("trimmed_token"));
+    }
+
+    #[test]
+    fn behavioral_replay_persists_and_compares_observations() {
+        let root = TempRoot::new();
+        write_file(root.path(), "src/lib.rs");
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn parse_invoice_total(input: &str) -> u64 {\n    if input.is_empty() { 0 } else { 1 }\n}\n",
+        )
+        .expect("write source");
+        let target = VerificationTarget {
+            id: "rust:src/lib.rs:parse_invoice_total".to_string(),
+            language: "rust".to_string(),
+            kind: TargetKind::Function,
+            path: Utf8PathBuf::from("src/lib.rs"),
+            symbol: Some("parse_invoice_total".to_string()),
+            signature: Some("pub fn parse_invoice_total(input: &str) -> u64".to_string()),
+            line_range: Some(LineRange { start: 1, end: 3 }),
+            description: "parser".to_string(),
+            risk: RiskLevel::High,
+        };
+        let manifest = differential_replay_artifact("rust", std::slice::from_ref(&target)).unwrap();
+        let mut report = VerificationReport::empty();
+        report.targets.push(target);
+
+        let (artifacts, failures) = replay_result_artifacts(
+            root.path(),
+            "rust",
+            None,
+            &report,
+            std::slice::from_ref(&manifest),
+        )
+        .unwrap();
+
+        assert!(failures.is_empty());
+        let baseline = artifacts
+            .iter()
+            .find(|artifact| artifact.id == "rust-behavior-baseline")
+            .expect("baseline artifact");
+        assert!(baseline.contents.contains("behavioral_replay_baseline"));
+        fs::create_dir_all(root.path().join(".veritas/baselines")).expect("create baselines");
+        fs::write(root.path().join(&baseline.path), &baseline.contents).expect("write baseline");
+
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn parse_invoice_total(input: &str) -> u64 {\n    if input.is_empty() { 0 } else { 2 }\n}\n",
+        )
+        .expect("write changed source");
+
+        let (artifacts, failures) =
+            replay_result_artifacts(root.path(), "rust", None, &report, &[manifest]).unwrap();
+
+        assert!(!failures.is_empty());
+        assert!(failures
+            .iter()
+            .any(|failure| failure.message.contains("behavioral replay drift")));
+        let result = artifacts
+            .iter()
+            .find(|artifact| artifact.id == "rust-differential-replay-result")
+            .expect("result artifact");
+        let value: serde_json::Value = serde_json::from_str(&result.contents).unwrap();
+        assert_eq!(value["changed"], failures.len());
+        assert!(value["comparisons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|comparison| comparison["outcome"] == "changed"));
     }
 
     #[test]
