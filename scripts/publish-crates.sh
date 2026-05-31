@@ -81,8 +81,16 @@ if [[ "$mode" == "--dry-run" ]]; then
   exit 0
 fi
 
+if [[ -z "${CARGO_REGISTRY_TOKEN:-}" && -n "${CRATES_IO_TOKEN:-}" ]]; then
+  export CARGO_REGISTRY_TOKEN="${CRATES_IO_TOKEN}"
+fi
+
 if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-  echo "CARGO_REGISTRY_TOKEN must be set for --execute" >&2
+  message="CARGO_REGISTRY_TOKEN must be set for --execute. In GitHub Actions, set the repository secret named CARGO_REGISTRY_TOKEN."
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::error title=Missing crates.io token::${message}"
+  fi
+  echo "${message}" >&2
   exit 1
 fi
 
@@ -93,6 +101,14 @@ for package in "${packages[@]}"; do
   fi
 
   echo "==> Publishing ${package} ${version}"
-  cargo publish --locked -p "$package"
+  if ! output="$(cargo publish --locked -p "$package" 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    if grep -Fq "A verified email address is required" <<<"$output" \
+      && [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+      echo "::error title=crates.io email is not verified::Verify the email address on the crates.io account that owns CARGO_REGISTRY_TOKEN, then rerun the release workflow."
+    fi
+    exit 1
+  fi
+  printf '%s\n' "$output"
   wait_for_crate_version "$package" "$version"
 done
