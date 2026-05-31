@@ -157,6 +157,7 @@ min_commands = 2
 min_mutation_findings = 1
 min_mutants_executed = 4
 min_mutation_score = 40
+min_mutation_effective_workers = 2
 min_assertion_candidates = 1
 min_corpus_entries = 1
 min_replay_cases = 1

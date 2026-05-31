@@ -470,6 +470,12 @@ pub struct MutationMetrics {
     #[serde(default)]
     pub not_viable: usize,
     pub skipped: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub requested_workers: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub effective_workers: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub isolation_failures: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -516,6 +522,10 @@ pub struct MutationRecord {
     pub command: Option<String>,
     #[serde(default)]
     pub duration_ms: u128,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

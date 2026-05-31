@@ -178,6 +178,7 @@ struct BenchCase {
     min_mutation_findings: Option<usize>,
     min_mutants_executed: Option<usize>,
     min_mutation_score: Option<u8>,
+    min_mutation_effective_workers: Option<usize>,
     max_surviving_mutants: Option<usize>,
     min_generated_test_failures: Option<usize>,
     min_assertion_candidates: Option<usize>,
@@ -221,6 +222,9 @@ struct BenchMetrics {
     mutants_killed: usize,
     mutants_survived: usize,
     mutants_skipped: usize,
+    mutation_requested_workers: usize,
+    mutation_effective_workers: usize,
+    mutation_isolation_failures: usize,
     mutation_score_percent: Option<u8>,
     mutation_findings: usize,
     property_artifacts: usize,
@@ -620,6 +624,9 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         mutants_killed: report.quality.mutation.killed,
         mutants_survived: report.quality.mutation.survived,
         mutants_skipped: report.quality.mutation.skipped,
+        mutation_requested_workers: report.quality.mutation.requested_workers,
+        mutation_effective_workers: report.quality.mutation.effective_workers,
+        mutation_isolation_failures: report.quality.mutation.isolation_failures,
         mutation_score_percent: report.quality.mutation.score_percent,
         property_artifacts: report.quality.property.generated_artifacts,
         generated_test_failures: report.quality.property.failed_generated_tests,
@@ -685,6 +692,14 @@ fn bench_threshold_failures(
         if actual < min_mutation_score {
             failures.push(format!(
                 "mutation_score_percent {actual} < min_mutation_score {min_mutation_score}"
+            ));
+        }
+    }
+    if let Some(min_mutation_effective_workers) = case.min_mutation_effective_workers {
+        if metrics.mutation_effective_workers < min_mutation_effective_workers {
+            failures.push(format!(
+                "mutation_effective_workers {} < min_mutation_effective_workers {min_mutation_effective_workers}",
+                metrics.mutation_effective_workers
             ));
         }
     }
@@ -794,6 +809,17 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                     case.metrics.mutants_survived,
                     case.metrics.mutants_skipped
                 );
+                if case.metrics.mutation_requested_workers > 0
+                    || case.metrics.mutation_effective_workers > 0
+                    || case.metrics.mutation_isolation_failures > 0
+                {
+                    println!(
+                        "- Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`",
+                        case.metrics.mutation_requested_workers,
+                        case.metrics.mutation_effective_workers,
+                        case.metrics.mutation_isolation_failures
+                    );
+                }
                 println!("- Mutation findings: `{}`", case.metrics.mutation_findings);
                 println!(
                     "- Property artifacts: `{}`",

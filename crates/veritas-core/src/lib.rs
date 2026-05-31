@@ -241,6 +241,93 @@ where
     )
 }
 
+#[derive(Debug)]
+pub struct IsolatedMutationRoot {
+    path: PathBuf,
+}
+
+impl IsolatedMutationRoot {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for IsolatedMutationRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub fn isolated_mutation_root(
+    source_root: &Path,
+    language: &str,
+    index: usize,
+) -> Result<IsolatedMutationRoot> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "veritas-{language}-mutation-{}-{index}-{nanos}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create isolated mutation root {}", path.display()))?;
+    copy_isolated_project(source_root, &path)?;
+    Ok(IsolatedMutationRoot { path })
+}
+
+fn copy_isolated_project(source: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("failed to read source root {}", source.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
+        let file_name = entry.file_name();
+        let file_name_string = file_name.to_string_lossy();
+        if excluded_isolation_entry(&file_name_string) {
+            continue;
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(&file_name);
+        let metadata = fs::symlink_metadata(&source_path)
+            .with_context(|| format!("failed to inspect {}", source_path.display()))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            fs::create_dir_all(&destination_path)
+                .with_context(|| format!("failed to create {}", destination_path.display()))?;
+            copy_isolated_project(&source_path, &destination_path)?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "failed to copy {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn excluded_isolation_entry(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".hg"
+            | ".svn"
+            | ".veritas"
+            | "target"
+            | "node_modules"
+            | ".next"
+            | "dist"
+            | "build"
+            | ".cache"
+    )
+}
+
 #[derive(Debug, Serialize)]
 struct PlannerRequest<'a> {
     project: &'a ProjectInfo,
@@ -3304,6 +3391,15 @@ fn mutation_trend_artifacts(
         quality.mutation.timed_out += run.quality.mutation.timed_out;
         quality.mutation.not_viable += run.quality.mutation.not_viable;
         quality.mutation.skipped += run.quality.mutation.skipped;
+        quality.mutation.requested_workers = quality
+            .mutation
+            .requested_workers
+            .max(run.quality.mutation.requested_workers);
+        quality.mutation.effective_workers = quality
+            .mutation
+            .effective_workers
+            .max(run.quality.mutation.effective_workers);
+        quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
         quality
             .mutation
             .records
@@ -3364,6 +3460,13 @@ fn mutation_campaign_artifacts(
         mutation.timed_out += run.quality.mutation.timed_out;
         mutation.not_viable += run.quality.mutation.not_viable;
         mutation.skipped += run.quality.mutation.skipped;
+        mutation.requested_workers = mutation
+            .requested_workers
+            .max(run.quality.mutation.requested_workers);
+        mutation.effective_workers = mutation
+            .effective_workers
+            .max(run.quality.mutation.effective_workers);
+        mutation.isolation_failures += run.quality.mutation.isolation_failures;
         merge_mutation_attribution(&mut mutation.by_domain, &run.quality.mutation.by_domain);
         merge_mutation_attribution(&mut mutation.by_operator, &run.quality.mutation.by_operator);
         mutation
@@ -3772,6 +3875,15 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         quality.mutation.timed_out += run.quality.mutation.timed_out;
         quality.mutation.not_viable += run.quality.mutation.not_viable;
         quality.mutation.skipped += run.quality.mutation.skipped;
+        quality.mutation.requested_workers = quality
+            .mutation
+            .requested_workers
+            .max(run.quality.mutation.requested_workers);
+        quality.mutation.effective_workers = quality
+            .mutation
+            .effective_workers
+            .max(run.quality.mutation.effective_workers);
+        quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
         quality
             .mutation
             .records
@@ -4432,8 +4544,9 @@ mod tests {
         api_baseline_artifact, assertion_candidate_artifacts, classify_evolution_outcome,
         cleanup_generated_artifacts, confidence_score, corpus_entry_artifacts,
         differential_replay_artifact, evolution_artifacts, evolution_metrics_from_artifacts,
-        filtered_mutation_records, parse_unified_diff, regression_artifacts, run_parallel_jobs,
-        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
+        filtered_mutation_records, isolated_mutation_root, parse_unified_diff,
+        regression_artifacts, run_parallel_jobs, targets_for_changed_files, ChangedFile,
+        TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -4448,6 +4561,27 @@ mod tests {
         assert_eq!(results, vec![6, 4, 2]);
         assert_eq!(summary.requested_jobs, 3);
         assert_eq!(summary.max_concurrency, 2);
+    }
+
+    #[test]
+    fn isolated_mutation_root_copies_project_and_cleans_up() {
+        let root = TempRoot::new();
+        write_file(root.path(), "go.mod");
+        write_file(root.path(), "pkg/invoice/invoice.go");
+        write_file(root.path(), ".veritas/report.json");
+        write_file(root.path(), "target/cache.bin");
+
+        let isolated_path = {
+            let isolated = isolated_mutation_root(root.path(), "go", 0).expect("isolate project");
+            let isolated_path = isolated.path().to_path_buf();
+            assert!(isolated_path.join("go.mod").exists());
+            assert!(isolated_path.join("pkg/invoice/invoice.go").exists());
+            assert!(!isolated_path.join(".veritas/report.json").exists());
+            assert!(!isolated_path.join("target/cache.bin").exists());
+            isolated_path
+        };
+
+        assert!(!isolated_path.exists());
     }
 
     #[test]

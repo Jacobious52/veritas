@@ -140,6 +140,17 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                         .unwrap_or_else(|| "n/a".to_string())
                 ));
             }
+            if report.quality.mutation.requested_workers > 0
+                || report.quality.mutation.effective_workers > 0
+                || report.quality.mutation.isolation_failures > 0
+            {
+                out.push_str(&format!(
+                    "  - Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`\n",
+                    report.quality.mutation.requested_workers,
+                    report.quality.mutation.effective_workers,
+                    report.quality.mutation.isolation_failures,
+                ));
+            }
             if !report.quality.mutation.by_domain.is_empty() {
                 out.push_str(&format!(
                     "  - Domains: `{}`\n",

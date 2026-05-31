@@ -10,3 +10,6 @@ fuzz_concurrency = 1
 max_fuzz_targets = 4
 max_mutants = 12
 command_timeout_seconds = 20
+
+[plugins.go.mutation]
+workers = 2

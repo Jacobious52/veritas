@@ -77,7 +77,7 @@ min_mutant_coverage = 80
 disabled_operators = []
 exclude_paths = ["vendor/", "_generated.go$"]
 dry_run = false
-workers = 2 # modeled for isolated plugin executors; source-rewrite plugins may stay serial
+workers = 2 # Go uses isolated temp roots for parallel mutants; source-rewrite plugins may stay serial
 test_cpu = 1
 timeout_coefficient = 2
 output_statuses = ["lived", "not_covered", "timed_out", "not_viable"]
@@ -102,6 +102,8 @@ Set `policy.min_mutation_score`, `policy.min_mutation_efficacy`, and `policy.min
 The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, and `negation` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
+
+Go mutation can run in parallel when `[mutation].workers > 1`. Each mutant is applied inside an isolated temporary project copy, package tests run there, and the temporary root is removed when the worker finishes. `workers = 1` preserves the conservative serial source-rewrite behavior. Reports include requested workers, effective workers, and isolation failure counts; treat isolation failures as infrastructure problems, not killed mutants.
 
 `fixtures/go-multimodule` is the local confidence fixture for this path. It has two Go modules, a cross-module import, a selected billing package, and a gateway reverse dependency. It also keeps a handwritten fuzz target so the generated-fuzz path proves it does not emit duplicate fuzz names.
 

@@ -94,11 +94,13 @@ Returned plans are clamped to the provided target, allowed strategy list, genera
 
 ## Execution Scheduler
 
-Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it today through `plugins.go.fuzz_concurrency`. Mutation probes remain serial because they temporarily rewrite source files in the target checkout.
+Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it through `plugins.go.fuzz_concurrency`.
+
+Core also exposes a plugin-generic isolated mutation root helper. A language plugin can copy the target project into a temporary root, apply one mutant there, run the owning test command, and let cleanup happen on drop. Go mutation uses this path when `[mutation].workers > 1`; `workers = 1` keeps the previous serial source-rewrite path. Rust mutation remains conservative until it grows equivalent isolation. Mutation metrics record requested workers, effective workers, timed-out mutants, skipped mutants, and isolation failures so CI can separate performance behavior from mutation quality.
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, persisted repro counts, evolution candidates, and selected evolution candidates. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, mutation worker metrics, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, persisted repro counts, evolution candidates, and selected evolution candidates. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 
