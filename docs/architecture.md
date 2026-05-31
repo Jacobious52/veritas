@@ -18,6 +18,9 @@ fixtures/
 examples/
   rust-invoice/
   go-invoice/
+  rust-commerce/
+  go-api-service/
+  veritas-bench.toml
 docs/
 ```
 
@@ -82,6 +85,10 @@ Returned plans are clamped to the provided target, allowed strategy list, genera
 ## Execution Scheduler
 
 Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it today through `plugins.go.fuzz_concurrency`. Mutation probes remain serial because they temporarily rewrite source files in the target checkout.
+
+## Benchmark Suites
+
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings plus expected artifact kinds. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 

@@ -22,6 +22,9 @@ fixtures/
 examples/
   rust-invoice/         # richer Rust test bed with hidden parser assumptions
   go-invoice/           # richer Go test bed with hidden parser assumptions
+  rust-commerce/        # seeded commerce benchmark for parsing, refunds, coupons, permissions
+  go-api-service/       # seeded API benchmark for parsing, tokens, status, authorization
+  veritas-bench.toml    # benchmark manifest of expected detections
 docs/                   # durable user, production, AI-agent, architecture, release docs
 scripts/run-canaries.sh # pinned external repo smoke/verify checks
 ```
@@ -82,6 +85,7 @@ cargo run -p veritas-cli -- cleanup --root examples/rust-invoice
 (cd examples/go-invoice && go test ./...)
 cargo run -p veritas-cli -- verify --root examples/go-invoice --lang go --target .
 cargo run -p veritas-cli -- cleanup --root examples/go-invoice
+cargo run -p veritas-cli -- --root examples bench
 ```
 
 Dogfood `veritas` on itself safely:
@@ -109,6 +113,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust property generation is intentionally limited to supported public free functions in packages whose manifest mentions `proptest`.
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, and AST-scoped mutation probes.
+- `veritas bench` runs seeded examples in temporary copies and scores expected finding/artifact detections from `veritas-bench.toml`.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.

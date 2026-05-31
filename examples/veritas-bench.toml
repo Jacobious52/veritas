@@ -1,0 +1,31 @@
+[[case]]
+name = "rust-invoice"
+path = "rust-invoice"
+language = "rust"
+target = "src/lib.rs"
+expect_findings = ["cargo test failed"]
+expect_artifacts = ["property_test", "candidate_patch"]
+
+[[case]]
+name = "go-invoice"
+path = "go-invoice"
+language = "go"
+target = "."
+expect_findings = ["go test failed"]
+expect_artifacts = ["fuzz_harness", "candidate_patch"]
+
+[[case]]
+name = "rust-commerce"
+path = "rust-commerce"
+language = "rust"
+target = "src/lib.rs"
+expect_findings = ["cargo test failed"]
+expect_artifacts = ["property_test", "candidate_patch"]
+
+[[case]]
+name = "go-api-service"
+path = "go-api-service"
+language = "go"
+target = "."
+expect_findings = ["go test failed"]
+expect_artifacts = ["fuzz_harness", "candidate_patch"]

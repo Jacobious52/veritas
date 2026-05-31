@@ -345,6 +345,30 @@ fn seeded_go_example_fuzzes_parser_panic() {
 }
 
 #[test]
+fn benchmark_suite_scores_seeded_examples() {
+    if !go_available() {
+        return;
+    }
+
+    let mut cmd = veritas();
+    cmd.current_dir(workspace_root())
+        .args(["--root", "examples", "bench"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas bench"))
+        .stdout(predicate::str::contains("rust-commerce"))
+        .stdout(predicate::str::contains("go-api-service"))
+        .stdout(predicate::str::contains("Cases: `4/4` passed"));
+
+    let mut json = veritas();
+    json.current_dir(workspace_root())
+        .args(["--root", "examples", "bench", "--format", "json"]);
+    json.assert()
+        .success()
+        .stdout(predicate::str::contains("\"passed\": true"));
+}
+
+#[test]
 fn cleanup_removes_generated_artifacts() {
     let fixture = copy_fixture("sample-rust");
     write_fixture_file(fixture.path(), ".veritas/report.json");

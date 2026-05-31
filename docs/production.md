@@ -27,6 +27,14 @@ The CI profile:
 - caps package count, fuzz targets, fuzz time, mutation count, and command timeouts
 - enables policy failure for error-or-higher findings
 
+Before widening a plugin, run the seeded benchmark suite:
+
+```bash
+cargo run -p veritas-cli -- --root examples bench
+```
+
+The suite validates expected detections against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
+
 ## Large Go Repositories
 
 The Go plugin is package-aware:
