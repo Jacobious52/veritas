@@ -183,6 +183,8 @@ struct BenchCase {
     min_assertion_candidates: Option<usize>,
     min_corpus_entries: Option<usize>,
     min_replay_cases: Option<usize>,
+    min_evolution_candidates: Option<usize>,
+    min_evolution_selected: Option<usize>,
     max_duration_ms: Option<u64>,
 }
 
@@ -723,6 +725,22 @@ fn bench_threshold_failures(
             failures.push(format!(
                 "replay_cases {} < min_replay_cases {min_replay_cases}",
                 metrics.replay_cases
+            ));
+        }
+    }
+    if let Some(min_evolution_candidates) = case.min_evolution_candidates {
+        if metrics.evolution_candidates < min_evolution_candidates {
+            failures.push(format!(
+                "evolution_candidates {} < min_evolution_candidates {min_evolution_candidates}",
+                metrics.evolution_candidates
+            ));
+        }
+    }
+    if let Some(min_evolution_selected) = case.min_evolution_selected {
+        if metrics.evolution_selected < min_evolution_selected {
+            failures.push(format!(
+                "evolution_selected {} < min_evolution_selected {min_evolution_selected}",
+                metrics.evolution_selected
             ));
         }
     }
