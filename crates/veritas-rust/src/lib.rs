@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
+use serde::Serialize;
 use tree_sitter::{Node, Parser};
 use veritas_core::config::RustPluginConfig;
 use veritas_plugin_api::{
@@ -35,6 +36,8 @@ struct CargoPackage {
 #[derive(Debug, Clone)]
 struct RustFunction {
     name: String,
+    symbol: String,
+    owner: Option<String>,
     path: Utf8PathBuf,
     params: Vec<RustParam>,
     returns_value: bool,
@@ -44,12 +47,32 @@ struct RustFunction {
     end_byte: usize,
     crate_name: String,
     package_root: Utf8PathBuf,
+    calls: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 struct RustParam {
     name: String,
     type_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RustSymbolGraph<'a> {
+    target_id: &'a str,
+    symbols: Vec<RustSymbolNode<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RustSymbolNode<'a> {
+    id: String,
+    path: &'a Utf8PathBuf,
+    symbol: &'a str,
+    name: &'a str,
+    owner: Option<&'a str>,
+    signature: &'a str,
+    line_range: &'a LineRange,
+    risk: RiskLevel,
+    calls: &'a [String],
 }
 
 impl RustPlugin {
@@ -97,15 +120,19 @@ impl LanguagePlugin for RustPlugin {
 
         for function in discover_functions(root)? {
             targets.push(VerificationTarget {
-                id: format!("rust:{}:{}", function.path, function.name),
+                id: format!("rust:{}:{}", function.path, function.symbol),
                 language: "rust".to_string(),
                 kind: TargetKind::Function,
                 path: function.path.clone(),
-                symbol: Some(function.name.clone()),
+                symbol: Some(function.symbol.clone()),
                 signature: Some(function.signature.clone()),
                 line_range: Some(function.line_range.clone()),
-                description: format!("public Rust function {}", function.name),
-                risk: infer_risk(&function.name),
+                description: if let Some(owner) = &function.owner {
+                    format!("public Rust method {owner}.{}", function.name)
+                } else {
+                    format!("public Rust function {}", function.name)
+                },
+                risk: infer_risk(&function.symbol),
             });
         }
 
@@ -121,18 +148,25 @@ impl LanguagePlugin for RustPlugin {
         let package = cargo_package(&root)?;
         let functions = discover_functions(&root)?;
         let selected: Vec<RustFunction> = functions
-            .into_iter()
+            .iter()
             .filter(|function| {
                 if let Some(symbol) = &target.symbol {
-                    function.name == *symbol && function.path == target.path
+                    function.symbol == *symbol && function.path == target.path
                 } else {
                     function.path == target.path || target.kind == TargetKind::Project
                 }
             })
-            .filter(supports_proptest)
+            .filter(|function| supports_proptest(function))
+            .cloned()
             .collect();
 
         let mut artifacts = Vec::new();
+        artifacts.push(symbol_graph_artifact(
+            &target.id,
+            &target.path,
+            target.symbol.as_deref(),
+            &functions,
+        )?);
         if self.config.property_framework == "proptest"
             && plan
                 .strategies
@@ -453,7 +487,7 @@ fn collect_rust_functions(
     package: &CargoPackage,
     functions: &mut Vec<RustFunction>,
 ) -> Result<()> {
-    if node.kind() == "function_item" && is_public_free_function(node, source) {
+    if node.kind() == "function_item" && is_public_rust_function(node, source) {
         if let Some(function) = parse_rust_function(node, source, path, package)? {
             functions.push(function);
         }
@@ -476,6 +510,11 @@ fn parse_rust_function(
         return Ok(None);
     };
     let name = node_text(name_node, source)?.to_string();
+    let owner = rust_function_owner(node, source)?;
+    let symbol = owner
+        .as_ref()
+        .map(|owner| format!("{owner}.{name}"))
+        .unwrap_or_else(|| name.clone());
     let params = node
         .child_by_field_name("parameters")
         .map(|parameters| parse_rust_params(node_text(parameters, source).unwrap_or_default()))
@@ -485,6 +524,8 @@ fn parse_rust_function(
 
     Ok(Some(RustFunction {
         name,
+        symbol,
+        owner,
         path: path.clone(),
         params,
         returns_value,
@@ -497,14 +538,11 @@ fn parse_rust_function(
         end_byte: node.end_byte(),
         crate_name: package.crate_name.clone(),
         package_root: package.root.clone(),
+        calls: rust_calls_in_function(node, source)?,
     }))
 }
 
-fn is_public_free_function(node: Node<'_>, source: &str) -> bool {
-    if has_ancestor_kind(node, &["impl_item", "trait_item"]) {
-        return false;
-    }
-
+fn is_public_rust_function(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
     let is_public = node.children(&mut cursor).any(|child| {
         child.kind() == "visibility_modifier"
@@ -513,15 +551,67 @@ fn is_public_free_function(node: Node<'_>, source: &str) -> bool {
     is_public
 }
 
-fn has_ancestor_kind(node: Node<'_>, kinds: &[&str]) -> bool {
+fn rust_function_owner(node: Node<'_>, source: &str) -> Result<Option<String>> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        if kinds.contains(&parent.kind()) {
-            return true;
+        if parent.kind() == "impl_item" {
+            return Ok(parent
+                .child_by_field_name("type")
+                .map(|node| clean_rust_owner(node_text(node, source).unwrap_or_default())));
+        }
+        if parent.kind() == "trait_item" {
+            return Ok(parent
+                .child_by_field_name("name")
+                .map(|node| node_text(node, source).unwrap_or_default().to_string()));
         }
         current = parent.parent();
     }
-    false
+    Ok(None)
+}
+
+fn clean_rust_owner(owner: &str) -> String {
+    owner
+        .split('<')
+        .next()
+        .unwrap_or(owner)
+        .trim()
+        .trim_start_matches('&')
+        .trim()
+        .to_string()
+}
+
+fn rust_calls_in_function(node: Node<'_>, source: &str) -> Result<Vec<String>> {
+    let mut calls = BTreeSet::new();
+    collect_rust_calls(node, source, &mut calls)?;
+    Ok(calls.into_iter().collect())
+}
+
+fn collect_rust_calls(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>) -> Result<()> {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            let text = normalize_call_text(node_text(function, source)?);
+            if !text.is_empty() {
+                calls.insert(text);
+            }
+        }
+    } else if node.kind() == "macro_invocation" {
+        if let Some(macro_node) = node.child_by_field_name("macro") {
+            let text = normalize_call_text(node_text(macro_node, source)?);
+            if !text.is_empty() {
+                calls.insert(format!("{text}!"));
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_calls(child, source, calls)?;
+    }
+    Ok(())
+}
+
+fn normalize_call_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn parse_rust_params(parameters: &str) -> Vec<RustParam> {
@@ -590,11 +680,57 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
 }
 
 fn supports_proptest(function: &RustFunction) -> bool {
-    function.params.len() <= 2
+    function.owner.is_none()
+        && function
+            .params
+            .iter()
+            .all(|param| param.name != "self" && param.name != "&self" && param.name != "&mut self")
+        && function.params.len() <= 2
         && function
             .params
             .iter()
             .all(|param| proptest_strategy(&param.type_name).is_some())
+}
+
+fn symbol_graph_artifact(
+    target_id: &str,
+    target_path: &Utf8PathBuf,
+    target_symbol: Option<&str>,
+    functions: &[RustFunction],
+) -> Result<GeneratedArtifact> {
+    let symbols = functions
+        .iter()
+        .filter(|function| {
+            target_symbol
+                .map(|symbol| function.symbol == symbol && function.path == *target_path)
+                .unwrap_or_else(|| function.path == *target_path || target_path.as_str() == ".")
+        })
+        .map(|function| RustSymbolNode {
+            id: format!("rust:{}:{}", function.path, function.symbol),
+            path: &function.path,
+            symbol: &function.symbol,
+            name: &function.name,
+            owner: function.owner.as_deref(),
+            signature: &function.signature,
+            line_range: &function.line_range,
+            risk: infer_risk(&function.symbol),
+            calls: &function.calls,
+        })
+        .collect::<Vec<_>>();
+    let graph = RustSymbolGraph { target_id, symbols };
+    let contents = serde_json::to_string_pretty(&graph)?;
+    let slug = module_slug(target_path, target_symbol);
+    Ok(GeneratedArtifact {
+        id: format!("rust-symbol-graph-{slug}"),
+        language: "rust".to_string(),
+        kind: ArtifactKind::SymbolGraph,
+        target_id: target_id.to_string(),
+        path: Utf8PathBuf::from(format!(".veritas/symbol_graph/rust_{slug}.json")),
+        contents,
+        description: "Machine-readable Rust symbol graph with method owners and call hints"
+            .to_string(),
+        status: ArtifactStatus::Planned,
+    })
 }
 
 fn render_property_module(crate_name: &str, functions: &[RustFunction]) -> String {
@@ -688,9 +824,9 @@ fn proptest_strategy(type_name: &str) -> Option<&'static str> {
 struct MutationCandidate {
     path: Utf8PathBuf,
     function: String,
-    label: &'static str,
-    from: &'static str,
-    to: &'static str,
+    label: String,
+    from: String,
+    to: String,
     start_byte: usize,
     end_byte: usize,
 }
@@ -723,7 +859,7 @@ fn run_mutation_checks(
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let mut mutated = original.clone();
-        mutated.replace_range(candidate.start_byte..candidate.end_byte, candidate.to);
+        mutated.replace_range(candidate.start_byte..candidate.end_byte, &candidate.to);
         fs::write(&path, mutated).with_context(|| {
             format!(
                 "failed to write Rust mutation {} in {}",
@@ -732,9 +868,10 @@ fn run_mutation_checks(
             )
         })?;
 
+        let mutation_commands = run_cargo_tests(root, package_roots, config);
         fs::write(&path, original)
             .with_context(|| format!("failed to restore {}", path.display()))?;
-        let mutation_commands = run_cargo_tests(root, package_roots, config)?;
+        let mutation_commands = mutation_commands?;
         let mut mutant_survived = true;
         let mut representative_command = None;
         for command in mutation_commands {
@@ -881,6 +1018,12 @@ fn rust_mutation_candidates(
         .map(|artifact| artifact.target_id.as_str())
         .collect::<Vec<_>>();
     let mut candidates = Vec::new();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .map_err(|error| anyhow!("failed to load tree-sitter Rust grammar: {error}"))?;
+    let mut functions_by_path: std::collections::BTreeMap<Utf8PathBuf, Vec<&RustFunction>> =
+        std::collections::BTreeMap::new();
 
     for function in functions {
         if !mutation_targets
@@ -889,37 +1032,195 @@ fn rust_mutation_candidates(
         {
             continue;
         }
-        let contents = fs::read_to_string(root.join(&function.path))?;
-        let Some(function_text) = contents.get(function.start_byte..function.end_byte) else {
-            continue;
-        };
-        for (label, from, to) in [
-            ("boundary inversion", ".min(", ".max("),
-            ("boundary inversion", ".max(", ".min("),
-            ("arithmetic direction", "saturating_sub", "saturating_add"),
-            ("arithmetic direction", "saturating_add", "saturating_sub"),
-            ("default value perturbation", "unwrap_or(0)", "unwrap_or(1)"),
-            ("boolean inversion", "true", "false"),
-            ("boolean inversion", "false", "true"),
-            ("equality inversion", "==", "!="),
-            ("inequality inversion", "!=", "=="),
-        ] {
-            if let Some(offset) = function_text.find(from) {
-                candidates.push(MutationCandidate {
-                    path: function.path.clone(),
-                    function: function.name.clone(),
-                    label,
-                    from,
-                    to,
-                    start_byte: function.start_byte + offset,
-                    end_byte: function.start_byte + offset + from.len(),
-                });
-                break;
-            }
+        functions_by_path
+            .entry(function.path.clone())
+            .or_default()
+            .push(function);
+    }
+
+    for (path, path_functions) in functions_by_path {
+        let contents = fs::read_to_string(root.join(&path))
+            .with_context(|| format!("failed to read {}", path))?;
+        let tree = parser
+            .parse(&contents, None)
+            .ok_or_else(|| anyhow!("failed to parse Rust source {}", path))?;
+        for function in path_functions {
+            collect_rust_mutation_nodes(tree.root_node(), &contents, function, &mut candidates)?;
         }
     }
 
     Ok(candidates)
+}
+
+fn collect_rust_mutation_nodes(
+    node: Node<'_>,
+    source: &str,
+    function: &RustFunction,
+    candidates: &mut Vec<MutationCandidate>,
+) -> Result<()> {
+    if node.end_byte() <= function.start_byte || node.start_byte() >= function.end_byte {
+        return Ok(());
+    }
+
+    if node.start_byte() >= function.start_byte && node.end_byte() <= function.end_byte {
+        if node.kind() == "binary_expression" {
+            if let Some(candidate) = rust_mutation_candidate_from_binary(node, function) {
+                candidates.push(candidate);
+            }
+        } else if node.kind() == "field_identifier" || node.kind() == "identifier" {
+            if let Some(candidate) =
+                rust_mutation_candidate_from_identifier(node, source, function)?
+            {
+                candidates.push(candidate);
+            }
+        } else if node.kind() == "boolean_literal" {
+            if let Some(candidate) = rust_mutation_candidate_from_boolean(node, source, function)? {
+                candidates.push(candidate);
+            }
+        } else if node.kind() == "integer_literal" {
+            if let Some(candidate) = rust_mutation_candidate_from_integer(node, source, function)? {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_mutation_nodes(child, source, function, candidates)?;
+    }
+    Ok(())
+}
+
+fn rust_mutation_candidate_from_binary(
+    node: Node<'_>,
+    function: &RustFunction,
+) -> Option<MutationCandidate> {
+    let operator = rust_binary_operator_node(node)?;
+    let op = operator.kind();
+    let to = match op {
+        "==" => "!=",
+        "!=" => "==",
+        ">=" => ">",
+        "<=" => "<",
+        ">" => ">=",
+        "<" => "<=",
+        _ => return None,
+    };
+    Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(&function.symbol, "comparison boundary mutation"),
+        from: op.to_string(),
+        to: to.to_string(),
+        start_byte: operator.start_byte(),
+        end_byte: operator.end_byte(),
+    })
+}
+
+fn rust_mutation_candidate_from_identifier(
+    node: Node<'_>,
+    source: &str,
+    function: &RustFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?;
+    let Some((label, to)) = (match text {
+        "min" => Some(("boundary inversion", "max")),
+        "max" => Some(("boundary inversion", "min")),
+        "saturating_sub" => Some(("arithmetic direction", "saturating_add")),
+        "saturating_add" => Some(("arithmetic direction", "saturating_sub")),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    if !has_ancestor_kind(node, "call_expression") {
+        return Ok(None);
+    }
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(&function.symbol, label),
+        from: text.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn rust_mutation_candidate_from_boolean(
+    node: Node<'_>,
+    source: &str,
+    function: &RustFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?;
+    let to = match text {
+        "true" => "false",
+        "false" => "true",
+        _ => return Ok(None),
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(&function.symbol, "boolean inversion"),
+        from: text.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn rust_mutation_candidate_from_integer(
+    node: Node<'_>,
+    source: &str,
+    function: &RustFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?;
+    let to = match text {
+        "0" => "1",
+        "1" => "0",
+        _ => return Ok(None),
+    };
+    if !ancestor_text_contains(node, source, "call_expression", "unwrap_or")? {
+        return Ok(None);
+    }
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(&function.symbol, "default value perturbation"),
+        from: text.to_string(),
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn rust_binary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let operator = node
+        .children(&mut cursor)
+        .find(|child| matches!(child.kind(), "==" | "!=" | ">=" | "<=" | ">" | "<"));
+    operator
+}
+
+fn has_ancestor_kind(node: Node<'_>, kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn ancestor_text_contains(node: Node<'_>, source: &str, kind: &str, needle: &str) -> Result<bool> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return Ok(node_text(parent, source)?.contains(needle));
+        }
+        current = parent.parent();
+    }
+    Ok(false)
 }
 
 fn rust_target_matches_function(target_id: &str, function: &RustFunction) -> bool {
@@ -933,9 +1234,44 @@ fn rust_target_matches_function(target_id: &str, function: &RustFunction) -> boo
         return true;
     }
     if let Some((path, symbol)) = rest.rsplit_once(':') {
-        return path == function.path.as_str() && symbol == function.name;
+        return path == function.path.as_str() && symbol == function.symbol;
     }
     false
+}
+
+fn domain_mutation_label(symbol: &str, base: &str) -> String {
+    let lowered = symbol.to_ascii_lowercase();
+    let domain = if lowered.contains("auth")
+        || lowered.contains("permission")
+        || lowered.contains("token")
+    {
+        Some("auth/permission")
+    } else if lowered.contains("money")
+        || lowered.contains("price")
+        || lowered.contains("invoice")
+        || lowered.contains("total")
+        || lowered.contains("refund")
+        || lowered.contains("discount")
+    {
+        Some("money")
+    } else if lowered.contains("parse")
+        || lowered.contains("format")
+        || lowered.contains("normalize")
+    {
+        Some("parsing/normalization")
+    } else if lowered.contains("serialize")
+        || lowered.contains("deserialize")
+        || lowered.contains("json")
+    {
+        Some("serialization")
+    } else {
+        None
+    };
+
+    match domain {
+        Some(domain) => format!("{domain} {base}"),
+        None => base.to_string(),
+    }
 }
 
 fn run_command(
@@ -1217,4 +1553,134 @@ fn excerpt(value: &str) -> String {
         .rev()
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn discovers_public_free_functions_and_methods() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            "[package]\nname = \"tree-sitter-rust-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(
+            root.path(),
+            "src/lib.rs",
+            "pub struct Invoice;\n\nimpl Invoice {\n    pub fn authorize_refund(&self, amount: u64) -> bool {\n        amount <= 100\n    }\n}\n\npub fn parse_total(input: &str) -> u64 {\n    input.parse().unwrap_or(0)\n}\n",
+        );
+
+        let functions = discover_functions(root.path()).expect("discover functions");
+
+        assert!(functions
+            .iter()
+            .any(|function| function.symbol == "Invoice.authorize_refund"));
+        assert!(functions
+            .iter()
+            .any(|function| function.symbol == "parse_total"));
+        let method = functions
+            .iter()
+            .find(|function| function.symbol == "Invoice.authorize_refund")
+            .expect("method symbol");
+        assert_eq!(method.owner.as_deref(), Some("Invoice"));
+    }
+
+    #[test]
+    fn rust_mutation_candidates_use_ast_nodes_not_string_literals() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            "[package]\nname = \"tree-sitter-rust-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        let source = "pub fn authorize_refund(amount: u64) -> bool {\n    let _ = \"amount == 0\";\n    amount == 0\n}\n";
+        write_file(root.path(), "src/lib.rs", source);
+        let functions = discover_functions(root.path()).expect("discover functions");
+        let artifact = GeneratedArtifact {
+            id: "rust-mutation-src_lib_rs_authorize_refund".to_string(),
+            language: "rust".to_string(),
+            kind: ArtifactKind::MutationCheck,
+            target_id: "rust:src/lib.rs:authorize_refund".to_string(),
+            path: Utf8PathBuf::from(".veritas/mutations/rust_src_lib_rs_authorize_refund.txt"),
+            contents: String::new(),
+            description: String::new(),
+            status: ArtifactStatus::Planned,
+        };
+
+        let candidates =
+            rust_mutation_candidates(&functions, root.path(), &[artifact]).expect("mutations");
+
+        let string_start = source.find("\"amount == 0\"").expect("string literal");
+        let string_end = string_start + "\"amount == 0\"".len();
+        assert!(candidates.iter().any(|candidate| candidate.from == "=="));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.start_byte < string_start
+                || candidate.start_byte >= string_end));
+    }
+
+    #[test]
+    fn symbol_graph_artifact_reports_methods_and_calls() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "Cargo.toml",
+            "[package]\nname = \"tree-sitter-rust-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_file(
+            root.path(),
+            "src/lib.rs",
+            "pub struct Invoice;\n\nimpl Invoice {\n    pub fn normalize(&self, input: &str) -> String {\n        input.trim().to_string()\n    }\n}\n",
+        );
+        let functions = discover_functions(root.path()).expect("discover functions");
+
+        let artifact = symbol_graph_artifact(
+            "rust:src/lib.rs:Invoice.normalize",
+            &Utf8PathBuf::from("src/lib.rs"),
+            Some("Invoice.normalize"),
+            &functions,
+        )
+        .expect("symbol graph");
+
+        assert_eq!(artifact.kind, ArtifactKind::SymbolGraph);
+        assert!(artifact.contents.contains("Invoice.normalize"));
+        assert!(artifact.contents.contains("input.trim"));
+    }
+
+    fn write_file(root: &Path, relative: &str, contents: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("test file should have a parent"))
+            .expect("create test parent");
+        fs::write(path, contents).expect("write test file");
+    }
+
+    struct TempRoot {
+        path: PathBuf,
+    }
+
+    impl TempRoot {
+        fn new() -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after UNIX_EPOCH")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("veritas-rust-test-{nanos}"));
+            fs::create_dir_all(&path).expect("create temp root");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }

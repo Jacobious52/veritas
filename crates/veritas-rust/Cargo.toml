@@ -14,6 +14,7 @@ description = "Rust language plugin for veritas"
 anyhow.workspace = true
 camino.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust = "0.24.2"

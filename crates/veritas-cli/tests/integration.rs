@@ -27,11 +27,18 @@ fn verifies_rust_fixture_and_writes_property_test() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("Generated Artifacts"))
-        .stdout(predicate::str::contains("mutation survived"));
+        .stdout(predicate::str::contains("SymbolGraph"))
+        .stdout(predicate::str::contains(
+            "No failing verification findings were detected",
+        ));
 
     assert!(fixture
         .path()
         .join("tests/veritas_generated/src_lib_rs_target.rs")
+        .exists());
+    assert!(fixture
+        .path()
+        .join(".veritas/symbol_graph/rust_src_lib_rs_target.json")
         .exists());
     assert!(fixture.path().join(".veritas/report.json").exists());
 }

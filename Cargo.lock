@@ -859,6 +859,7 @@ dependencies = [
  "anyhow",
  "camino",
  "serde",
+ "serde_json",
  "toml",
  "tree-sitter",
  "tree-sitter-rust",

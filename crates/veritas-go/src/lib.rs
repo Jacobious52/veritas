@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 use veritas_core::config::GoPluginConfig;
 use veritas_plugin_api::{
@@ -44,11 +44,14 @@ struct GoFunction {
     package_name: String,
     path: Utf8PathBuf,
     name: String,
+    symbol: String,
+    receiver: Option<String>,
     params: Vec<GoParam>,
     signature: String,
     line_range: LineRange,
     start_byte: usize,
     end_byte: usize,
+    calls: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,26 @@ struct GoListPackage {
     go_files: Option<Vec<String>>,
     test_go_files: Option<Vec<String>>,
     x_test_go_files: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GoSymbolGraph<'a> {
+    target_id: &'a str,
+    symbols: Vec<GoSymbolNode<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GoSymbolNode<'a> {
+    id: String,
+    path: &'a Utf8PathBuf,
+    package_name: &'a str,
+    symbol: &'a str,
+    name: &'a str,
+    receiver: Option<&'a str>,
+    signature: &'a str,
+    line_range: &'a LineRange,
+    risk: RiskLevel,
+    calls: &'a [String],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -221,15 +244,19 @@ impl LanguagePlugin for GoPlugin {
         for function in context.functions {
             packages.insert(package_dir(&function.path));
             targets.push(VerificationTarget {
-                id: format!("go:{}:{}", function.path, function.name),
+                id: format!("go:{}:{}", function.path, function.symbol),
                 language: "go".to_string(),
                 kind: TargetKind::Function,
                 path: function.path.clone(),
-                symbol: Some(function.name.clone()),
+                symbol: Some(function.symbol.clone()),
                 signature: Some(function.signature.clone()),
                 line_range: Some(function.line_range.clone()),
-                description: format!("Go function {}", function.name),
-                risk: infer_risk(&function.name),
+                description: if let Some(receiver) = &function.receiver {
+                    format!("Go method {receiver}.{}", function.name)
+                } else {
+                    format!("Go function {}", function.name)
+                },
+                risk: infer_risk(&function.symbol),
             });
         }
 
@@ -262,7 +289,7 @@ impl LanguagePlugin for GoPlugin {
             .iter()
             .filter(|function| {
                 if let Some(symbol) = &target.symbol {
-                    function.name == *symbol && function.path == target.path
+                    function.symbol == *symbol && function.path == target.path
                 } else {
                     package_dir(&function.path) == target.path
                         || function.path == target.path
@@ -284,6 +311,12 @@ impl LanguagePlugin for GoPlugin {
         {
             artifacts.push(artifact);
         }
+        artifacts.push(symbol_graph_artifact(
+            &context,
+            &target.id,
+            &target.path,
+            target.symbol.as_deref(),
+        )?);
 
         if plan
             .strategies
@@ -293,7 +326,7 @@ impl LanguagePlugin for GoPlugin {
         {
             let mut by_package: BTreeMap<Utf8PathBuf, Vec<GoFunction>> = BTreeMap::new();
             for function in selected.clone() {
-                if function.params.is_empty() {
+                if function.receiver.is_some() || function.params.is_empty() {
                     continue;
                 }
                 by_package
@@ -973,6 +1006,52 @@ fn package_graph_artifact(
     }))
 }
 
+fn symbol_graph_artifact(
+    context: &GoVerificationContext,
+    target_id: &str,
+    target_path: &Utf8PathBuf,
+    target_symbol: Option<&str>,
+) -> Result<GeneratedArtifact> {
+    let symbols = context
+        .functions
+        .iter()
+        .filter(|function| {
+            target_symbol
+                .map(|symbol| function.symbol == symbol && function.path == *target_path)
+                .unwrap_or_else(|| {
+                    package_dir(&function.path) == *target_path
+                        || function.path == *target_path
+                        || target_path.as_str() == "."
+                })
+        })
+        .map(|function| GoSymbolNode {
+            id: format!("go:{}:{}", function.path, function.symbol),
+            path: &function.path,
+            package_name: &function.package_name,
+            symbol: &function.symbol,
+            name: &function.name,
+            receiver: function.receiver.as_deref(),
+            signature: &function.signature,
+            line_range: &function.line_range,
+            risk: infer_risk(&function.symbol),
+            calls: &function.calls,
+        })
+        .collect::<Vec<_>>();
+    let graph = GoSymbolGraph { target_id, symbols };
+    let contents = serde_json::to_string_pretty(&graph)?;
+    let slug = module_slug(target_path, target_symbol);
+    Ok(GeneratedArtifact {
+        id: format!("go-symbol-graph-{slug}"),
+        language: "go".to_string(),
+        kind: ArtifactKind::SymbolGraph,
+        target_id: target_id.to_string(),
+        path: Utf8PathBuf::from(format!(".veritas/symbol_graph/go_{slug}.json")),
+        contents,
+        description: "Machine-readable Go symbol graph with receiver and call hints".to_string(),
+        status: ArtifactStatus::Planned,
+    })
+}
+
 fn package_run_reason(
     scoped_dirs: &BTreeSet<Utf8PathBuf>,
     selected_dirs: &BTreeSet<Utf8PathBuf>,
@@ -1181,7 +1260,7 @@ fn collect_go_functions(
     path: &Utf8PathBuf,
     functions: &mut Vec<GoFunction>,
 ) -> Result<()> {
-    if node.kind() == "function_declaration" {
+    if node.kind() == "function_declaration" || node.kind() == "method_declaration" {
         if let Some(function) = parse_go_function(node, source, package_name, path)? {
             functions.push(function);
         }
@@ -1211,6 +1290,15 @@ fn parse_go_function(
     {
         return Ok(None);
     }
+    let receiver = if node.kind() == "method_declaration" {
+        parse_go_receiver(node, source)?
+    } else {
+        None
+    };
+    let symbol = receiver
+        .as_ref()
+        .map(|receiver| format!("{receiver}.{name}"))
+        .unwrap_or_else(|| name.to_string());
     let Some(parameters) = node.child_by_field_name("parameters") else {
         return Ok(None);
     };
@@ -1221,6 +1309,8 @@ fn parse_go_function(
         package_name: package_name.to_string(),
         path: path.clone(),
         name: name.to_string(),
+        symbol,
+        receiver,
         params,
         signature,
         line_range: LineRange {
@@ -1229,7 +1319,56 @@ fn parse_go_function(
         },
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
+        calls: go_calls_in_function(node, source)?,
     }))
+}
+
+fn parse_go_receiver(node: Node<'_>, source: &str) -> Result<Option<String>> {
+    let Some(receiver) = node.child_by_field_name("receiver") else {
+        return Ok(None);
+    };
+    Ok(node_text(receiver, source)?
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split_whitespace()
+        .last()
+        .map(clean_go_receiver))
+}
+
+fn clean_go_receiver(receiver: &str) -> String {
+    receiver
+        .trim_start_matches('*')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string()
+}
+
+fn go_calls_in_function(node: Node<'_>, source: &str) -> Result<Vec<String>> {
+    let mut calls = BTreeSet::new();
+    collect_go_calls(node, source, &mut calls)?;
+    Ok(calls.into_iter().collect())
+}
+
+fn collect_go_calls(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>) -> Result<()> {
+    if node.kind() == "call_expression" {
+        if let Some(function) = node.child_by_field_name("function") {
+            let text = normalize_call_text(node_text(function, source)?);
+            if !text.is_empty() {
+                calls.insert(text);
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_go_calls(child, source, calls)?;
+    }
+    Ok(())
+}
+
+fn normalize_call_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn signature_text<'a>(node: Node<'_>, source: &'a str) -> Result<&'a str> {
@@ -1604,7 +1743,7 @@ fn mutation_candidate_from_binary(
     };
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
-        function: function.name.clone(),
+        function: function.symbol.clone(),
         label: domain_mutation_label(function, base_label),
         from: op.to_string(),
         to: to.to_string(),
@@ -1631,7 +1770,7 @@ fn mutation_candidate_from_return(
     };
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
-        function: function.name.clone(),
+        function: function.symbol.clone(),
         label: domain_mutation_label(function, label),
         from: expression.to_string(),
         to: to.to_string(),
@@ -1685,7 +1824,7 @@ fn is_simple_string_literal(expression: &str) -> bool {
 }
 
 fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
-    let lowered = function.name.to_ascii_lowercase();
+    let lowered = function.symbol.to_ascii_lowercase();
     let domain = if lowered.contains("auth")
         || lowered.contains("permission")
         || lowered.contains("token")
@@ -1741,7 +1880,7 @@ fn go_target_matches_function(target_id: &str, function: &GoFunction) -> bool {
         return true;
     }
     if let Some((path, symbol)) = rest.rsplit_once(':') {
-        return path == function.path.as_str() && symbol == function.name;
+        return path == function.path.as_str() && symbol == function.symbol;
     }
     false
 }
@@ -2251,6 +2390,8 @@ mod tests {
             package_name: "invoice".to_string(),
             path: Utf8PathBuf::from("pkg/invoice/invoice.go"),
             name: "ParseTotal".to_string(),
+            symbol: "ParseTotal".to_string(),
+            receiver: None,
             params: vec![
                 GoParam {
                     name: "input".to_string(),
@@ -2265,6 +2406,7 @@ mod tests {
             line_range: LineRange { start: 1, end: 3 },
             start_byte: 0,
             end_byte: 10,
+            calls: vec![],
         };
 
         let rendered = render_fuzz_file(&[function]);
@@ -2502,6 +2644,58 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, "ValidateInvoice");
         assert!(functions[0].params.is_empty());
+    }
+
+    #[test]
+    fn discovers_exported_methods_with_receiver_symbols_and_calls() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "invoice.go",
+            "package invoice\n\ntype Service struct{}\n\nfunc (s *Service) AuthorizeRefund(amount int) bool {\n\treturn s.limit(amount)\n}\n\nfunc (s *Service) limit(amount int) bool { return true }\n",
+        );
+
+        let functions = discover_functions(root.path()).expect("discover functions");
+
+        let method = functions
+            .iter()
+            .find(|function| function.symbol == "Service.AuthorizeRefund")
+            .expect("exported method");
+        assert_eq!(method.receiver.as_deref(), Some("Service"));
+        assert!(method.calls.contains(&"s.limit".to_string()));
+        assert!(!functions
+            .iter()
+            .any(|function| function.symbol == "Service.limit"));
+    }
+
+    #[test]
+    fn go_symbol_graph_artifact_reports_methods() {
+        let mut context = GoVerificationContext::default();
+        context.functions.push(GoFunction {
+            package_name: "invoice".to_string(),
+            path: Utf8PathBuf::from("invoice.go"),
+            name: "AuthorizeRefund".to_string(),
+            symbol: "Service.AuthorizeRefund".to_string(),
+            receiver: Some("Service".to_string()),
+            params: vec![],
+            signature: "func (s *Service) AuthorizeRefund(amount int) bool".to_string(),
+            line_range: LineRange { start: 3, end: 5 },
+            start_byte: 0,
+            end_byte: 20,
+            calls: vec!["s.limit".to_string()],
+        });
+
+        let artifact = symbol_graph_artifact(
+            &context,
+            "go:invoice.go:Service.AuthorizeRefund",
+            &Utf8PathBuf::from("invoice.go"),
+            Some("Service.AuthorizeRefund"),
+        )
+        .expect("symbol graph");
+
+        assert_eq!(artifact.kind, ArtifactKind::SymbolGraph);
+        assert!(artifact.contents.contains("Service.AuthorizeRefund"));
+        assert!(artifact.contents.contains("s.limit"));
     }
 
     #[test]

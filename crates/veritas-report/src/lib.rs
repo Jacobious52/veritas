@@ -240,6 +240,7 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::ReproCase => "[repro]",
         ArtifactKind::PackageAwareness => "[packages]",
         ArtifactKind::PackageGraph => "[graph]",
+        ArtifactKind::SymbolGraph => "[symbols]",
         ArtifactKind::ChangeDigest => "[digest]",
         ArtifactKind::AiFeedback => "[ai]",
         ArtifactKind::CandidatePatch => "[patch]",

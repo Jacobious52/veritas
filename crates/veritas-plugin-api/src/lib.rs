@@ -140,6 +140,7 @@ pub enum ArtifactKind {
     ReproCase,
     PackageAwareness,
     PackageGraph,
+    SymbolGraph,
     ChangeDigest,
     AiFeedback,
     CandidatePatch,
