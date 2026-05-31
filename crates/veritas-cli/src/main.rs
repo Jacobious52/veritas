@@ -221,6 +221,10 @@ struct BenchMetrics {
     replay_cases: usize,
     budget_skipped_commands: usize,
     budget_timed_out_commands: usize,
+    evolution_suites: usize,
+    evolution_candidates: usize,
+    evolution_selected: usize,
+    evolution_average_fitness_percent: Option<u8>,
 }
 
 fn main() -> Result<()> {
@@ -598,6 +602,10 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         replay_cases: report.quality.replay.cases,
         budget_skipped_commands: report.quality.budget.skipped_commands,
         budget_timed_out_commands: report.quality.budget.timed_out_commands,
+        evolution_suites: report.quality.evolution.suites,
+        evolution_candidates: report.quality.evolution.candidates,
+        evolution_selected: report.quality.evolution.selected,
+        evolution_average_fitness_percent: report.quality.evolution.average_fitness_percent,
     }
 }
 
@@ -773,6 +781,16 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 println!(
                     "- Budget skips/timeouts: `{}/{}`",
                     case.metrics.budget_skipped_commands, case.metrics.budget_timed_out_commands
+                );
+                println!(
+                    "- Evolution: suites `{}`, candidates `{}`, selected `{}`, average fitness `{}`",
+                    case.metrics.evolution_suites,
+                    case.metrics.evolution_candidates,
+                    case.metrics.evolution_selected,
+                    case.metrics
+                        .evolution_average_fitness_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string())
                 );
                 if !case.metrics.findings_by_severity.is_empty() {
                     println!(

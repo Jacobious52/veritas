@@ -70,7 +70,8 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 - `.veritas/budgets/*.json`: command budget and resource-limit metadata
 - `.veritas/trends/*.json`: mutation score attribution and quality baseline deltas
 - `.veritas/mutations/*_campaign.json`: per-mutant status records for killed, lived, runnable, timed-out, not-viable, and skipped mutants
-- `.veritas/evolution/*_candidates.json`: candidate queue with fitness signals for the next generation loop
+- `.veritas/evolution/*_candidates.json`: typed candidate queue with fitness signals for the next generation loop
+- `.veritas/evolution/*_suite.json`: selected evolutionary testing suite. Candidates are ranked by expected mutation, replay, finding, confidence, and review-cost impact so an agent can promote the highest-value assertions, corpus seeds, replay checks, or budget refinements first.
 - `.veritas/repros/*.md`: command and input summaries for reproducible failures
 - `.veritas/patches/*.md`: candidate verification patch guidance
 - `.veritas/regressions/*.md`: generated assertion guidance for surviving mutants and minimized inputs
@@ -85,5 +86,6 @@ Generated tests are reviewable artifacts, not automatically trusted source.
 - Treat warning-level surviving mutants as evidence of missing assertions, not as proof of production defects.
 - Prefer a small regression test before editing production code when a generated or fuzz repro exposes behavior.
 - Turn `.veritas/assertions/*.json`, `.veritas/regressions/*.md`, and `.veritas/differential/*.json` into handwritten assertions when behavior compatibility matters.
+- Treat `.veritas/evolution/*_suite.json` as the next-generation work queue. Apply selected candidates one at a time, rerun `veritas verify`, and keep only candidates that improve mutation, replay, finding, or confidence metrics.
 - Do not widen fuzz time, reverse dependency depth, package caps, or coverage scope without explaining the runtime tradeoff.
 - On shared hosts, keep Rust coverage disabled and use systemd scope limits when running broad Rust verification.

@@ -99,6 +99,7 @@ pub fn render_markdown(report: &VerificationReport) -> String {
         || report.quality.regression.assertion_candidates > 0
         || report.quality.replay.cases > 0
         || report.quality.budget.budget_plans > 0
+        || report.quality.evolution.candidates > 0
     {
         out.push_str("## Quality Metrics\n\n");
         if report.quality.mutation.generated > 0 {
@@ -208,6 +209,25 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                 report.quality.budget.budget_plans,
                 report.quality.budget.skipped_commands,
                 report.quality.budget.timed_out_commands
+            ));
+        }
+        if report.quality.evolution.candidates > 0 {
+            out.push_str(&format!(
+                "- Evolution: suites `{}`, candidates `{}`, selected `{}`, average fitness `{}` (mutation `{}`, property `{}`, fuzz `{}`, regression `{}`, replay `{}`)\n",
+                report.quality.evolution.suites,
+                report.quality.evolution.candidates,
+                report.quality.evolution.selected,
+                report
+                    .quality
+                    .evolution
+                    .average_fitness_percent
+                    .map(|score| format!("{score}%"))
+                    .unwrap_or_else(|| "n/a".to_string()),
+                report.quality.evolution.mutation_candidates,
+                report.quality.evolution.property_candidates,
+                report.quality.evolution.fuzz_candidates,
+                report.quality.evolution.regression_candidates,
+                report.quality.evolution.replay_candidates,
             ));
         }
         out.push('\n');
@@ -377,6 +397,7 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::MutationTrend => "[trend]",
         ArtifactKind::MutationCampaign => "[campaign]",
         ArtifactKind::EvolutionCandidate => "[candidate]",
+        ArtifactKind::EvolutionSuite => "[evolution-suite]",
         ArtifactKind::CorpusReplay => "[corpus-replay]",
         ArtifactKind::SiteAsset => "[site]",
     }

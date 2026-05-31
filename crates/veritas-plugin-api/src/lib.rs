@@ -219,6 +219,7 @@ pub enum ArtifactKind {
     MutationTrend,
     MutationCampaign,
     EvolutionCandidate,
+    EvolutionSuite,
     CorpusReplay,
     SiteAsset,
 }
@@ -450,6 +451,8 @@ pub struct VerificationQuality {
     pub replay: ReplayMetrics,
     #[serde(default)]
     pub budget: BudgetMetrics,
+    #[serde(default)]
+    pub evolution: EvolutionMetrics,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -570,4 +573,88 @@ pub struct BudgetMetrics {
     pub budget_plans: usize,
     pub skipped_commands: usize,
     pub timed_out_commands: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionMetrics {
+    pub suites: usize,
+    pub candidates: usize,
+    pub selected: usize,
+    pub property_candidates: usize,
+    pub mutation_candidates: usize,
+    pub fuzz_candidates: usize,
+    pub regression_candidates: usize,
+    pub replay_candidates: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub average_fitness_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionSuite {
+    pub version: u8,
+    pub language: String,
+    pub generation: u32,
+    pub selection_budget: usize,
+    pub fitness_signals: Vec<String>,
+    pub candidates: Vec<EvolutionCandidateRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionCandidateRecord {
+    pub id: String,
+    pub language: String,
+    pub target_id: String,
+    pub kind: EvolutionCandidateKind,
+    pub strategy: EvolutionStrategy,
+    pub status: EvolutionCandidateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_artifact: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_finding_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    pub fitness: EvolutionFitness,
+    pub proposed_action: String,
+    pub keep_if: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionCandidateKind {
+    Property,
+    Mutation,
+    Fuzz,
+    Regression,
+    Replay,
+    Budget,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionStrategy {
+    AddAssertion,
+    StrengthenProperty,
+    PromoteCorpus,
+    AddFuzzSeed,
+    NarrowTarget,
+    ReduceBudgetRisk,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EvolutionCandidateStatus {
+    Proposed,
+    Selected,
+    Superseded,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvolutionFitness {
+    pub score_percent: u8,
+    pub mutation_delta: i16,
+    pub finding_delta: i16,
+    pub replay_delta: i16,
+    pub confidence_delta: i16,
+    pub rationale: String,
 }

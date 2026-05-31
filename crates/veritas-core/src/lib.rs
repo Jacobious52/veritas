@@ -17,11 +17,12 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
-    CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry, Failure,
-    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
-    ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
-    VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry,
+    EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
+    EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
+    LineRange, MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta,
+    ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
+    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -2238,6 +2239,7 @@ fn evolution_artifacts(
     report: &VerificationReport,
     pending_artifacts: &[GeneratedArtifact],
 ) -> Vec<GeneratedArtifact> {
+    let candidates = evolution_candidates(language, report, pending_artifacts);
     let mutation_findings = report
         .findings
         .iter()
@@ -2249,7 +2251,7 @@ fn evolution_artifacts(
         .filter(|finding| finding_is_generated_test_failure(report, finding))
         .collect::<Vec<_>>();
 
-    if mutation_findings.is_empty() && generated_failures.is_empty() {
+    if candidates.is_empty() && mutation_findings.is_empty() && generated_failures.is_empty() {
         return Vec::new();
     }
 
@@ -2282,10 +2284,27 @@ fn evolution_artifacts(
 
     contents.push_str("## Next Generation\n\n");
     contents.push_str("- Prefer one new assertion per survivor or minimized input.\n");
+    contents.push_str(
+        "- Select high-fitness candidates first; keep the search small enough to review.\n",
+    );
     contents.push_str("- Re-run `veritas verify` and compare mutation score, generated-test failures, and fuzz repro counts.\n");
     contents.push_str(
         "- Keep candidates that raise score or convert a finding into a stable regression test.\n",
     );
+    if !candidates.is_empty() {
+        contents.push_str("\n## Candidate Mix\n\n");
+        contents.push_str(&format!(
+            "- Total candidates: `{}`\n- Selected for next generation: `{}`\n- Average fitness: `{}`\n",
+            candidates.len(),
+            candidates
+                .iter()
+                .filter(|candidate| candidate.status == EvolutionCandidateStatus::Selected)
+                .count(),
+            average_evolution_fitness(&candidates)
+                .map(|score| format!("{score}%"))
+                .unwrap_or_else(|| "n/a".to_string())
+        ));
+    }
 
     let mut artifacts = vec![GeneratedArtifact {
         id: format!("{language}-evolution-plan"),
@@ -2299,47 +2318,365 @@ fn evolution_artifacts(
         status: ArtifactStatus::Planned,
     }];
 
-    let candidates = report
-        .artifacts
-        .iter()
-        .chain(pending_artifacts.iter())
-        .filter(|artifact| artifact.kind == ArtifactKind::AssertionCandidate)
-        .map(|artifact| {
-            serde_json::json!({
-                "source_artifact": artifact.path,
-                "target_id": artifact.target_id,
-                "candidate_kind": "assertion",
-                "fitness_signal": "raises mutation score, reduces active findings, or converts a repro into corpus replay",
-                "keep_if": "the candidate kills a survivor, replays a corpus entry, or increases veritas score",
-            })
-        })
-        .collect::<Vec<_>>();
     if !candidates.is_empty() {
+        let suite = EvolutionSuite {
+            version: 1,
+            language: language.to_string(),
+            generation: 1,
+            selection_budget: candidates
+                .iter()
+                .filter(|candidate| candidate.status == EvolutionCandidateStatus::Selected)
+                .count(),
+            fitness_signals: vec![
+                "mutation_score_delta".to_string(),
+                "surviving_mutants_delta".to_string(),
+                "not_covered_mutants_delta".to_string(),
+                "corpus_replay_pass_rate".to_string(),
+                "confidence_score_delta".to_string(),
+                "review_cost".to_string(),
+            ],
+            candidates: candidates.clone(),
+        };
         artifacts.push(GeneratedArtifact {
             id: format!("{language}-evolution-candidates"),
             language: language.to_string(),
             kind: ArtifactKind::EvolutionCandidate,
             target_id: format!("{language}:evolution"),
             path: Utf8PathBuf::from(format!(".veritas/evolution/{language}_candidates.json")),
-            contents: serde_json::to_string_pretty(&serde_json::json!({
-                "version": 1,
-                "language": language,
-                "fitness": [
-                    "mutation_score_delta",
-                    "surviving_mutants_delta",
-                    "corpus_replay_pass_rate",
-                    "confidence_score_delta"
-                ],
-                "candidates": candidates
-            }))
-            .unwrap_or_else(|_| "{\"version\":1,\"candidates\":[]}".to_string()),
+            contents: serde_json::to_string_pretty(&suite)
+                .unwrap_or_else(|_| "{\"version\":1,\"candidates\":[]}".to_string()),
             description: "Structured evolutionary candidate queue for the next verification loop"
+                .to_string(),
+            status: ArtifactStatus::Planned,
+        });
+        artifacts.push(GeneratedArtifact {
+            id: format!("{language}-evolution-suite"),
+            language: language.to_string(),
+            kind: ArtifactKind::EvolutionSuite,
+            target_id: format!("{language}:evolution"),
+            path: Utf8PathBuf::from(format!(".veritas/evolution/{language}_suite.json")),
+            contents: serde_json::to_string_pretty(&serde_json::json!({
+                "suite": suite,
+                "metrics": evolution_metrics_from_candidates(&candidates, true),
+                "next_loop": {
+                    "apply": "Promote selected candidates into handwritten tests or focused generated harnesses.",
+                    "evaluate": "Run veritas verify and compare mutation, replay, fuzz, and confidence deltas.",
+                    "select": "Keep candidates with positive fitness and reject candidates that only add brittle coverage."
+                }
+            }))
+            .unwrap_or_else(|_| "{\"suite\":{\"version\":1,\"candidates\":[]}}".to_string()),
+            description: "Full evolutionary verification suite with candidate fitness and selection"
                 .to_string(),
             status: ArtifactStatus::Planned,
         });
     }
 
     artifacts
+}
+
+fn evolution_candidates(
+    language: &str,
+    report: &VerificationReport,
+    pending_artifacts: &[GeneratedArtifact],
+) -> Vec<EvolutionCandidateRecord> {
+    let mut candidates = Vec::new();
+    for artifact in report.artifacts.iter().chain(pending_artifacts.iter()) {
+        match artifact.kind {
+            ArtifactKind::AssertionCandidate => {
+                candidates.push(evolution_candidate_from_artifact(
+                    language,
+                    artifact,
+                    EvolutionCandidateKind::Property,
+                    EvolutionStrategy::AddAssertion,
+                    78,
+                    "Turn this assertion candidate into an owned test with explicit expected behavior.",
+                    "the assertion kills a survivor, locks a repro, or increases confidence score",
+                ));
+            }
+            ArtifactKind::CorpusEntry => {
+                candidates.push(evolution_candidate_from_artifact(
+                    language,
+                    artifact,
+                    EvolutionCandidateKind::Fuzz,
+                    EvolutionStrategy::PromoteCorpus,
+                    72,
+                    "Persist this repro input as a corpus seed and add a named regression assertion.",
+                    "the corpus replay passes and the corresponding finding does not recur",
+                ));
+            }
+            ArtifactKind::ReplayResult | ArtifactKind::DifferentialReplay => {
+                candidates.push(evolution_candidate_from_artifact(
+                    language,
+                    artifact,
+                    EvolutionCandidateKind::Replay,
+                    EvolutionStrategy::NarrowTarget,
+                    61,
+                    "Use replay cases to generate focused before/after behavior assertions.",
+                    "the replay set catches incompatible behavior changes without broadening runtime",
+                ));
+            }
+            ArtifactKind::BudgetPlan => {
+                candidates.push(evolution_candidate_from_artifact(
+                    language,
+                    artifact,
+                    EvolutionCandidateKind::Budget,
+                    EvolutionStrategy::ReduceBudgetRisk,
+                    45,
+                    "Reduce verification cost by narrowing generated work to high-risk targets first.",
+                    "budget skips or timeouts drop without losing mutation or replay signal",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    for record in report
+        .runs
+        .iter()
+        .flat_map(|run| run.quality.mutation.records.iter())
+        .chain(report.quality.mutation.records.iter())
+    {
+        if record.language != language {
+            continue;
+        }
+        let (score, strategy, action, keep_if) = match record.status {
+            MutationStatus::Lived => (
+                95,
+                EvolutionStrategy::AddAssertion,
+                "Add the smallest assertion that fails under this surviving mutant.",
+                "the mutant moves from lived to killed in the next campaign",
+            ),
+            MutationStatus::NotCovered => (
+                84,
+                EvolutionStrategy::StrengthenProperty,
+                "Generate a property or regression test that executes the uncovered target.",
+                "mutant coverage improves without adding brittle implementation checks",
+            ),
+            MutationStatus::TimedOut => (
+                58,
+                EvolutionStrategy::NarrowTarget,
+                "Split or narrow the test command for this mutant to isolate useful signal.",
+                "the mutant is classified as killed, lived, or not viable without timing out",
+            ),
+            MutationStatus::NotViable => (
+                35,
+                EvolutionStrategy::NarrowTarget,
+                "Deprioritize this non-viable mutation unless nearby operators remain weak.",
+                "operator quality improves or future campaigns stop producing equivalent mutants",
+            ),
+            _ => continue,
+        };
+        candidates.push(EvolutionCandidateRecord {
+            id: format!("evolve-mutant-{}", stable_slug(&record.id)),
+            language: language.to_string(),
+            target_id: format!("{language}:{}:{}", record.path, record.symbol),
+            kind: EvolutionCandidateKind::Mutation,
+            strategy,
+            status: candidate_selection_status(score),
+            source_artifact: None,
+            source_finding_id: None,
+            domain: Some(record.domain.clone()),
+            fitness: evolution_fitness(
+                score,
+                if record.status == MutationStatus::Lived {
+                    1
+                } else {
+                    0
+                },
+                0,
+                0,
+                score.saturating_sub(50) as i16,
+                format!(
+                    "{:?} mutant in `{}` via `{}` operator",
+                    record.status, record.symbol, record.operator
+                ),
+            ),
+            proposed_action: action.to_string(),
+            keep_if: keep_if.to_string(),
+        });
+    }
+
+    for (index, finding) in report.findings.iter().enumerate() {
+        if !finding_is_generated_test_failure(report, finding)
+            && !finding.message.contains("minimal failing input")
+            && !finding.message.contains("fuzz")
+        {
+            continue;
+        }
+        candidates.push(EvolutionCandidateRecord {
+            id: format!("{language}-evolve-finding-{index}"),
+            language: language.to_string(),
+            target_id: finding
+                .target_id
+                .clone()
+                .unwrap_or_else(|| format!("{language}:unknown")),
+            kind: EvolutionCandidateKind::Regression,
+            strategy: EvolutionStrategy::PromoteCorpus,
+            status: EvolutionCandidateStatus::Selected,
+            source_artifact: None,
+            source_finding_id: finding.id.clone(),
+            domain: None,
+            fitness: evolution_fitness(
+                88,
+                0,
+                -1,
+                1,
+                30,
+                "Generated harness or fuzz failure can become a stable regression".to_string(),
+            ),
+            proposed_action:
+                "Minimize the failing input and promote it into an owned regression test."
+                    .to_string(),
+            keep_if:
+                "the promoted regression passes normally and prevents the finding from recurring"
+                    .to_string(),
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .fitness
+            .score_percent
+            .cmp(&left.fitness.score_percent)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    candidates
+}
+
+fn evolution_candidate_from_artifact(
+    language: &str,
+    artifact: &GeneratedArtifact,
+    kind: EvolutionCandidateKind,
+    strategy: EvolutionStrategy,
+    score: u8,
+    proposed_action: &str,
+    keep_if: &str,
+) -> EvolutionCandidateRecord {
+    EvolutionCandidateRecord {
+        id: format!("evolve-{}", stable_slug(&artifact.id)),
+        language: language.to_string(),
+        target_id: artifact.target_id.clone(),
+        kind,
+        strategy,
+        status: candidate_selection_status(score),
+        source_artifact: Some(artifact.path.clone()),
+        source_finding_id: None,
+        domain: assertion_candidate_domain(artifact),
+        fitness: evolution_fitness(
+            score,
+            if matches!(kind, EvolutionCandidateKind::Property) {
+                1
+            } else {
+                0
+            },
+            if matches!(kind, EvolutionCandidateKind::Regression) {
+                -1
+            } else {
+                0
+            },
+            if matches!(
+                kind,
+                EvolutionCandidateKind::Replay | EvolutionCandidateKind::Fuzz
+            ) {
+                1
+            } else {
+                0
+            },
+            score.saturating_sub(50) as i16,
+            format!("Candidate derived from {:?} artifact", artifact.kind),
+        ),
+        proposed_action: proposed_action.to_string(),
+        keep_if: keep_if.to_string(),
+    }
+}
+
+fn assertion_candidate_domain(artifact: &GeneratedArtifact) -> Option<String> {
+    if artifact.kind != ArtifactKind::AssertionCandidate {
+        return None;
+    }
+    serde_json::from_str::<AssertionCandidate>(&artifact.contents)
+        .ok()
+        .map(|candidate| format!("{:?}", candidate.domain).to_ascii_lowercase())
+}
+
+fn candidate_selection_status(score: u8) -> EvolutionCandidateStatus {
+    if score >= 70 {
+        EvolutionCandidateStatus::Selected
+    } else {
+        EvolutionCandidateStatus::Proposed
+    }
+}
+
+fn evolution_fitness(
+    score_percent: u8,
+    mutation_delta: i16,
+    finding_delta: i16,
+    replay_delta: i16,
+    confidence_delta: i16,
+    rationale: String,
+) -> EvolutionFitness {
+    EvolutionFitness {
+        score_percent,
+        mutation_delta,
+        finding_delta,
+        replay_delta,
+        confidence_delta,
+        rationale,
+    }
+}
+
+fn average_evolution_fitness(candidates: &[EvolutionCandidateRecord]) -> Option<u8> {
+    let total = candidates
+        .iter()
+        .map(|candidate| candidate.fitness.score_percent as usize)
+        .sum::<usize>();
+    total
+        .checked_div(candidates.len())
+        .map(|score| score.try_into().unwrap_or(100))
+}
+
+fn evolution_metrics_from_candidates(
+    candidates: &[EvolutionCandidateRecord],
+    include_suite: bool,
+) -> veritas_plugin_api::EvolutionMetrics {
+    let mut metrics = veritas_plugin_api::EvolutionMetrics {
+        suites: usize::from(include_suite),
+        candidates: candidates.len(),
+        selected: candidates
+            .iter()
+            .filter(|candidate| candidate.status == EvolutionCandidateStatus::Selected)
+            .count(),
+        average_fitness_percent: average_evolution_fitness(candidates),
+        ..Default::default()
+    };
+    for candidate in candidates {
+        match candidate.kind {
+            EvolutionCandidateKind::Property => metrics.property_candidates += 1,
+            EvolutionCandidateKind::Mutation => metrics.mutation_candidates += 1,
+            EvolutionCandidateKind::Fuzz => metrics.fuzz_candidates += 1,
+            EvolutionCandidateKind::Regression => metrics.regression_candidates += 1,
+            EvolutionCandidateKind::Replay => metrics.replay_candidates += 1,
+            EvolutionCandidateKind::Budget => {}
+        }
+    }
+    metrics
+}
+
+fn stable_slug(value: &str) -> String {
+    let mut slug = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    slug.trim_matches('-').to_string()
 }
 
 fn replay_result_artifacts(
@@ -3058,10 +3395,54 @@ fn refresh_report_quality(report: &mut VerificationReport) {
         .iter()
         .filter(|finding| finding_is_generated_test_failure(report, finding))
         .count();
+    quality.evolution = evolution_metrics_from_artifacts(&report.artifacts);
 
     finalize_mutation_percentages(&mut quality.mutation);
 
     report.quality = quality;
+}
+
+fn evolution_metrics_from_artifacts(
+    artifacts: &[GeneratedArtifact],
+) -> veritas_plugin_api::EvolutionMetrics {
+    let mut metrics = veritas_plugin_api::EvolutionMetrics {
+        suites: artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == ArtifactKind::EvolutionSuite)
+            .count(),
+        ..Default::default()
+    };
+    let mut all_candidates = Vec::new();
+    for artifact in artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::EvolutionSuite)
+    {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&artifact.contents) {
+            if let Ok(suite) = serde_json::from_value::<EvolutionSuite>(value["suite"].clone()) {
+                all_candidates.extend(suite.candidates);
+            }
+        }
+    }
+    if all_candidates.is_empty() {
+        for artifact in artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == ArtifactKind::EvolutionCandidate)
+        {
+            if let Ok(suite) = serde_json::from_str::<EvolutionSuite>(&artifact.contents) {
+                all_candidates.extend(suite.candidates);
+            }
+        }
+    }
+    let candidate_metrics = evolution_metrics_from_candidates(&all_candidates, false);
+    metrics.candidates = candidate_metrics.candidates;
+    metrics.selected = candidate_metrics.selected;
+    metrics.property_candidates = candidate_metrics.property_candidates;
+    metrics.mutation_candidates = candidate_metrics.mutation_candidates;
+    metrics.fuzz_candidates = candidate_metrics.fuzz_candidates;
+    metrics.regression_candidates = candidate_metrics.regression_candidates;
+    metrics.replay_candidates = candidate_metrics.replay_candidates;
+    metrics.average_fitness_percent = candidate_metrics.average_fitness_percent;
+    metrics
 }
 
 fn merge_mutation_attribution(
@@ -3199,6 +3580,13 @@ fn confidence_score_with_baseline(
             report.quality.replay.cases
         ));
     }
+    if report.quality.evolution.selected > 0 {
+        score += 4;
+        positive_signals.push(format!(
+            "{} selected evolutionary candidate(s)",
+            report.quality.evolution.selected
+        ));
+    }
     if report.quality.budget.timed_out_commands > 0 {
         score -= 12;
         risks.push(format!(
@@ -3308,6 +3696,12 @@ fn confidence_next_steps(report: &VerificationReport) -> Vec<String> {
     }
     if report.quality.replay.cases > 0 {
         steps.push("Compare differential replay cases across old/new behavior.".to_string());
+    }
+    if report.quality.evolution.selected > 0 {
+        steps.push(
+            "Apply selected evolution-suite candidates one at a time and keep score-improving tests."
+                .to_string(),
+        );
     }
     if report.quality.budget.timed_out_commands > 0 || report.quality.budget.skipped_commands > 0 {
         steps.push("Increase budgets or narrow changed-scope verification.".to_string());
@@ -3434,15 +3828,17 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use veritas_plugin_api::{
-        ArtifactKind, AssertionDomain, Failure, FailureSeverity, LineRange, MutationRecord,
-        MutationStatus, ReproCase, RiskLevel, VerificationReport,
+        ArtifactKind, AssertionDomain, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact,
+        LineRange, MutationRecord, MutationStatus, ReproCase, RiskLevel, RunStatus, TestRunResult,
+        VerificationQuality, VerificationReport,
     };
 
     use super::{
         api_baseline_artifact, assertion_candidate_artifacts, cleanup_generated_artifacts,
         confidence_score, corpus_entry_artifacts, differential_replay_artifact,
-        filtered_mutation_records, parse_unified_diff, regression_artifacts, run_parallel_jobs,
-        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
+        evolution_artifacts, evolution_metrics_from_artifacts, filtered_mutation_records,
+        parse_unified_diff, regression_artifacts, run_parallel_jobs, targets_for_changed_files,
+        ChangedFile, TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -3477,6 +3873,65 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["survivor", "timeout"]
         );
+    }
+
+    #[test]
+    fn evolution_suite_prioritizes_surviving_mutants_and_assertions() {
+        let mut quality = VerificationQuality::default();
+        quality.mutation.records.push(mutation_record_for_test(
+            "src/lib.rs:authorize:1:2",
+            MutationStatus::Lived,
+        ));
+        let report = VerificationReport {
+            runs: vec![TestRunResult {
+                language: "rust".to_string(),
+                status: RunStatus::Failed,
+                commands: Vec::new(),
+                failures: Vec::new(),
+                duration_ms: 0,
+                quality,
+            }],
+            ..VerificationReport::empty()
+        };
+        let pending = vec![GeneratedArtifact {
+            id: "rust-assertion-0".to_string(),
+            language: "rust".to_string(),
+            kind: ArtifactKind::AssertionCandidate,
+            target_id: "rust:src/lib.rs:authorize".to_string(),
+            path: Utf8PathBuf::from(".veritas/assertions/rust_0.json"),
+            contents: serde_json::json!({
+                "id": "a0",
+                "language": "rust",
+                "target_id": "rust:src/lib.rs:authorize",
+                "domain": "auth_permission",
+                "source": "mutation_survivor",
+                "seed_inputs": ["admin"],
+                "expected_behavior": "deny unauthorized refunds",
+                "replay_command": "cargo test"
+            })
+            .to_string(),
+            description: "assertion".to_string(),
+            status: veritas_plugin_api::ArtifactStatus::Planned,
+        }];
+
+        let artifacts = evolution_artifacts("rust", &report, &pending);
+        let suite_artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::EvolutionSuite)
+            .expect("suite artifact");
+        let value: serde_json::Value =
+            serde_json::from_str(&suite_artifact.contents).expect("suite json");
+        let suite: EvolutionSuite =
+            serde_json::from_value(value["suite"].clone()).expect("typed suite");
+
+        assert_eq!(suite.candidates.len(), 2);
+        assert_eq!(suite.selection_budget, 2);
+        assert_eq!(suite.candidates[0].fitness.score_percent, 95);
+        let metrics = evolution_metrics_from_artifacts(&artifacts);
+        assert_eq!(metrics.suites, 1);
+        assert_eq!(metrics.candidates, 2);
+        assert_eq!(metrics.mutation_candidates, 1);
+        assert_eq!(metrics.property_candidates, 1);
     }
 
     fn mutation_record_for_test(id: &str, status: MutationStatus) -> MutationRecord {
