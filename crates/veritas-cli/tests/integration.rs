@@ -358,6 +358,8 @@ fn benchmark_suite_scores_seeded_examples() {
         .stdout(predicate::str::contains("# veritas bench"))
         .stdout(predicate::str::contains("rust-commerce"))
         .stdout(predicate::str::contains("go-api-service"))
+        .stdout(predicate::str::contains("Commands:"))
+        .stdout(predicate::str::contains("Generated test failures:"))
         .stdout(predicate::str::contains("Cases: `4/4` passed"));
 
     let mut json = veritas();
@@ -365,7 +367,10 @@ fn benchmark_suite_scores_seeded_examples() {
         .args(["--root", "examples", "bench", "--format", "json"]);
     json.assert()
         .success()
-        .stdout(predicate::str::contains("\"passed\": true"));
+        .stdout(predicate::str::contains("\"passed\": true"))
+        .stdout(predicate::str::contains("\"command_count\""))
+        .stdout(predicate::str::contains("\"generated_test_failures\""))
+        .stdout(predicate::str::contains("\"threshold_failures\": []"));
 }
 
 #[test]

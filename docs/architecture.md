@@ -88,7 +88,7 @@ Core exposes a small ordered parallel-job scheduler for language plugins. Plugin
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings plus expected artifact kinds. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation finding counts, generated-test failure counts, and fuzz failure counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 

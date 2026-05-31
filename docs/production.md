@@ -33,7 +33,7 @@ Before widening a plugin, run the seeded benchmark suite:
 cargo run -p veritas-cli -- --root examples bench
 ```
 
-The suite validates expected detections against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
+The suite validates expected detections, required commands, runtime thresholds, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
 
 ## Large Go Repositories
 

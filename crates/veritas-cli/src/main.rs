@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -138,6 +139,13 @@ struct BenchCase {
     expect_findings: Vec<String>,
     #[serde(default)]
     expect_artifacts: Vec<String>,
+    #[serde(default)]
+    expect_commands: Vec<String>,
+    min_findings: Option<usize>,
+    min_commands: Option<usize>,
+    min_mutation_findings: Option<usize>,
+    min_generated_test_failures: Option<usize>,
+    max_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,11 +161,24 @@ struct BenchCaseReport {
     language: String,
     source: String,
     passed: bool,
+    metrics: BenchMetrics,
     findings: usize,
     artifacts: usize,
     missing_findings: Vec<String>,
     missing_artifacts: Vec<String>,
+    missing_commands: Vec<String>,
+    threshold_failures: Vec<String>,
     duration_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchMetrics {
+    command_count: usize,
+    findings_by_severity: BTreeMap<String, usize>,
+    artifacts_by_kind: BTreeMap<String, usize>,
+    mutation_findings: usize,
+    generated_test_failures: usize,
+    fuzz_failures: usize,
 }
 
 fn main() -> Result<()> {
@@ -355,16 +376,32 @@ fn run_bench_case(suite_root: &Path, case: BenchCase) -> Result<BenchCaseReport>
             .filter(|expected| !report_contains_artifact_kind(&report, expected))
             .cloned()
             .collect::<Vec<_>>();
+        let missing_commands = case
+            .expect_commands
+            .iter()
+            .filter(|expected| !report_contains_command(&report, expected))
+            .cloned()
+            .collect::<Vec<_>>();
+        let metrics = bench_metrics(&report);
+        let duration_ms = start.elapsed().as_millis();
+        let threshold_failures = bench_threshold_failures(&case, &metrics, duration_ms);
+        let passed = missing_findings.is_empty()
+            && missing_artifacts.is_empty()
+            && missing_commands.is_empty()
+            && threshold_failures.is_empty();
         Ok(BenchCaseReport {
             name: case.name,
             language: case.language,
             source: source.display().to_string(),
-            passed: missing_findings.is_empty() && missing_artifacts.is_empty(),
+            passed,
+            metrics,
             findings: report.findings.len(),
             artifacts: report.artifacts.len(),
             missing_findings,
             missing_artifacts,
-            duration_ms: start.elapsed().as_millis(),
+            missing_commands,
+            threshold_failures,
+            duration_ms,
         })
     })();
 
@@ -444,6 +481,149 @@ fn report_contains_artifact_kind(report: &VerificationReport, expected: &str) ->
         .any(|artifact| artifact_kind_label(&artifact.kind) == expected)
 }
 
+fn report_contains_command(report: &VerificationReport, expected: &str) -> bool {
+    report.runs.iter().any(|run| {
+        run.commands.iter().any(|command| {
+            bench_command_line(&command.program, &command.args).contains(expected)
+                || command.program.contains(expected)
+        })
+    })
+}
+
+fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
+    let mut findings_by_severity = BTreeMap::new();
+    let mut artifacts_by_kind = BTreeMap::new();
+    for finding in &report.findings {
+        *findings_by_severity
+            .entry(failure_severity_label(&finding.severity))
+            .or_insert(0) += 1;
+    }
+    for artifact in &report.artifacts {
+        *artifacts_by_kind
+            .entry(artifact_kind_label(&artifact.kind))
+            .or_insert(0) += 1;
+    }
+
+    BenchMetrics {
+        command_count: report
+            .runs
+            .iter()
+            .map(|run| run.commands.len())
+            .sum::<usize>(),
+        findings_by_severity,
+        artifacts_by_kind,
+        mutation_findings: report
+            .findings
+            .iter()
+            .filter(|finding| finding.message.contains("mutation survived"))
+            .count(),
+        generated_test_failures: report
+            .findings
+            .iter()
+            .filter(|finding| finding_is_generated_test_failure(report, finding))
+            .count(),
+        fuzz_failures: report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.message.contains("fuzz") || finding.command.contains("-fuzz=")
+            })
+            .count(),
+    }
+}
+
+fn bench_threshold_failures(
+    case: &BenchCase,
+    metrics: &BenchMetrics,
+    duration_ms: u128,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if let Some(min_findings) = case.min_findings {
+        let actual = metrics.findings_by_severity.values().sum::<usize>();
+        if actual < min_findings {
+            failures.push(format!("findings {actual} < min_findings {min_findings}"));
+        }
+    }
+    if let Some(min_commands) = case.min_commands {
+        if metrics.command_count < min_commands {
+            failures.push(format!(
+                "commands {} < min_commands {min_commands}",
+                metrics.command_count
+            ));
+        }
+    }
+    if let Some(min_mutation_findings) = case.min_mutation_findings {
+        if metrics.mutation_findings < min_mutation_findings {
+            failures.push(format!(
+                "mutation_findings {} < min_mutation_findings {min_mutation_findings}",
+                metrics.mutation_findings
+            ));
+        }
+    }
+    if let Some(min_generated_test_failures) = case.min_generated_test_failures {
+        if metrics.generated_test_failures < min_generated_test_failures {
+            failures.push(format!(
+                "generated_test_failures {} < min_generated_test_failures {min_generated_test_failures}",
+                metrics.generated_test_failures
+            ));
+        }
+    }
+    if let Some(max_duration_ms) = case.max_duration_ms {
+        if duration_ms > u128::from(max_duration_ms) {
+            failures.push(format!(
+                "duration_ms {duration_ms} > max_duration_ms {max_duration_ms}"
+            ));
+        }
+    }
+    failures
+}
+
+fn finding_is_generated_test_failure(
+    report: &VerificationReport,
+    finding: &veritas_plugin_api::Failure,
+) -> bool {
+    if finding.message.contains("fuzz target") || finding.command.contains("-fuzz=") {
+        return true;
+    }
+    if (finding.message.contains("cargo test failed") || finding.message.contains("go test failed"))
+        && report.artifacts.iter().any(|artifact| {
+            matches!(
+                &artifact.kind,
+                ArtifactKind::UnitTest
+                    | ArtifactKind::PropertyTest
+                    | ArtifactKind::FuzzHarness
+                    | ArtifactKind::HarnessIndex
+            )
+        })
+    {
+        return true;
+    }
+    let Some(artifact_id) = &finding.artifact_id else {
+        return false;
+    };
+    report
+        .artifacts
+        .iter()
+        .find(|artifact| &artifact.id == artifact_id)
+        .is_some_and(|artifact| {
+            matches!(
+                artifact.kind,
+                ArtifactKind::UnitTest
+                    | ArtifactKind::PropertyTest
+                    | ArtifactKind::FuzzHarness
+                    | ArtifactKind::HarnessIndex
+                    | ArtifactKind::RegressionTest
+            )
+        })
+}
+
+fn bench_command_line(program: &str, args: &[String]) -> String {
+    std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> {
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(report)?),
@@ -461,6 +641,25 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 println!("- Language: `{}`", case.language);
                 println!("- Findings: `{}`", case.findings);
                 println!("- Artifacts: `{}`", case.artifacts);
+                println!("- Commands: `{}`", case.metrics.command_count);
+                println!("- Mutation findings: `{}`", case.metrics.mutation_findings);
+                println!(
+                    "- Generated test failures: `{}`",
+                    case.metrics.generated_test_failures
+                );
+                println!("- Fuzz failures: `{}`", case.metrics.fuzz_failures);
+                if !case.metrics.findings_by_severity.is_empty() {
+                    println!(
+                        "- Findings by severity: `{}`",
+                        format_counts(&case.metrics.findings_by_severity)
+                    );
+                }
+                if !case.metrics.artifacts_by_kind.is_empty() {
+                    println!(
+                        "- Artifacts by kind: `{}`",
+                        format_counts(&case.metrics.artifacts_by_kind)
+                    );
+                }
                 println!("- Duration: `{}ms`", case.duration_ms);
                 println!(
                     "- Status: `{}`",
@@ -472,6 +671,12 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 for missing in &case.missing_artifacts {
                     println!("- Missing artifact: `{missing}`");
                 }
+                for missing in &case.missing_commands {
+                    println!("- Missing command: `{missing}`");
+                }
+                for failure in &case.threshold_failures {
+                    println!("- Threshold failure: `{failure}`");
+                }
             }
         }
         OutputFormat::Sarif | OutputFormat::Junit => {
@@ -479,6 +684,21 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
         }
     }
     Ok(())
+}
+
+fn format_counts(counts: &BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn failure_severity_label(severity: &FailureSeverity) -> String {
+    serde_json::to_value(severity)
+        .ok()
+        .and_then(|value| value.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| format!("{severity:?}").to_ascii_lowercase())
 }
 
 fn safe_path_name(name: &str) -> String {

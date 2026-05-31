@@ -14,7 +14,7 @@
    - `examples/go-invoice`: parser panics and token normalization.
    - `examples/rust-commerce`: checkout parsing, refund arithmetic, coupon boundaries, and permission defaults.
    - `examples/go-api-service`: API parameter parsing, token normalization, status mapping, and read authorization.
-5. Benchmark suites in `examples/veritas-bench.toml` run seeded examples in temporary copies and score expected findings/artifacts.
+5. Benchmark suites in `examples/veritas-bench.toml` run seeded examples in temporary copies and score expected findings, commands, thresholds, and metrics.
 
 ## Required Checks
 
@@ -46,7 +46,9 @@ cargo run -p veritas-cli -- --root examples bench
 cargo run -p veritas-cli -- --root examples bench --format json
 ```
 
-Each benchmark case declares expected finding-message substrings and artifact kinds in `examples/veritas-bench.toml`. The command copies each case to a temporary directory, runs `veritas verify`, writes the report inside that copy, and removes the copy when done. A case fails when an expected detection disappears.
+Each benchmark case declares expected finding-message substrings, artifact kinds, command substrings, and thresholds such as `min_findings`, `min_commands`, `min_generated_test_failures`, and `max_duration_ms`. The command copies each case to a temporary directory, runs `veritas verify`, writes the report inside that copy, and removes the copy when done. A case fails when an expected detection disappears, a required command is skipped, or a threshold is violated.
+
+Benchmark JSON includes command count, finding counts by severity, artifact counts by kind, mutation finding count, generated-test failure count, and fuzz failure count. GitHub Actions runs the same seeded suite for benchmark-sensitive pull requests through `.github/workflows/benchmarks.yml`.
 
 ## External Canaries
 

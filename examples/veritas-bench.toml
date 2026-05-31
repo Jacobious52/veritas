@@ -5,6 +5,11 @@ language = "rust"
 target = "src/lib.rs"
 expect_findings = ["cargo test failed"]
 expect_artifacts = ["property_test", "candidate_patch"]
+expect_commands = ["cargo test"]
+min_findings = 1
+min_commands = 1
+min_generated_test_failures = 1
+max_duration_ms = 60000
 
 [[case]]
 name = "go-invoice"
@@ -13,6 +18,11 @@ language = "go"
 target = "."
 expect_findings = ["go test failed"]
 expect_artifacts = ["fuzz_harness", "candidate_patch"]
+expect_commands = ["go test"]
+min_findings = 1
+min_commands = 1
+min_generated_test_failures = 1
+max_duration_ms = 10000
 
 [[case]]
 name = "rust-commerce"
@@ -21,6 +31,11 @@ language = "rust"
 target = "src/lib.rs"
 expect_findings = ["cargo test failed"]
 expect_artifacts = ["property_test", "candidate_patch"]
+expect_commands = ["cargo test"]
+min_findings = 1
+min_commands = 1
+min_generated_test_failures = 1
+max_duration_ms = 60000
 
 [[case]]
 name = "go-api-service"
@@ -29,3 +44,8 @@ language = "go"
 target = "."
 expect_findings = ["go test failed"]
 expect_artifacts = ["fuzz_harness", "candidate_patch"]
+expect_commands = ["go test"]
+min_findings = 1
+min_commands = 1
+min_generated_test_failures = 1
+max_duration_ms = 10000

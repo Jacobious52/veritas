@@ -141,7 +141,7 @@ Reports and artifacts:
 
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
-- runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings/artifacts
+- runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
 - writes API signature baselines and accepted finding baselines
 - writes coverage feedback, mutation feedback, replay manifests, repro notes, candidate verification patches, regression notes, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
@@ -246,6 +246,7 @@ cargo run -p veritas-cli -- verify --root examples/rust-commerce --lang rust --t
 (cd examples/go-api-service && go test ./...)
 cargo run -p veritas-cli -- verify --root examples/go-api-service --lang go --target .
 cargo run -p veritas-cli -- --root examples bench
+cargo run -p veritas-cli -- --root examples bench --format json
 ```
 
 The example projects intentionally contain hidden assumptions while their handwritten tests pass, so they are useful for validating generated property/fuzz artifacts and report output.
