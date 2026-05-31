@@ -24,6 +24,8 @@ examples/
   go-invoice/           # richer Go test bed with hidden parser assumptions
   rust-commerce/        # seeded commerce benchmark for parsing, refunds, coupons, permissions
   go-api-service/       # seeded API benchmark for parsing, tokens, status, authorization
+  rust-mutation-score/  # seeded Rust benchmark with killed and surviving mutants
+  go-mutation-score/    # seeded Go benchmark with killed and surviving mutants
   veritas-bench.toml    # benchmark manifest of expected detections
 docs/                   # durable user, production, AI-agent, architecture, release docs
 scripts/run-canaries.sh # pinned external repo smoke/verify checks
@@ -114,6 +116,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, and AST-scoped mutation probes.
 - `veritas bench` runs seeded examples in temporary copies and scores expected finding, artifact, command, threshold, and metric detections from `veritas-bench.toml`.
+- Reports include first-class quality metrics for mutation score, property artifacts, generated-test failures, fuzz execution, and persisted repros.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
@@ -141,6 +144,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/repros/*.md`
 - `.veritas/patches/*.md`
 - `.veritas/regressions/*.md`
+- `.veritas/evolution/*.md`
 - `.veritas/promotions/*.md`
 - Rust generated tests under `tests/veritas_generated*` or package-local equivalents
 - Rust promoted regression scaffolds under `tests/veritas_regression_*.rs` or package-local equivalents

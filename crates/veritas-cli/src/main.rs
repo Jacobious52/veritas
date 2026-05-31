@@ -144,6 +144,9 @@ struct BenchCase {
     min_findings: Option<usize>,
     min_commands: Option<usize>,
     min_mutation_findings: Option<usize>,
+    min_mutants_executed: Option<usize>,
+    min_mutation_score: Option<u8>,
+    max_surviving_mutants: Option<usize>,
     min_generated_test_failures: Option<usize>,
     max_duration_ms: Option<u64>,
 }
@@ -176,9 +179,19 @@ struct BenchMetrics {
     command_count: usize,
     findings_by_severity: BTreeMap<String, usize>,
     artifacts_by_kind: BTreeMap<String, usize>,
+    mutants_generated: usize,
+    mutants_executed: usize,
+    mutants_killed: usize,
+    mutants_survived: usize,
+    mutants_skipped: usize,
+    mutation_score_percent: Option<u8>,
     mutation_findings: usize,
+    property_artifacts: usize,
     generated_test_failures: usize,
+    fuzz_harnesses: usize,
+    fuzz_targets_executed: usize,
     fuzz_failures: usize,
+    persisted_repros: usize,
 }
 
 fn main() -> Result<()> {
@@ -209,6 +222,7 @@ fn main() -> Result<()> {
                 runs: vec![],
                 coverage: vec![],
                 findings: vec![],
+                quality: veritas_plugin_api::VerificationQuality::default(),
                 suggested_next_steps: vec![
                     "Run `veritas verify --lang rust --target <path>` or `veritas verify --lang go --target <path>`.".to_string(),
                 ],
@@ -517,18 +531,18 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
             .iter()
             .filter(|finding| finding.message.contains("mutation survived"))
             .count(),
-        generated_test_failures: report
-            .findings
-            .iter()
-            .filter(|finding| finding_is_generated_test_failure(report, finding))
-            .count(),
-        fuzz_failures: report
-            .findings
-            .iter()
-            .filter(|finding| {
-                finding.message.contains("fuzz") || finding.command.contains("-fuzz=")
-            })
-            .count(),
+        mutants_generated: report.quality.mutation.generated,
+        mutants_executed: report.quality.mutation.executed,
+        mutants_killed: report.quality.mutation.killed,
+        mutants_survived: report.quality.mutation.survived,
+        mutants_skipped: report.quality.mutation.skipped,
+        mutation_score_percent: report.quality.mutation.score_percent,
+        property_artifacts: report.quality.property.generated_artifacts,
+        generated_test_failures: report.quality.property.failed_generated_tests,
+        fuzz_harnesses: report.quality.fuzz.generated_harnesses,
+        fuzz_targets_executed: report.quality.fuzz.targets_executed,
+        fuzz_failures: report.quality.fuzz.failures,
+        persisted_repros: report.quality.fuzz.persisted_repros,
     }
 }
 
@@ -560,6 +574,30 @@ fn bench_threshold_failures(
             ));
         }
     }
+    if let Some(min_mutants_executed) = case.min_mutants_executed {
+        if metrics.mutants_executed < min_mutants_executed {
+            failures.push(format!(
+                "mutants_executed {} < min_mutants_executed {min_mutants_executed}",
+                metrics.mutants_executed
+            ));
+        }
+    }
+    if let Some(min_mutation_score) = case.min_mutation_score {
+        let actual = metrics.mutation_score_percent.unwrap_or(0);
+        if actual < min_mutation_score {
+            failures.push(format!(
+                "mutation_score_percent {actual} < min_mutation_score {min_mutation_score}"
+            ));
+        }
+    }
+    if let Some(max_surviving_mutants) = case.max_surviving_mutants {
+        if metrics.mutants_survived > max_surviving_mutants {
+            failures.push(format!(
+                "mutants_survived {} > max_surviving_mutants {max_surviving_mutants}",
+                metrics.mutants_survived
+            ));
+        }
+    }
     if let Some(min_generated_test_failures) = case.min_generated_test_failures {
         if metrics.generated_test_failures < min_generated_test_failures {
             failures.push(format!(
@@ -576,45 +614,6 @@ fn bench_threshold_failures(
         }
     }
     failures
-}
-
-fn finding_is_generated_test_failure(
-    report: &VerificationReport,
-    finding: &veritas_plugin_api::Failure,
-) -> bool {
-    if finding.message.contains("fuzz target") || finding.command.contains("-fuzz=") {
-        return true;
-    }
-    if (finding.message.contains("cargo test failed") || finding.message.contains("go test failed"))
-        && report.artifacts.iter().any(|artifact| {
-            matches!(
-                &artifact.kind,
-                ArtifactKind::UnitTest
-                    | ArtifactKind::PropertyTest
-                    | ArtifactKind::FuzzHarness
-                    | ArtifactKind::HarnessIndex
-            )
-        })
-    {
-        return true;
-    }
-    let Some(artifact_id) = &finding.artifact_id else {
-        return false;
-    };
-    report
-        .artifacts
-        .iter()
-        .find(|artifact| &artifact.id == artifact_id)
-        .is_some_and(|artifact| {
-            matches!(
-                artifact.kind,
-                ArtifactKind::UnitTest
-                    | ArtifactKind::PropertyTest
-                    | ArtifactKind::FuzzHarness
-                    | ArtifactKind::HarnessIndex
-                    | ArtifactKind::RegressionTest
-            )
-        })
 }
 
 fn bench_command_line(program: &str, args: &[String]) -> String {
@@ -642,12 +641,37 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 println!("- Findings: `{}`", case.findings);
                 println!("- Artifacts: `{}`", case.artifacts);
                 println!("- Commands: `{}`", case.metrics.command_count);
+                println!(
+                    "- Mutation score: `{}`",
+                    case.metrics
+                        .mutation_score_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string())
+                );
+                println!(
+                    "- Mutants: generated `{}`, executed `{}`, killed `{}`, survived `{}`, skipped `{}`",
+                    case.metrics.mutants_generated,
+                    case.metrics.mutants_executed,
+                    case.metrics.mutants_killed,
+                    case.metrics.mutants_survived,
+                    case.metrics.mutants_skipped
+                );
                 println!("- Mutation findings: `{}`", case.metrics.mutation_findings);
+                println!(
+                    "- Property artifacts: `{}`",
+                    case.metrics.property_artifacts
+                );
                 println!(
                     "- Generated test failures: `{}`",
                     case.metrics.generated_test_failures
                 );
+                println!("- Fuzz harnesses: `{}`", case.metrics.fuzz_harnesses);
+                println!(
+                    "- Fuzz targets executed: `{}`",
+                    case.metrics.fuzz_targets_executed
+                );
                 println!("- Fuzz failures: `{}`", case.metrics.fuzz_failures);
+                println!("- Persisted repros: `{}`", case.metrics.persisted_repros);
                 if !case.metrics.findings_by_severity.is_empty() {
                     println!(
                         "- Findings by severity: `{}`",

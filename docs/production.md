@@ -33,7 +33,7 @@ Before widening a plugin, run the seeded benchmark suite:
 cargo run -p veritas-cli -- --root examples bench
 ```
 
-The suite validates expected detections, required commands, runtime thresholds, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
+The suite validates expected detections, required commands, runtime thresholds, mutation scores, property/fuzz quality metrics, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
 
 ## Large Go Repositories
 
@@ -142,6 +142,7 @@ Common generated paths:
 - `.veritas/repros/*.md`
 - `.veritas/patches/*.md`
 - `.veritas/regressions/*.md`
+- `.veritas/evolution/*.md`
 - `.veritas/promotions/*.md`
 - Rust `tests/veritas_generated*`
 - Rust `tests/veritas_regression_*.rs`

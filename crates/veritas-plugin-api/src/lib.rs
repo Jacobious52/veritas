@@ -200,6 +200,7 @@ pub enum ArtifactKind {
     FindingBaseline,
     RegressionTest,
     DifferentialReplay,
+    EvolutionPlan,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +218,8 @@ pub struct TestRunResult {
     pub commands: Vec<CommandRecord>,
     pub failures: Vec<Failure>,
     pub duration_ms: u128,
+    #[serde(default)]
+    pub quality: VerificationQuality,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,6 +291,8 @@ pub struct VerificationReport {
     pub runs: Vec<TestRunResult>,
     pub coverage: Vec<CoverageReport>,
     pub findings: Vec<Failure>,
+    #[serde(default)]
+    pub quality: VerificationQuality,
     pub suggested_next_steps: Vec<String>,
 }
 
@@ -301,7 +306,40 @@ impl VerificationReport {
             runs: Vec::new(),
             coverage: Vec::new(),
             findings: Vec::new(),
+            quality: VerificationQuality::default(),
             suggested_next_steps: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationQuality {
+    pub mutation: MutationMetrics,
+    pub property: PropertyMetrics,
+    pub fuzz: FuzzMetrics,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationMetrics {
+    pub generated: usize,
+    pub executed: usize,
+    pub killed: usize,
+    pub survived: usize,
+    pub skipped: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PropertyMetrics {
+    pub generated_artifacts: usize,
+    pub failed_generated_tests: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FuzzMetrics {
+    pub generated_harnesses: usize,
+    pub targets_executed: usize,
+    pub failures: usize,
+    pub persisted_repros: usize,
 }

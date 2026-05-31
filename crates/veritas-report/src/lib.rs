@@ -92,6 +92,49 @@ pub fn render_markdown(report: &VerificationReport) -> String {
         out.push('\n');
     }
 
+    if report.quality.mutation.generated > 0
+        || report.quality.property.generated_artifacts > 0
+        || report.quality.fuzz.generated_harnesses > 0
+        || report.quality.fuzz.targets_executed > 0
+    {
+        out.push_str("## Quality Metrics\n\n");
+        if report.quality.mutation.generated > 0 {
+            out.push_str(&format!(
+                "- Mutation score: `{}` (generated: `{}`, executed: `{}`, killed: `{}`, survived: `{}`, skipped: `{}`)\n",
+                report
+                    .quality
+                    .mutation
+                    .score_percent
+                    .map(|score| format!("{score}%"))
+                    .unwrap_or_else(|| "n/a".to_string()),
+                report.quality.mutation.generated,
+                report.quality.mutation.executed,
+                report.quality.mutation.killed,
+                report.quality.mutation.survived,
+                report.quality.mutation.skipped,
+            ));
+        }
+        if report.quality.property.generated_artifacts > 0
+            || report.quality.property.failed_generated_tests > 0
+        {
+            out.push_str(&format!(
+                "- Property tests: generated artifacts `{}`, generated-test failures `{}`\n",
+                report.quality.property.generated_artifacts,
+                report.quality.property.failed_generated_tests
+            ));
+        }
+        if report.quality.fuzz.generated_harnesses > 0 || report.quality.fuzz.targets_executed > 0 {
+            out.push_str(&format!(
+                "- Fuzzing: generated harnesses `{}`, targets executed `{}`, failures `{}`, persisted repros `{}`\n",
+                report.quality.fuzz.generated_harnesses,
+                report.quality.fuzz.targets_executed,
+                report.quality.fuzz.failures,
+                report.quality.fuzz.persisted_repros
+            ));
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Findings\n\n");
     if report.findings.is_empty() {
         out.push_str("No failing verification findings were detected in this run.\n\n");
@@ -247,6 +290,7 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::FindingBaseline => "[baseline]",
         ArtifactKind::RegressionTest => "[regression]",
         ArtifactKind::DifferentialReplay => "[replay]",
+        ArtifactKind::EvolutionPlan => "[evolution]",
     }
 }
 

@@ -20,6 +20,8 @@ examples/
   go-invoice/
   rust-commerce/
   go-api-service/
+  rust-mutation-score/
+  go-mutation-score/
   veritas-bench.toml
 docs/
 ```
@@ -88,7 +90,7 @@ Core exposes a small ordered parallel-job scheduler for language plugins. Plugin
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation finding counts, generated-test failure counts, and fuzz failure counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, generated-test failure counts, fuzz execution/failure counts, and persisted repro counts. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 
@@ -109,7 +111,7 @@ Go:
 
 Both plugins write symbol graph artifacts for AI and tooling consumption.
 
-Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning and `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
+Observation artifacts include `.veritas/differential/*_replay.json` for behavior replay planning, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md` for the next AI candidate-generation loop. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 

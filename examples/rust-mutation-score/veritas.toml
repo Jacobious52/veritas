@@ -1,0 +1,13 @@
+[veritas]
+budget_seconds = 60
+write_generated_tests = true
+fail_on_generated_test_failure = true
+fail_on_findings = false
+
+[planner]
+mode = "deterministic"
+
+[plugins.rust]
+property_framework = "proptest"
+coverage_enabled = false
+command_timeout_seconds = 60

@@ -17,8 +17,8 @@ use veritas_core::{config::GoPluginConfig, run_parallel_jobs};
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageFile, CoverageReport, Failure,
     FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase,
-    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
+    VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -404,6 +404,7 @@ impl LanguagePlugin for GoPlugin {
         let start = Instant::now();
         let context = GoVerificationContext::discover(root, &self.config)?;
         let mut commands = Vec::new();
+        let mut quality = VerificationQuality::default();
         let package_args = test_package_args(&context, artifacts, &self.config);
         self.remember_coverage_package_args(root, package_args.clone())?;
         let mut status = RunStatus::Passed;
@@ -438,6 +439,14 @@ impl LanguagePlugin for GoPlugin {
                 {
                     status = RunStatus::Failed;
                 }
+                quality.fuzz.targets_executed += fuzz_commands
+                    .iter()
+                    .filter(|command| command.status != RunStatus::Skipped)
+                    .count();
+                quality.fuzz.failures += fuzz_commands
+                    .iter()
+                    .filter(|command| command.status == RunStatus::Failed)
+                    .count();
                 commands.extend(fuzz_commands);
             }
         }
@@ -472,6 +481,7 @@ impl LanguagePlugin for GoPlugin {
                 if mutation.status == RunStatus::Failed {
                     status = RunStatus::Failed;
                 }
+                quality.mutation = mutation.quality.mutation.clone();
                 failures.extend(mutation.failures.clone());
                 commands.extend(mutation.commands);
             }
@@ -483,6 +493,7 @@ impl LanguagePlugin for GoPlugin {
             commands,
             failures,
             duration_ms: start.elapsed().as_millis(),
+            quality,
         })
     }
 
@@ -1628,9 +1639,12 @@ fn run_mutation_checks(
 ) -> Result<TestRunResult> {
     let start = Instant::now();
     let candidates = go_mutation_candidates(&context.functions, root, artifacts)?;
+    let generated = candidates.len();
     let mut commands = Vec::new();
     let mut failures = Vec::new();
     let mut status = RunStatus::Passed;
+    let mut quality = VerificationQuality::default();
+    quality.mutation.generated = generated;
 
     for candidate in candidates.into_iter().take(config.max_mutants) {
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -1641,6 +1655,7 @@ fn run_mutation_checks(
             )?);
             break;
         }
+        quality.mutation.executed += 1;
         let path = root.join(&candidate.path);
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -1680,6 +1695,7 @@ fn run_mutation_checks(
         }
 
         if mutant_survived {
+            quality.mutation.survived += 1;
             let command = representative_command.unwrap_or(skipped_command(
                 root,
                 "go mutation checks",
@@ -1713,8 +1729,17 @@ fn run_mutation_checks(
                     path: Some(candidate.path.clone()),
                 }),
             });
+        } else {
+            quality.mutation.killed += 1;
         }
     }
+    quality.mutation.skipped = quality
+        .mutation
+        .generated
+        .saturating_sub(quality.mutation.executed);
+    quality.mutation.score_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
 
     Ok(TestRunResult {
         language: "go".to_string(),
@@ -1722,6 +1747,7 @@ fn run_mutation_checks(
         commands,
         failures,
         duration_ms: start.elapsed().as_millis(),
+        quality,
     })
 }
 

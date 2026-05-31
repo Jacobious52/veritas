@@ -16,8 +16,8 @@ use veritas_core::config::RustPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, ProjectInfo, ReproCase, RiskLevel, RunStatus,
-    TargetKind, TestRunResult, VerificationPlan, VerificationReport, VerificationStrategy,
-    VerificationTarget,
+    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -275,6 +275,7 @@ impl LanguagePlugin for RustPlugin {
     ) -> Result<TestRunResult> {
         let start = Instant::now();
         let mut commands = Vec::new();
+        let mut quality = VerificationQuality::default();
         let package_roots = test_package_roots(root, artifacts)?;
         let test_commands = run_cargo_tests(root, &package_roots, &self.config)?;
         let mut status = if test_commands
@@ -312,6 +313,7 @@ impl LanguagePlugin for RustPlugin {
                 if mutation.status == RunStatus::Failed {
                     status = RunStatus::Failed;
                 }
+                quality.mutation = mutation.quality.mutation.clone();
                 failures.extend(mutation.failures.clone());
                 commands.extend(mutation.commands);
             }
@@ -323,6 +325,7 @@ impl LanguagePlugin for RustPlugin {
             commands,
             failures,
             duration_ms: start.elapsed().as_millis(),
+            quality,
         })
     }
 
@@ -1035,9 +1038,12 @@ fn run_mutation_checks(
     let start = Instant::now();
     let functions = discover_functions(root)?;
     let candidates = rust_mutation_candidates(&functions, root, artifacts)?;
+    let generated = candidates.len();
     let mut commands = Vec::new();
     let mut failures = Vec::new();
     let mut status = RunStatus::Passed;
+    let mut quality = VerificationQuality::default();
+    quality.mutation.generated = generated;
 
     for candidate in candidates.into_iter().take(8) {
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -1048,6 +1054,7 @@ fn run_mutation_checks(
             )?);
             break;
         }
+        quality.mutation.executed += 1;
         let path = root.join(&candidate.path);
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -1076,6 +1083,7 @@ fn run_mutation_checks(
         }
 
         if mutant_survived {
+            quality.mutation.survived += 1;
             let command = representative_command.unwrap_or(skipped_command(
                 root,
                 "rust mutation checks",
@@ -1106,8 +1114,17 @@ fn run_mutation_checks(
                     path: Some(candidate.path.clone()),
                 }),
             });
+        } else {
+            quality.mutation.killed += 1;
         }
     }
+    quality.mutation.skipped = quality
+        .mutation
+        .generated
+        .saturating_sub(quality.mutation.executed);
+    quality.mutation.score_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
 
     Ok(TestRunResult {
         language: "rust".to_string(),
@@ -1115,6 +1132,7 @@ fn run_mutation_checks(
         commands,
         failures,
         duration_ms: start.elapsed().as_millis(),
+        quality,
     })
 }
 
