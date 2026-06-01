@@ -1,14 +1,25 @@
 # veritas
 
-`veritas` is a CLI-first adversarial verification harness for AI-written and AI-modified software.
+`veritas` is a CLI-first adversarial verification hub for AI-written and AI-modified software.
+
+AI agents write code fast. `veritas` tries to break that code before production with mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and a confidence score an agent can act on.
 
 It answers the question ordinary test runs often miss:
 
-> Would the current tests catch the kinds of subtle mistakes an AI coding agent is likely to make?
+> Would the current tests catch the subtle mistakes an AI coding agent is likely to make?
 
-`veritas` maps changed code to verification targets, generates reviewable harnesses, runs scoped tests, fuzzing, mutation probes, and coverage collection under budgets, then writes CI-friendly reports and AI-ready feedback.
+`veritas` maps changed code to verification targets with Tree-sitter-backed language plugins, generates reviewable harnesses, runs scoped tests under budgets, and writes CI-friendly reports plus AI-ready repair prompts.
 
 The default path is deterministic and does not call an LLM. An optional external planner hook can be enabled for AI-assisted planning while `veritas` still owns execution scope, budgets, and artifact writes.
+
+Project site: [Jacobious52.github.io/veritas](https://jacobious52.github.io/veritas/)
+
+## Why It Feels Different
+
+- It gives an AI agent a concrete next-test queue instead of a vague "add more tests" warning.
+- It keeps generated tests reviewable and removable through `.veritas/` artifacts and `veritas cleanup`.
+- It is built around a generic plugin contract: Rust, Go, and Python work today, and future languages can reuse the same reports through Tree-sitter symbols, line ranges, command budgets, mutation campaigns, replay, and scoring.
+- It is designed for bigger repos: changed-target selection, package/workspace awareness, command budgets, optional Rust cgroup/systemd limits, phase timing telemetry, CI profiles, benchmark fixtures, and external canaries.
 
 ## Install
 
@@ -43,6 +54,10 @@ Optional tools:
 # Go verification
 go version
 
+# Python verification
+python3 --version
+python3 -m coverage --version
+
 # Rust coverage, only used when coverage_enabled = true
 cargo install cargo-llvm-cov
 ```
@@ -55,6 +70,7 @@ Use `veritas` on a changed branch:
 veritas review-ai
 veritas verify --changed --profile ci
 veritas score
+veritas repair-prompt
 veritas report --format markdown
 ```
 
@@ -78,6 +94,15 @@ veritas replay-corpus --dry-run
 veritas accept-quality-baseline
 veritas accept-baseline --id <finding-id>
 veritas cleanup
+```
+
+What a useful run looks like:
+
+```text
+mutation survived: refund_cents <= available_cents -> refund_cents < available_cents
+fuzz seed saved: " 12.34 " reproduced parser drift
+replay drift: AuthorizeRefund("support", 500) changed behavior
+next agent step: promote assertion candidate, rerun, keep only if the mutant dies
 ```
 
 ## Documentation
@@ -131,6 +156,14 @@ veritas cleanup --dry-run
 
 ## Capabilities
 
+Language and plugin model:
+
+- Rust, Go, and Python plugins are available today
+- Tree-sitter discovery provides symbols, methods, line ranges, and risk surfaces where grammars support them
+- each plugin owns language-specific discovery, generated artifacts, command execution, coverage, replay compilation, and mutation operators
+- the core owns shared scoring, policy, replay manifests/results, baselines, corpus entries, mutation campaign records, evolution suites, SARIF/JUnit/Markdown rendering, and AI repair prompts
+- future language plugins can add their own Tree-sitter grammar and map into the same target/report/artifact contract
+
 Changed-target verification:
 
 - reads git diffs, staged changes, and untracked files
@@ -152,7 +185,6 @@ Go verification:
 
 - detects one or more `go.mod` roots
 - discovers exported functions and methods with Tree-sitter
-- supports Tree-sitter language plugins through a stable target/report contract; Rust and Go are production paths, and Python is the third-language plugin proving the SDK path
 - builds package graphs with `go list -json ./...`
 - runs scoped `go test` commands for selected packages plus configurable reverse dependencies
 - discovers handwritten and generated fuzz targets
@@ -161,6 +193,15 @@ Go verification:
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
 - runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic and bitwise operators, assignment operators, increment/decrement statements, unary negation, loop control, literal flips, self-assignments, and domain-labeled risk surfaces
 - writes package graph, package-awareness, and symbol graph artifacts
+
+Python verification:
+
+- detects Python projects through `pyproject.toml` or Python source roots
+- discovers functions with Tree-sitter and emits symbol graph artifacts
+- runs `python3 -m unittest discover`
+- collects coverage through `coverage.py` when enabled
+- runs executable source-range mutation checks for supported comparisons, boolean connectors, and default returns
+- supports replay cases for primitive single-argument and multi-argument public functions
 
 Reports and artifacts:
 
@@ -172,6 +213,16 @@ Reports and artifacts:
 - writes API signature baselines and accepted finding baselines
 - writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - cleans generated artifacts with `veritas cleanup`
+
+Scale and performance posture:
+
+- changed branches are verified before full-repo sweeps; `--changed` is the default CI profile path
+- Go package graphs and Rust workspace discovery keep command scope close to the edited surface
+- command budgets, fuzz caps, mutation caps, package caps, and policy filters are configurable per repo
+- Rust test and coverage commands can run inside systemd scopes with CPU and memory limits on shared hosts
+- every report records phase timings for discovery, generation, test execution, coverage, replay, synthesis, and total runtime
+- benchmark suites and external canaries track whether Veritas still works beyond tiny fixtures
+- near-term performance goals are plugin-safe concurrency, cacheable symbol/package graphs, adaptive mutation sampling, and reusable corpus/baseline data across runs
 
 CI behavior:
 

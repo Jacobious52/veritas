@@ -128,12 +128,33 @@
       font-size: 21px;
       text-shadow: 0 2px 18px rgba(0,0,0,.8);
     }
+    .eyebrow-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 0 18px;
+      color: #d7e0ea;
+      font-size: 13px;
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .eyebrow-line span {
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(5, 7, 11, .58);
+      border-radius: 999px;
+      padding: 5px 10px;
+    }
     .hero-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(360px, .72fr);
       gap: 18px;
       align-items: stretch;
       margin-top: 34px;
+    }
+    .hero-stack {
+      display: grid;
+      gap: 18px;
     }
     .hero-grid > *,
     .example > *,
@@ -212,6 +233,14 @@
       font-size: 13px;
       font-weight: 800;
     }
+    .language-strip span.ready {
+      border-color: rgba(66,211,165,.5);
+      color: #dffdf3;
+    }
+    .language-strip span.plugin {
+      border-color: rgba(107,168,255,.5);
+      color: #dceaff;
+    }
     .button {
       display: inline-flex;
       align-items: center;
@@ -258,6 +287,55 @@
       min-width: 0;
     }
     .card strong { color: var(--accent); }
+    .proof-panel {
+      display: grid;
+      gap: 14px;
+    }
+    .proof-topline {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .proof-score {
+      color: var(--warn);
+      font-size: 54px;
+      font-weight: 900;
+      line-height: .9;
+    }
+    .proof-score span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .terminal-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: #d7e0ea;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+    }
+    .terminal-list li {
+      border: 1px solid rgba(255,255,255,.1);
+      background: #05070b;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .terminal-list b {
+      color: var(--accent);
+      font-weight: 850;
+    }
     .example {
       display: grid;
       grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
@@ -385,6 +463,23 @@
     .demo-command {
       margin: 0 0 18px;
     }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+    .status-list {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    .status-list li {
+      margin: 7px 0;
+    }
+    .status-list b {
+      color: var(--ink);
+    }
     footer {
       padding: 36px 0;
       color: var(--muted);
@@ -399,7 +494,8 @@
       .example,
       .scenario,
       .demo-loop,
-      .grid {
+      .grid,
+      .split {
         grid-template-columns: 1fr;
       }
       .snapshot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -420,8 +516,10 @@
       <div class="links">
         <a href="#install">Install</a>
         <a href="#agent">Agent Prompt</a>
+        <a href="#languages">Languages</a>
         <a href="#example">Example</a>
         <a href="#testing">Testing</a>
+        <a href="#scale">Scale</a>
         <a href="https://github.com/Jacobious52/veritas/blob/main/docs/evolution.md">Evolution</a>
         <a href="https://github.com/Jacobious52/veritas">GitHub</a>
       </div>
@@ -432,35 +530,42 @@
     <header class="hero">
       <canvas id="hero-canvas" aria-hidden="true"></canvas>
       <div class="wrap hero-copy">
-        <h1>Ship AI code with adversarial proof, not vibes.</h1>
-        <p class="lede">Veritas turns every AI-written change into a verification loop: mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential checks, and a confidence score an agent can act on.</p>
+        <div class="eyebrow-line">
+          <span>CLI-first</span>
+          <span>Agent-ready</span>
+          <span>Tree-sitter powered</span>
+        </div>
+        <h1>AI agents write code fast. Veritas tries to break it before prod.</h1>
+        <p class="lede">Install one CLI, point it at a branch, and get adversarial verification for Rust, Go, and Python: mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and a confidence score your agent can act on.</p>
         <div class="language-strip" aria-label="Language and plugin support">
-          <span>Rust plugin today</span>
-          <span>Go plugin today</span>
-          <span>Python plugin path</span>
-          <span>Tree-sitter symbols</span>
-          <span>Plugin API for more languages</span>
+          <span class="ready">Rust today</span>
+          <span class="ready">Go today</span>
+          <span class="ready">Python today</span>
+          <span class="plugin">Tree-sitter symbols</span>
+          <span class="plugin">Language plugin API</span>
+          <span>Budgets, timeouts, CI policy</span>
         </div>
 
         <div class="hero-grid">
-          <div id="install" class="panel">
-            <div class="copy-row">
-              <span class="kicker">Install</span>
-              <button class="copy" type="button" data-copy="install-code">Copy</button>
+          <div class="hero-stack">
+            <div id="install" class="panel">
+              <div class="copy-row">
+                <span class="kicker">Install</span>
+                <button class="copy" type="button" data-copy="install-code">Copy</button>
+              </div>
+              <pre><code id="install-code">cargo install veritas-cli --locked</code></pre>
+              <div class="actions">
+                <a class="button primary" href="https://github.com/Jacobious52/veritas">View on GitHub</a>
+                <a class="button" href="#agent">Paste this for your agent</a>
+              </div>
             </div>
-            <pre><code id="install-code">cargo install veritas-cli --locked</code></pre>
-            <div class="actions">
-              <a class="button primary" href="https://github.com/Jacobious52/veritas">View on GitHub</a>
-              <a class="button" href="#agent">Paste this for your agent</a>
-            </div>
-          </div>
 
-          <div id="agent" class="panel">
-            <div class="copy-row">
-              <span class="kicker">Paste This For Your Agent</span>
-              <button class="copy" type="button" data-copy="agent-code">Copy</button>
-            </div>
-            <pre><code id="agent-code">Install and use Veritas for this repo.
+            <div id="agent" class="panel">
+              <div class="copy-row">
+                <span class="kicker">Paste This For Your Agent</span>
+                <button class="copy" type="button" data-copy="agent-code">Copy</button>
+              </div>
+              <pre><code id="agent-code">Install and use Veritas for this repo.
 
 Run:
 cargo install veritas-cli --locked
@@ -469,16 +574,49 @@ veritas verify --changed --profile ci
 veritas score
 veritas repair-prompt
 
-Use the generated .veritas/ feedback, repair prompt, and evolution suite to add or improve tests before marking the change done.</code></pre>
+Use .veritas/ feedback, replay results, mutation survivors, and the evolution suite to improve tests before marking the change done.</code></pre>
+            </div>
+          </div>
+
+          <div class="panel proof-panel">
+            <div class="proof-topline">
+              <span>Example report</span>
+              <span>changed branch</span>
+            </div>
+            <div class="proof-score">72<span>confidence: needs stronger tests</span></div>
+            <ul class="terminal-list">
+              <li><b>mutation survived</b> refund_cents &lt;= available_cents -> refund_cents &lt; available_cents</li>
+              <li><b>fuzz seed saved</b> " 12.34 " reproduced parser drift</li>
+              <li><b>replay drift</b> AuthorizeRefund("support", 500) changed from allowed to denied</li>
+              <li><b>agent next step</b> promote assertion candidate, rerun, keep only if the mutant dies</li>
+            </ul>
+            <pre><code>veritas verify --changed --profile ci
+veritas evolve --dry-run
+veritas repair-prompt</code></pre>
           </div>
         </div>
       </div>
     </header>
 
+    <section id="languages">
+      <div class="wrap">
+        <h2>Tree-sitter language plugins, one verification core</h2>
+        <p class="subhead">Veritas keeps every language from reinventing the testing dashboard. Tree-sitter gives plugins stable symbols, line ranges, methods, and risk surfaces; the core turns those into the same reports, confidence score, AI feedback, and CI policy.</p>
+        <div class="grid">
+          <div class="card"><strong>Rust</strong><br>Workspace detection, public symbol discovery, proptest generation, cargo test, optional llvm-cov, AST-scoped mutation checks, replay, and generated regression artifacts.</div>
+          <div class="card"><strong>Go</strong><br>Module and package graph discovery, scoped package tests, fuzz harnesses, coverage, mutation campaigns, reverse dependency selection, corpus persistence, and replay.</div>
+          <div class="card"><strong>Python</strong><br>Tree-sitter symbol discovery, unittest execution, coverage.py integration when enabled, simple executable mutation checks, multi-argument replay, and the same artifact contract.</div>
+          <div class="card"><strong>Plugin contract</strong><br>Language plugins own discovery, generated artifacts, command budgets, and mutation operators while the core owns scoring, baselines, replay manifests, and AI repair prompts.</div>
+          <div class="card"><strong>Shared artifacts</strong><br><code>.veritas/report.json</code>, SARIF, JUnit, Markdown, assertion candidates, replay results, mutation campaigns, corpus entries, evolution suites, and repair prompts.</div>
+          <div class="card"><strong>Next languages</strong><br>Any Tree-sitter grammar can join the model by mapping symbols, line ranges, generated artifacts, command execution, and mutation/replay capabilities into the plugin API.</div>
+        </div>
+      </div>
+    </section>
+
     <section id="example">
       <div class="wrap">
         <h2>Examples that scale with the risk</h2>
-        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust and Go use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
+        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust, Go, and Python use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
         <div class="panel">
           <div class="copy-row">
             <span class="kicker">Real Evolution Demo</span>
@@ -548,7 +686,7 @@ veritas promote-regression --index 0</code></pre>
           <div class="scenario">
             <div class="level"><b>2. Properties and fuzzing</b>Inputs are messy, generated code is optimistic.</div>
             <div class="card">
-              <p class="mini-title">Invoice parser an AI just “simplified”</p>
+              <p class="mini-title">Invoice parser an AI just "simplified"</p>
               <pre><code>func ParseTotal(raw string) int {
     cents, _ := strconv.Atoi(raw)
     return cents
@@ -651,7 +789,7 @@ Next: add assertions for:
     <section id="testing">
       <div class="wrap">
         <h2>The testing hub for AI development</h2>
-        <p class="subhead">Rust and Go are the deepest production paths today, with Python proving the third-language plugin path. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
+        <p class="subhead">Rust and Go are the deepest production paths today, with Python now on the same plugin path. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
         <div class="grid">
           <div class="card"><strong>Mutation testing</strong><br>Domain-aware mutants for auth, money, parsing, serialization, permissions, booleans, comparisons, returns, and error paths.</div>
           <div class="card"><strong>Property testing</strong><br>Generated and discovered properties are scored for assertion strength, determinism, and no-panic coverage.</div>
@@ -660,6 +798,41 @@ Next: add assertions for:
           <div class="card"><strong>Differential replay</strong><br>Public API behavior cases make old/new semantic drift reviewable before acceptance.</div>
           <div class="card"><strong>Evolution suites</strong><br>Ranked next-generation candidates tell agents which assertions, seeds, replay checks, or budget fixes to try first.</div>
           <div class="card"><strong>Confidence score</strong><br><code>veritas score</code> rolls findings, survivors, corpus replay, properties, budgets, and generated tests into one readiness signal.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="scale">
+      <div class="wrap">
+        <h2>Built toward serious repos, not toy demos</h2>
+        <p class="subhead">The goal is a verification hub that an AI agent can use safely on a large monorepo: verify the risky changed surface first, keep commands inside budgets, explain what happened, and leave durable artifacts for CI and reviewers.</p>
+        <div class="split">
+          <div class="panel">
+            <p class="mini-title">Today</p>
+            <ul class="status-list">
+              <li><b>Changed-target selection:</b> git hunks map to Tree-sitter symbol ranges when possible.</li>
+              <li><b>Scoped execution:</b> Go package graphs and reverse dependencies keep tests focused; Rust workspaces scan package sources.</li>
+              <li><b>Safety budgets:</b> command timeouts, fuzz caps, mutation caps, CI profiles, policy gates, and optional Rust systemd CPU/memory limits.</li>
+              <li><b>Telemetry:</b> every report tracks discovery, generation, test, coverage, replay, synthesis, and total phase timings.</li>
+              <li><b>Confidence harness:</b> richer fixtures, seeded mutation examples, benchmark suites, and external canaries keep the tool honest.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <p class="mini-title">Performance goals</p>
+            <ul class="status-list">
+              <li><b>Scale horizontally:</b> plugin-safe schedulers for concurrent fuzz, mutation, replay, and package work.</li>
+              <li><b>Spend budget where risk is highest:</b> adaptive mutation sampling from changed code, semantic domains, and historical survivor data.</li>
+              <li><b>Cache what is stable:</b> reusable symbol graphs, package graphs, baselines, corpus entries, and coverage summaries.</li>
+              <li><b>Make agents accountable:</b> repair prompts should name the next test, the proof command, and the artifact that improved.</li>
+              <li><b>Stay generic:</b> every scale feature should land in the plugin contract so Rust, Go, Python, and future Tree-sitter languages benefit together.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="snapshot">
+          <div class="metric"><span>scope</span><b>changed first</b></div>
+          <div class="metric"><span>limits</span><b>budgeted</b></div>
+          <div class="metric"><span>reports</span><b>timed</b></div>
+          <div class="metric"><span>future</span><b>parallel</b></div>
         </div>
       </div>
     </section>
