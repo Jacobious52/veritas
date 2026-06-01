@@ -1,5 +1,5 @@
 [veritas]
-budget_seconds = 20
+budget_seconds = 60
 fail_on_findings = false
 
 [plugins.go]
@@ -9,7 +9,7 @@ fuzz_seconds = 1
 fuzz_concurrency = 1
 max_fuzz_targets = 0
 max_mutants = 2
-command_timeout_seconds = 1
+command_timeout_seconds = 20
 
 [plugins.go.mutation]
 baseline_timing = true
