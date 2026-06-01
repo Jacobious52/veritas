@@ -202,6 +202,16 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
         .expect("artifacts array")
         .iter()
         .any(|artifact| artifact["kind"] == "symbol_graph"));
+    let mutation = &report["quality"]["mutation"];
+    assert!(mutation["executed"].as_u64().unwrap_or_default() > 0);
+    assert!(mutation["killed"].as_u64().unwrap_or_default() > 0);
+    assert!(mutation["survived"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        report["quality"]["performance"]["total_ms"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
     let python_command = report["runs"]
         .as_array()
         .expect("runs array")
@@ -219,6 +229,23 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
         args.contains(&"unittest") || args.contains(&"pytest"),
         "Python plugin should run a known test runner, got {args:?}"
     );
+    let replay_result = report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .find(|artifact| artifact["kind"] == "replay_result")
+        .and_then(|artifact| artifact["contents"].as_str())
+        .and_then(|contents| serde_json::from_str::<Value>(contents).ok())
+        .expect("python replay result artifact");
+    assert!(replay_result["comparisons"]
+        .as_array()
+        .expect("comparisons array")
+        .iter()
+        .any(
+            |comparison| comparison["target_id"] == "python:invoice.py:authorize_refund"
+                && comparison["case"]["argument_tuple"] == true
+                && comparison["current"]["status"] == "observed"
+        ));
 }
 
 #[test]
@@ -347,6 +374,31 @@ fn review_ai_writes_changed_digest_and_agent_feedback() {
     assert!(digest.contains("crates/auth/src/lib.rs"));
     assert!(digest.contains("validate_token"));
     assert!(feedback.contains("veritas verify --changed --profile ci"));
+}
+
+#[test]
+fn repair_prompt_summarizes_saved_report_for_agents() {
+    let fixture = copy_fixture("sample-rust");
+    write_evolution_state(
+        fixture.path(),
+        "rust",
+        "rust:src/lib.rs:parse_invoice_total",
+        "src/lib.rs",
+        "parse_invoice_total",
+    );
+
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path()).arg("repair-prompt");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas AI repair prompt"))
+        .stdout(predicate::str::contains(
+            "mutation survived in rust function",
+        ))
+        .stdout(predicate::str::contains(
+            "veritas verify --changed --profile ci",
+        ))
+        .stdout(predicate::str::contains("veritas evolve --dry-run"));
 }
 
 #[test]

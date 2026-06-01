@@ -34,7 +34,7 @@ Useful artifacts:
 
 - `tests/veritas_generated/src_lib_rs_target.rs`: reviewable proptest scaffold when the crate supports `proptest`
 - `.veritas/mutations/*_campaign.json`: killed, lived, timed-out, not-viable, and not-covered mutants
-- `.veritas/assertions/*.json`: assertion candidates such as boundary values around `1_000_000`
+- `.veritas/assertions/*.json`: assertion candidates such as boundary values around `1_000_000`, tagged with semantic packs like `money-boundaries`
 - `.veritas/evolution/*_suite.json`: ranked next tests to add
 
 Agent action: promote a surviving boundary mutant into a handwritten assertion for `1_000_001`, rerun `veritas verify`, then keep the test only if mutation score and `veritas score` improve.
@@ -89,7 +89,7 @@ veritas verify --lang python --target sample_python/pricing.py
 Useful artifacts:
 
 - `.veritas/symbols/python_*.json`: Tree-sitter function/method symbols, signatures, line ranges, risks, and calls
-- `.veritas/mutations/python_*.json`: mutation target/operator manifest for future executable Python mutation workers
+- `.veritas/mutations/python_*.json` and `.veritas/mutations/python_campaign.json`: mutation target/operator manifests plus executed mutant outcomes
 - `.veritas/differential/python_result.json`: batched behavior replay observations or stable fallback fingerprints
 
 Agent action: use the symbol graph and mutation manifest to choose precise tests before editing production code. Python currently runs pytest when the project prefers pytest and it is installed; otherwise it falls back to `python3 -m unittest discover`.

@@ -24,6 +24,10 @@ From the Git repository:
 cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
 ```
 
+From GitHub Releases:
+
+Prebuilt binaries are published with release tags when available. Until your platform has a binary asset, use the crates.io or git install path above.
+
 For local development:
 
 ```bash
@@ -84,7 +88,7 @@ veritas cleanup
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
 - [Architecture](docs/architecture.md): workspace layout, plugin contract, artifacts, and planner model.
-- [Plugin SDK](docs/plugin-sdk.md): language plugin contract and the Python spike.
+- [Plugin SDK](docs/plugin-sdk.md): language plugin contract and the Python plugin path.
 - [Confidence Guide](docs/confidence.md): fixture tiers, seeded examples, and external canaries.
 - [Releasing](docs/releasing.md): crates.io publishing through GitHub Actions.
 
@@ -107,6 +111,7 @@ veritas report --format junit
 veritas score
 veritas accept-quality-baseline
 veritas replay-corpus
+veritas repair-prompt
 veritas explain <finding-id>
 veritas promote-repro
 veritas promote-repro --index 0
@@ -147,7 +152,7 @@ Go verification:
 
 - detects one or more `go.mod` roots
 - discovers exported functions and methods with Tree-sitter
-- supports Tree-sitter language plugins through a stable target/report contract; Rust and Go are production paths, and Python is the third-language SDK spike
+- supports Tree-sitter language plugins through a stable target/report contract; Rust and Go are production paths, and Python is the third-language plugin proving the SDK path
 - builds package graphs with `go list -json ./...`
 - runs scoped `go test` commands for selected packages plus configurable reverse dependencies
 - discovers handwritten and generated fuzz targets
@@ -175,6 +180,25 @@ CI behavior:
 - CI profile disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure on error severity by default
 - policy filters can select severity, language, artifact kind, and target risk
 - accepted finding IDs support new-findings-only CI behavior
+
+Consumer GitHub Actions starter:
+
+```yaml
+name: Veritas
+on: [pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install veritas-cli --locked
+      - run: veritas verify --changed --profile ci
+      - run: veritas repair-prompt --github-step-summary
+        if: always()
+```
 
 ## Config
 

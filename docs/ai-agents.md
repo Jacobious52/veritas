@@ -20,6 +20,7 @@ Before editing broadly:
 After making code or test changes:
   veritas verify --changed --profile ci
   veritas score
+  veritas repair-prompt
 
 If veritas reports findings:
   1. Use veritas explain <finding-id>.
@@ -48,12 +49,13 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 4. Edit code or tests.
 5. Run `veritas verify --changed --profile ci`.
 6. Run `veritas score` to summarize confidence, remaining risks, and next steps.
-7. Run `veritas replay-corpus --dry-run` to separate executable corpus seeds from guidance-only mutation repros.
-8. For each finding, run `veritas explain <finding-id>`.
-9. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
-10. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
-11. Inspect evolutionary candidates with `veritas evolve --dry-run`, then apply one selected candidate with `veritas evolve --index <n> --evaluate` or all safe selected candidates with `veritas evolve --all-selected --evaluate`.
-12. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
+7. Run `veritas repair-prompt` for the concise AI repair queue. In GitHub Actions, use `veritas repair-prompt --github-step-summary`.
+8. Run `veritas replay-corpus --dry-run` to separate executable corpus seeds from guidance-only mutation repros.
+9. For each finding, run `veritas explain <finding-id>`.
+10. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
+11. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
+12. Inspect evolutionary candidates with `veritas evolve --dry-run`, then apply one selected candidate with `veritas evolve --index <n> --evaluate` or all safe selected candidates with `veritas evolve --all-selected --evaluate`.
+13. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## Concrete Evolution Loop
 

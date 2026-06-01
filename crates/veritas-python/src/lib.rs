@@ -15,10 +15,10 @@ use tree_sitter::{Node, Parser};
 use veritas_core::config::PythonPluginConfig;
 use veritas_plugin_api::{
     ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
-    BehaviorReplayStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, PluginCapability, ProjectInfo, ReproCase,
-    RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
-    VerificationStrategy, VerificationTarget,
+    BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
+    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
+    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind,
+    TestRunResult, VerificationPlan, VerificationQuality, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -36,7 +36,21 @@ struct PythonFunction {
     params: Vec<String>,
     signature: String,
     line_range: LineRange,
+    start_byte: usize,
+    end_byte: usize,
     calls: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PythonMutationCandidate {
+    path: Utf8PathBuf,
+    function: String,
+    label: String,
+    from: String,
+    to: String,
+    start_byte: usize,
+    end_byte: usize,
+    line_range: LineRange,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,28 +219,100 @@ impl LanguagePlugin for PythonPlugin {
         } else {
             Vec::new()
         };
+        let mut commands = vec![command];
+        let mut failures = failures;
+        let mut status = status;
+        let mutation = if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == ArtifactKind::MutationCheck)
+        {
+            let mutation = run_python_mutations(root, artifacts, &self.config)?;
+            if mutation.status == RunStatus::Failed {
+                status = RunStatus::Failed;
+            }
+            commands.extend(mutation.commands);
+            failures.extend(mutation.failures);
+            mutation.quality
+        } else {
+            VerificationQuality::default()
+        };
 
         Ok(TestRunResult {
             language: "python".to_string(),
             status,
-            commands: vec![command],
+            commands,
             failures,
             duration_ms: start.elapsed().as_millis(),
-            quality: VerificationQuality::default(),
+            quality: mutation,
         })
     }
 
-    fn collect_coverage(&self, _root: &Path) -> Result<Option<CoverageReport>> {
-        Ok(Some(CoverageReport {
-            tool: "python coverage".to_string(),
-            summary: if self.config.coverage_enabled {
-                "not collected: Python coverage integration is not enabled in this spike"
-                    .to_string()
-            } else {
-                "not collected: disabled by Python plugin config".to_string()
-            },
-            files: vec![],
-        }))
+    fn collect_coverage(&self, root: &Path) -> Result<Option<CoverageReport>> {
+        if !self.config.coverage_enabled {
+            return Ok(Some(CoverageReport {
+                tool: "python coverage".to_string(),
+                summary: "not collected: disabled by Python plugin config".to_string(),
+                files: vec![],
+            }));
+        }
+        if !python_module_available(root, "coverage") {
+            return Ok(Some(CoverageReport {
+                tool: "python coverage.py".to_string(),
+                summary: "not collected: coverage.py is not available".to_string(),
+                files: vec![],
+            }));
+        }
+
+        let veritas_dir = root.join(".veritas");
+        fs::create_dir_all(&veritas_dir)
+            .with_context(|| format!("failed to create {}", veritas_dir.display()))?;
+        let data_file = ".veritas/.coverage";
+        let json_file = ".veritas/python_coverage.json";
+        let (_, test_args) = python_test_args(root);
+        let mut run_args = vec![
+            "-m".to_string(),
+            "coverage".to_string(),
+            "run".to_string(),
+            "--data-file".to_string(),
+            data_file.to_string(),
+        ];
+        run_args.extend(test_args);
+        let run = run_command(
+            root,
+            "python3",
+            run_args.iter().map(String::as_str),
+            self.config.command_timeout_seconds,
+        )?;
+        if run.status == RunStatus::Failed {
+            return Ok(Some(CoverageReport {
+                tool: "python coverage.py".to_string(),
+                summary: format!("not collected: {}", excerpt(&run.stderr)),
+                files: vec![],
+            }));
+        }
+        let json_args = [
+            "-m",
+            "coverage",
+            "json",
+            "--data-file",
+            data_file,
+            "-o",
+            json_file,
+        ];
+        let json = run_command(
+            root,
+            "python3",
+            json_args,
+            self.config.command_timeout_seconds,
+        )?;
+        if json.status == RunStatus::Failed {
+            return Ok(Some(CoverageReport {
+                tool: "python coverage.py".to_string(),
+                summary: format!("not collected: {}", excerpt(&json.stderr)),
+                files: vec![],
+            }));
+        }
+        Ok(Some(python_coverage_report(root, &root.join(json_file))?))
     }
 
     fn replay_behavior(
@@ -346,6 +432,8 @@ fn parse_python_function(
             start: node.start_position().row + 1,
             end: node.end_position().row + 1,
         },
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
         calls: python_calls_in_function(node, source)?,
     }))
 }
@@ -487,7 +575,7 @@ fn python_mutation_manifest_artifact(
         "target_id": target.id,
         "status": "planned",
         "targets": selected,
-        "next_step": "Python mutation execution is intentionally plugin-owned. Use this manifest as the stable target/operator contract for generated tests, AI repair loops, and future executable mutants.",
+        "next_step": "Python mutation execution uses this manifest as the stable target/operator contract for generated tests and AI repair loops.",
     }))?;
     Ok(GeneratedArtifact {
         id: format!("python-mutation-{}", safe_ident(&target.id)),
@@ -504,6 +592,385 @@ fn python_mutation_manifest_artifact(
     })
 }
 
+fn run_python_mutations(
+    root: &Path,
+    artifacts: &[GeneratedArtifact],
+    config: &PythonPluginConfig,
+) -> Result<TestRunResult> {
+    let start = Instant::now();
+    let functions = discover_functions(root)?;
+    let candidates = python_mutation_candidates(root, &functions, artifacts)?;
+    let mut quality = VerificationQuality::default();
+    quality.mutation.generated = candidates.len();
+    quality.mutation.effective_workers = 1;
+    let mut commands = Vec::new();
+    let mut failures = Vec::new();
+    let mut status = RunStatus::Passed;
+
+    for candidate in candidates.into_iter().take(8) {
+        let domain = python_mutation_domain(&candidate);
+        let operator = python_mutation_operator(&candidate.label);
+        record_mutation_generated(&mut quality.mutation.by_domain, &domain);
+        record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        quality.mutation.runnable += 1;
+        quality.mutation.executed += 1;
+        record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
+        record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
+        record_mutation_executed(&mut quality.mutation.by_domain, &domain);
+        record_mutation_executed(&mut quality.mutation.by_operator, &operator);
+
+        let path = root.join(&candidate.path);
+        let original = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut mutated = original.clone();
+        mutated.replace_range(candidate.start_byte..candidate.end_byte, &candidate.to);
+        fs::write(&path, mutated).with_context(|| {
+            format!(
+                "failed to write Python mutation {} in {}",
+                candidate.label,
+                path.display()
+            )
+        })?;
+        let (_, args) = python_test_args(root);
+        let command = run_command(
+            root,
+            "python3",
+            args.iter().map(String::as_str),
+            config.command_timeout_seconds.min(60),
+        );
+        fs::write(&path, original)
+            .with_context(|| format!("failed to restore {}", path.display()))?;
+        let command = command?;
+        let command_text = command_line(&command.program, &command.args);
+        let mutation_status = if command.status == RunStatus::Passed {
+            quality.mutation.survived += 1;
+            record_mutation_survived(&mut quality.mutation.by_domain, &domain);
+            record_mutation_survived(&mut quality.mutation.by_operator, &operator);
+            status = RunStatus::Failed;
+            failures.push(python_mutation_failure(
+                artifacts,
+                &candidate,
+                &command,
+                &command_text,
+            ));
+            MutationStatus::Lived
+        } else if python_mutation_not_viable(&command) {
+            quality.mutation.not_viable += 1;
+            record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
+            record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
+            MutationStatus::NotViable
+        } else {
+            quality.mutation.killed += 1;
+            record_mutation_killed(&mut quality.mutation.by_domain, &domain);
+            record_mutation_killed(&mut quality.mutation.by_operator, &operator);
+            MutationStatus::Killed
+        };
+        quality.mutation.records.push(python_mutation_record(
+            &candidate,
+            &domain,
+            &operator,
+            mutation_status,
+            Some(&command_text),
+            command.duration_ms,
+        ));
+        commands.push(command);
+    }
+    quality.mutation.skipped = quality
+        .mutation
+        .generated
+        .saturating_sub(quality.mutation.executed);
+    quality.mutation.score_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.executed)
+        .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
+        .checked_div(quality.mutation.killed + quality.mutation.survived)
+        .map(|score| score.try_into().unwrap_or(100));
+    quality.mutation.mutant_coverage_percent =
+        ((quality.mutation.killed + quality.mutation.survived) * 100)
+            .checked_div(quality.mutation.killed + quality.mutation.survived)
+            .map(|score| score.try_into().unwrap_or(100));
+    finalize_mutation_skips(&mut quality.mutation.by_domain);
+    finalize_mutation_skips(&mut quality.mutation.by_operator);
+
+    Ok(TestRunResult {
+        language: "python".to_string(),
+        status,
+        commands,
+        failures,
+        duration_ms: start.elapsed().as_millis(),
+        quality,
+    })
+}
+
+fn python_mutation_candidates(
+    root: &Path,
+    functions: &[PythonFunction],
+    artifacts: &[GeneratedArtifact],
+) -> Result<Vec<PythonMutationCandidate>> {
+    let mut candidates = Vec::new();
+    for function in functions {
+        if !python_function_selected_for_mutation(function, artifacts) {
+            continue;
+        }
+        let path = root.join(&function.path);
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        push_python_mutation(
+            &contents,
+            function,
+            "<=",
+            "<",
+            "boundary comparison mutation",
+            &mut candidates,
+        );
+        push_python_mutation(
+            &contents,
+            function,
+            " or ",
+            " and ",
+            "permission boolean connector mutation",
+            &mut candidates,
+        );
+        push_python_mutation(
+            &contents,
+            function,
+            " and ",
+            " or ",
+            "boolean connector mutation",
+            &mut candidates,
+        );
+        push_python_mutation(
+            &contents,
+            function,
+            "return 0, False",
+            "return 1, False",
+            "default tuple mutation",
+            &mut candidates,
+        );
+    }
+    candidates.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.start_byte.cmp(&right.start_byte))
+            .then(left.label.cmp(&right.label))
+    });
+    candidates.dedup_by(|left, right| {
+        left.path == right.path
+            && left.start_byte == right.start_byte
+            && left.end_byte == right.end_byte
+            && left.to == right.to
+    });
+    Ok(candidates)
+}
+
+fn push_python_mutation(
+    contents: &str,
+    function: &PythonFunction,
+    from: &str,
+    to: &str,
+    label: &str,
+    candidates: &mut Vec<PythonMutationCandidate>,
+) {
+    let Some(source) = contents.get(function.start_byte..function.end_byte) else {
+        return;
+    };
+    let Some(offset) = source.find(from) else {
+        return;
+    };
+    let start_byte = function.start_byte + offset;
+    candidates.push(PythonMutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: label.to_string(),
+        from: from.to_string(),
+        to: to.to_string(),
+        start_byte,
+        end_byte: start_byte + from.len(),
+        line_range: function.line_range.clone(),
+    });
+}
+
+fn python_function_selected_for_mutation(
+    function: &PythonFunction,
+    artifacts: &[GeneratedArtifact],
+) -> bool {
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::MutationCheck)
+        .any(|artifact| {
+            artifact.target_id == "python:project"
+                || artifact.target_id == format!("python:{}", function.path)
+                || artifact.target_id == format!("python:{}:{}", function.path, function.symbol)
+        })
+}
+
+fn python_mutation_failure(
+    artifacts: &[GeneratedArtifact],
+    candidate: &PythonMutationCandidate,
+    command: &CommandRecord,
+    command_text: &str,
+) -> Failure {
+    Failure {
+        id: None,
+        message: format!(
+            "mutation survived in Python function `{}`: {}",
+            candidate.function, candidate.label
+        ),
+        severity: FailureSeverity::Warning,
+        target_id: Some(format!("python:{}:{}", candidate.path, candidate.function)),
+        artifact_id: artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ArtifactKind::MutationCheck)
+            .map(|artifact| artifact.id.clone()),
+        command: command_text.to_string(),
+        stdout_excerpt: excerpt(&command.stdout),
+        stderr_excerpt: excerpt(&command.stderr),
+        repro: Some(ReproCase {
+            command: format!(
+                "replace `{}` with `{}` in {} and run {}",
+                candidate.from, candidate.to, candidate.path, command_text
+            ),
+            input: None,
+            path: Some(candidate.path.clone()),
+        }),
+    }
+}
+
+fn python_mutation_record(
+    candidate: &PythonMutationCandidate,
+    domain: &str,
+    operator: &str,
+    status: MutationStatus,
+    command: Option<&str>,
+    duration_ms: u128,
+) -> MutationRecord {
+    MutationRecord {
+        id: format!(
+            "python:{}:{}:{}:{}",
+            candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
+        ),
+        language: "python".to_string(),
+        path: candidate.path.clone(),
+        symbol: candidate.function.clone(),
+        operator: operator.to_string(),
+        domain: domain.to_string(),
+        status,
+        line_range: Some(candidate.line_range.clone()),
+        command: command.map(ToString::to_string),
+        duration_ms,
+    }
+}
+
+fn python_mutation_domain(candidate: &PythonMutationCandidate) -> String {
+    let value = format!("{} {}", candidate.function, candidate.label).to_ascii_lowercase();
+    if value.contains("auth") || value.contains("permission") || value.contains("refund") {
+        "auth_permission".to_string()
+    } else if value.contains("invoice") || value.contains("money") || value.contains("cents") {
+        "money".to_string()
+    } else if value.contains("parse") {
+        "parsing".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+fn python_mutation_operator(label: &str) -> String {
+    let label = label.to_ascii_lowercase();
+    if label.contains("comparison") {
+        "comparison".to_string()
+    } else if label.contains("boolean") {
+        "boolean".to_string()
+    } else if label.contains("default") {
+        "default".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+fn record_mutation_generated(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().generated += 1;
+}
+
+fn record_mutation_runnable(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().runnable += 1;
+}
+
+fn record_mutation_executed(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().executed += 1;
+}
+
+fn record_mutation_killed(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().killed += 1;
+}
+
+fn record_mutation_survived(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().survived += 1;
+}
+
+fn record_mutation_not_viable(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
+    metrics.entry(key.to_string()).or_default().not_viable += 1;
+}
+
+fn finalize_mutation_skips(metrics: &mut BTreeMap<String, MutationAttribution>) {
+    for metric in metrics.values_mut() {
+        metric.skipped = metric.generated.saturating_sub(metric.executed);
+    }
+}
+
+fn python_mutation_not_viable(command: &CommandRecord) -> bool {
+    let output = format!("{}\n{}", command.stdout, command.stderr).to_ascii_lowercase();
+    output.contains("syntaxerror")
+        || output.contains("indentationerror")
+        || output.contains("nameerror")
+        || output.contains("typeerror")
+}
+
+fn python_coverage_report(root: &Path, path: &Path) -> Result<CoverageReport> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let total = value["totals"]["percent_covered_display"]
+        .as_str()
+        .map(ToString::to_string)
+        .or_else(|| {
+            value["totals"]["percent_covered"]
+                .as_f64()
+                .map(|percent| format!("{percent:.1}"))
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let files = value["files"]
+        .as_object()
+        .into_iter()
+        .flat_map(|files| files.iter())
+        .map(|(path, file)| CoverageFile {
+            path: Utf8PathBuf::from(path),
+            line_coverage_percent: file["summary"]["percent_covered"]
+                .as_f64()
+                .map(|percent| percent.round().clamp(0.0, 100.0) as u8),
+            uncovered_ranges: file["missing_lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|line| line.as_u64())
+                .map(|line| line.to_string())
+                .collect(),
+        })
+        .collect();
+    Ok(CoverageReport {
+        tool: "python coverage.py".to_string(),
+        summary: format!("line coverage {total}% ({})", relative_display(root, path)),
+        files,
+    })
+}
+
+fn relative_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
 fn replay_python_function(
     root: &Path,
     function: &PythonFunction,
@@ -515,9 +982,9 @@ fn replay_python_function(
             "method replay requires receiver construction",
         ));
     }
-    if function.params.len() != 1 || case.inputs.is_empty() {
+    if function.params.is_empty() || case.inputs.is_empty() {
         return Ok(unsupported_python_replay(
-            "executable replay currently supports single-argument functions with seeded inputs",
+            "executable replay requires at least one supported argument with seeded inputs",
         ));
     }
 
@@ -582,11 +1049,11 @@ fn replay_python_function_batch(
         );
         return Ok(observations);
     }
-    if function.params.len() != 1 {
+    if function.params.is_empty() {
         insert_unsupported_python_replay(
             &mut observations,
             cases,
-            "executable replay currently supports single-argument functions",
+            "executable replay requires at least one supported argument",
         );
         return Ok(observations);
     }
@@ -663,10 +1130,18 @@ spec = importlib.util.spec_from_file_location("veritas_replay_target", module_pa
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 target = getattr(module, {name:?})
+arity = {arity}
+
+def call_args(value):
+    if arity == 1:
+        return [value]
+    if isinstance(value, list) and len(value) == arity:
+        return value
+    raise ValueError("replay input does not match target arity")
 
 for value in json.loads({inputs:?}):
     try:
-        output = repr(target(value))
+        output = repr(target(*call_args(value)))
         status = "observed"
     except BaseException as exc:
         output = repr(exc)
@@ -675,6 +1150,7 @@ for value in json.loads({inputs:?}):
 "#,
         path = function.path.as_str(),
         name = function.name,
+        arity = function.params.len(),
         inputs = inputs
     ))
 }
@@ -703,11 +1179,19 @@ spec = importlib.util.spec_from_file_location("veritas_replay_target", module_pa
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 target = getattr(module, {name:?})
+arity = {arity}
+
+def call_args(value):
+    if arity == 1:
+        return [value]
+    if isinstance(value, list) and len(value) == arity:
+        return value
+    raise ValueError("replay input does not match target arity")
 
 for case in json.loads({cases:?}):
     for value in case["inputs"]:
         try:
-            output = repr(target(value))
+            output = repr(target(*call_args(value)))
             status = "observed"
         except BaseException as exc:
             output = repr(exc)
@@ -716,6 +1200,7 @@ for case in json.loads({cases:?}):
 "#,
         path = function.path.as_str(),
         name = function.name,
+        arity = function.params.len(),
         cases = cases
     ))
 }

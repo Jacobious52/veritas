@@ -448,9 +448,9 @@ fn replay_rust_function(
             "Rust executable replay is limited to parser and money-style free functions",
         ));
     }
-    if function.params.len() != 1 {
+    if function.params.is_empty() {
         return Ok(unsupported_rust_replay(
-            "executable replay currently supports single-argument functions",
+            "executable replay requires at least one supported argument",
         ));
     }
     let Some(contents) = render_rust_replay_test(function, case) else {
@@ -541,18 +541,15 @@ fn replay_rust_function_batch(
         );
         return Ok(observations);
     }
-    if function.params.len() != 1 {
+    if function.params.is_empty() {
         insert_unsupported_rust_replay(
             &mut observations,
             cases,
-            "executable replay currently supports single-argument functions",
+            "executable replay requires at least one supported argument",
         );
         return Ok(observations);
     }
 
-    let Some(param) = function.params.first() else {
-        return Ok(observations);
-    };
     let runnable = cases
         .iter()
         .filter(|case| {
@@ -560,7 +557,7 @@ fn replay_rust_function_batch(
                 && case
                     .inputs
                     .iter()
-                    .all(|input| rust_replay_arg(param, input).is_some());
+                    .all(|input| rust_replay_args(&function.params, input).is_some());
             if !can_render {
                 observations.insert(
                     case.name.clone(),
@@ -629,6 +626,10 @@ fn rust_replay_is_worth_compiling(function: &RustFunction) -> bool {
         || lowered.contains("total")
         || lowered.contains("money")
         || lowered.contains("price")
+        || lowered.contains("cents")
+        || lowered.contains("discount")
+        || lowered.contains("refund")
+        || lowered.contains("auth")
 }
 
 fn render_rust_replay_test(function: &RustFunction, case: &BehaviorReplayCase) -> Option<String> {
@@ -638,9 +639,9 @@ fn render_rust_replay_test(function: &RustFunction, case: &BehaviorReplayCase) -
     let mut observations = String::new();
     for input in &case.inputs {
         let label = replay_input_label(input);
-        let arg = rust_replay_arg(function.params.first()?, input)?;
+        let args = rust_replay_args(&function.params, input)?;
         observations.push_str(&format!(
-            "    emit({}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({arg}))));\n",
+            "    emit({}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({args}))));\n",
             rust_string_literal(&label),
             function.crate_name,
             function.name
@@ -660,16 +661,10 @@ fn render_rust_replay_batch_test(function: &RustFunction, cases: &[&BehaviorRepl
         let mut observations = String::new();
         for input in &case.inputs {
             let label = replay_input_label(input);
-            let arg = rust_replay_arg(
-                function
-                    .params
-                    .first()
-                    .expect("batch replay requires one parameter"),
-                input,
-            )
-            .expect("batch replay only renders supported inputs");
+            let args = rust_replay_args(&function.params, input)
+                .expect("batch replay only renders supported inputs");
             observations.push_str(&format!(
-                "    emit({}, {}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({arg}))));\n",
+                "    emit({}, {}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({args}))));\n",
                 rust_string_literal(&case.name),
                 rust_string_literal(&label),
                 function.crate_name,
@@ -684,6 +679,26 @@ fn render_rust_replay_batch_test(function: &RustFunction, cases: &[&BehaviorRepl
     format!(
         "fn emit(case: &str, input: &str, observed: std::thread::Result<String>) {{\n    match observed {{\n        Ok(output) => println!(\"__VERITAS_REPLAY_CASE__{{}}\\t{{}}\\tobserved\\t{{}}\", case, input.escape_debug(), output.escape_debug()),\n        Err(_) => println!(\"__VERITAS_REPLAY_CASE__{{}}\\t{{}}\\tpanic\\tpanic\", case, input.escape_debug()),\n    }}\n}}\n\n{tests}"
     )
+}
+
+fn rust_replay_args(params: &[RustParam], input: &serde_json::Value) -> Option<String> {
+    replay_argument_values(params.len(), input)?
+        .into_iter()
+        .zip(params.iter())
+        .map(|(input, param)| rust_replay_arg(param, input))
+        .collect::<Option<Vec<_>>>()
+        .map(|args| args.join(", "))
+}
+
+fn replay_argument_values(
+    arity: usize,
+    input: &serde_json::Value,
+) -> Option<Vec<&serde_json::Value>> {
+    if arity == 1 {
+        return Some(vec![input]);
+    }
+    let values = input.as_array()?;
+    (values.len() == arity).then(|| values.iter().collect())
 }
 
 fn rust_replay_arg(param: &RustParam, input: &serde_json::Value) -> Option<String> {

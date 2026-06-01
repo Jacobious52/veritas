@@ -123,10 +123,12 @@ Python:
 
 - discovers production functions and methods with Tree-sitter
 - records class owners, line ranges, signatures, and call hints
-- runs `python3 -m unittest discover`
-- executes differential replay for single-argument free functions
+- runs pytest when the project prefers pytest and the module is installed, otherwise falls back to `python3 -m unittest discover`
+- collects coverage.py summaries when enabled and available
+- executes simple mutation checks and reports killed/surviving Python mutants
+- executes batched differential replay for supported primitive free-function arguments
 
-All language plugins write symbol graph artifacts for AI and tooling consumption. Rust and Go include mutation and richer generated-test paths today; Python is the third-language SDK spike that proves the core contract is not Rust/Go-specific.
+All language plugins write symbol graph artifacts for AI and tooling consumption. Rust and Go include the deepest generated-test paths today; Python proves the core contract can support additional Tree-sitter plugins without Rust/Go-specific assumptions.
 
 Observation artifacts include `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/mutations/*_campaign.json` for per-mutant campaign records, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md`, `*_candidates.json`, and `*_suite.json` for the next AI candidate-generation loop. Evolution suites are plugin-neutral ranked work queues: Rust, Go, and future Tree-sitter plugins feed the same candidate model with mutation survivors, uncovered mutants, assertion candidates, corpus seeds, replay opportunities, and budget risks. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 

@@ -47,15 +47,16 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 - line range
 - direct call names when available
 
-## Third-Language Spike
+## Third-Language Plugin Path
 
-`veritas-python` is the SDK spike. It currently supports:
+`veritas-python` is the third language plugin and the reference path for future SDK adopters. It currently supports:
 
 - Python project detection from `pyproject.toml`, `setup.py`, or `.py` files
 - Tree-sitter function and method discovery
 - symbol graph artifacts
 - pytest detection with fallback to `python3 -m unittest discover`
-- mutation target/operator manifests
-- batched executable differential replay for single-argument free functions
+- coverage.py summaries when coverage is enabled and coverage.py is installed
+- executable mutation checks for simple Python AST-adjacent operators
+- batched executable differential replay for supported primitive free-function arguments
 
 This gives future plugins a concrete path without requiring Rust/Go-specific assumptions in core.

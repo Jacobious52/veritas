@@ -335,6 +335,8 @@ pub struct BehaviorReplayCase {
     pub name: String,
     pub inputs: Vec<serde_json::Value>,
     pub assertion: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub argument_tuple: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,6 +364,8 @@ pub struct AssertionCandidate {
     pub finding_id: Option<String>,
     pub source: AssertionSource,
     pub domain: AssertionDomain,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_packs: Vec<String>,
     pub title: String,
     pub seed_inputs: Vec<String>,
     pub expected_behavior: String,
@@ -502,6 +506,8 @@ pub struct VerificationQuality {
     pub budget: BudgetMetrics,
     #[serde(default)]
     pub evolution: EvolutionMetrics,
+    #[serde(default)]
+    pub performance: PerformanceMetrics,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,6 +589,10 @@ fn is_zero_u128(value: &u128) -> bool {
     *value == 0
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationStatus {
@@ -654,6 +664,24 @@ pub struct EvolutionMetrics {
     pub average_fitness_percent: Option<u8>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PerformanceMetrics {
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub discovery_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub generation_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub test_execution_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub coverage_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub replay_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub artifact_synthesis_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub total_ms: u128,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EvolutionSuite {
     pub version: u8,
@@ -678,6 +706,8 @@ pub struct EvolutionCandidateRecord {
     pub source_finding_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_packs: Vec<String>,
     pub fitness: EvolutionFitness,
     pub proposed_action: String,
     pub keep_if: String,

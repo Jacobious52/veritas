@@ -97,6 +97,8 @@ build_tags = []
 
 Use higher caps only for an explicit local investigation.
 
+Reports include phase timings for discovery, generation, test execution, coverage, replay, artifact synthesis, and total runtime. Use those numbers before raising budgets: if coverage dominates, keep coverage disabled in CI; if replay dominates, narrow targets; if mutation dominates, lower `max_mutants`, use operator filters, or raise workers only on hosts that can absorb isolated project copies.
+
 Set `policy.min_mutation_score`, `policy.min_mutation_efficacy`, and `policy.min_mutant_coverage` when you want Gremlins-style mutation quality gates. These thresholds are enforced after the report is scored, and they are language-neutral so Rust, Go, and future plugins share the same CI contract.
 
 The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, and `negation` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests.

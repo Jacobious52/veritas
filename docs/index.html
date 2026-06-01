@@ -437,6 +437,7 @@
         <div class="language-strip" aria-label="Language and plugin support">
           <span>Rust plugin today</span>
           <span>Go plugin today</span>
+          <span>Python plugin path</span>
           <span>Tree-sitter symbols</span>
           <span>Plugin API for more languages</span>
         </div>
@@ -466,8 +467,9 @@ cargo install veritas-cli --locked
 veritas review-ai
 veritas verify --changed --profile ci
 veritas score
+veritas repair-prompt
 
-Use the generated .veritas/ feedback to add or improve tests before marking the change done.</code></pre>
+Use the generated .veritas/ feedback, repair prompt, and evolution suite to add or improve tests before marking the change done.</code></pre>
           </div>
         </div>
       </div>
@@ -649,7 +651,7 @@ Next: add assertions for:
     <section id="testing">
       <div class="wrap">
         <h2>The testing hub for AI development</h2>
-        <p class="subhead">Rust and Go work today. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
+        <p class="subhead">Rust and Go are the deepest production paths today, with Python proving the third-language plugin path. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
         <div class="grid">
           <div class="card"><strong>Mutation testing</strong><br>Domain-aware mutants for auth, money, parsing, serialization, permissions, booleans, comparisons, returns, and error paths.</div>
           <div class="card"><strong>Property testing</strong><br>Generated and discovered properties are scored for assertion strength, determinism, and no-panic coverage.</div>

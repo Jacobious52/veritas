@@ -635,9 +635,9 @@ fn replay_go_function(
             "method replay requires receiver construction",
         ));
     }
-    if function.params.len() != 1 {
+    if function.params.is_empty() {
         return Ok(unsupported_go_replay(
-            "executable replay currently supports single-argument functions",
+            "executable replay requires at least one supported argument",
         ));
     }
     let Some(contents) = render_go_replay_test(function, case) else {
@@ -728,18 +728,15 @@ fn replay_go_function_batch(
         );
         return Ok(observations);
     }
-    if function.params.len() != 1 {
+    if function.params.is_empty() {
         insert_unsupported_go_replay(
             &mut observations,
             cases,
-            "executable replay currently supports single-argument functions",
+            "executable replay requires at least one supported argument",
         );
         return Ok(observations);
     }
 
-    let Some(param) = function.params.first() else {
-        return Ok(observations);
-    };
     let runnable = cases
         .iter()
         .filter(|case| {
@@ -747,7 +744,7 @@ fn replay_go_function_batch(
                 && case
                     .inputs
                     .iter()
-                    .all(|input| go_replay_arg(param, input).is_some());
+                    .all(|input| go_replay_args(&function.params, input).is_some());
             if !can_render {
                 observations.insert(
                     case.name.clone(),
@@ -823,9 +820,9 @@ fn render_go_replay_test(function: &GoFunction, case: &BehaviorReplayCase) -> Op
     let mut observations = String::new();
     for input in &case.inputs {
         let label = replay_input_label(input);
-        let arg = go_replay_arg(function.params.first()?, input)?;
+        let args = go_replay_args(&function.params, input)?;
         observations.push_str(&format!(
-            "\tobserve({}, func() string {{ return fmt.Sprint({}({arg})) }})\n",
+            "\tobserve({}, func() string {{ return fmt.Sprint({}({args})) }})\n",
             go_string_literal(&label),
             function.name
         ));
@@ -844,16 +841,10 @@ fn render_go_replay_batch_test(function: &GoFunction, cases: &[&BehaviorReplayCa
         let mut observations = String::new();
         for input in &case.inputs {
             let label = replay_input_label(input);
-            let arg = go_replay_arg(
-                function
-                    .params
-                    .first()
-                    .expect("batch replay requires one parameter"),
-                input,
-            )
-            .expect("batch replay only renders supported inputs");
+            let args = go_replay_args(&function.params, input)
+                .expect("batch replay only renders supported inputs");
             observations.push_str(&format!(
-                "\tobserve({}, {}, func() string {{ return fmt.Sprint({}({arg})) }})\n",
+                "\tobserve({}, {}, func() string {{ return fmt.Sprint({}({args})) }})\n",
                 go_string_literal(&case.name),
                 go_string_literal(&label),
                 function.name
@@ -868,6 +859,26 @@ fn render_go_replay_batch_test(function: &GoFunction, cases: &[&BehaviorReplayCa
         "package {}\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n)\n\n{tests}",
         function.package_name
     )
+}
+
+fn go_replay_args(params: &[GoParam], input: &serde_json::Value) -> Option<String> {
+    replay_argument_values(params.len(), input)?
+        .into_iter()
+        .zip(params.iter())
+        .map(|(input, param)| go_replay_arg(param, input))
+        .collect::<Option<Vec<_>>>()
+        .map(|args| args.join(", "))
+}
+
+fn replay_argument_values(
+    arity: usize,
+    input: &serde_json::Value,
+) -> Option<Vec<&serde_json::Value>> {
+    if arity == 1 {
+        return Some(vec![input]);
+    }
+    let values = input.as_array()?;
+    (values.len() == arity).then(|| values.iter().collect())
 }
 
 fn go_replay_arg(param: &GoParam, input: &serde_json::Value) -> Option<String> {

@@ -102,6 +102,18 @@ pub fn render_markdown(report: &VerificationReport) -> String {
         || report.quality.evolution.candidates > 0
     {
         out.push_str("## Quality Metrics\n\n");
+        if report.quality.performance.total_ms > 0 {
+            out.push_str(&format!(
+                "- Performance: total `{}` ms (discovery `{}`, generation `{}`, tests `{}`, coverage `{}`, replay `{}`, synthesis `{}`)\n",
+                report.quality.performance.total_ms,
+                report.quality.performance.discovery_ms,
+                report.quality.performance.generation_ms,
+                report.quality.performance.test_execution_ms,
+                report.quality.performance.coverage_ms,
+                report.quality.performance.replay_ms,
+                report.quality.performance.artifact_synthesis_ms,
+            ));
+        }
         if report.quality.mutation.generated > 0 {
             out.push_str(&format!(
                 "- Mutation score: `{}` (generated: `{}`, runnable: `{}`, executed: `{}`, killed: `{}`, survived: `{}`, not covered: `{}`, timed out: `{}`, not viable: `{}`, skipped: `{}`)\n",

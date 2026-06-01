@@ -134,7 +134,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
-- Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, mutation manifests, and batched single-argument free-function replay.
+- Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
 - Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.

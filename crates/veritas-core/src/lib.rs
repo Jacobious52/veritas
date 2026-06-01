@@ -22,9 +22,10 @@ use veritas_plugin_api::{
     EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness, EvolutionGeneration,
     EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta, EvolutionStrategy,
     EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange,
-    MutationAttribution, MutationStatus, ProjectInfo, QualityBaseline, QualityDelta, ReproCase,
-    RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationPlanner,
-    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
+    MutationAttribution, MutationStatus, PerformanceMetrics, ProjectInfo, QualityBaseline,
+    QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan,
+    VerificationPlanner, VerificationQuality, VerificationReport, VerificationStrategy,
+    VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -650,12 +651,18 @@ impl CoreEngine {
         target_path: Option<&Path>,
         requested_strategies: Vec<VerificationStrategy>,
     ) -> Result<VerificationReport> {
+        let total_start = Instant::now();
+        let mut performance = PerformanceMetrics::default();
         let budget = RunBudget::new(self.config.budget_seconds);
         let plugin = self.registry.get(language)?;
+        let discovery_start = Instant::now();
         let project = plugin.detect_project(root)?;
         let target = self.resolve_target(root, plugin.as_ref(), language, target_path)?;
         let all_targets = plugin.discover_targets(root)?;
         let report_targets = expand_report_targets(&target, &all_targets);
+        performance.discovery_ms = discovery_start.elapsed().as_millis();
+
+        let generation_start = Instant::now();
         let mut plan = self.planner.plan(&project, &target)?;
         if !requested_strategies.is_empty() {
             plan.strategies = requested_strategies;
@@ -665,17 +672,23 @@ impl CoreEngine {
         if plan.write_generated_tests {
             write_artifacts(root, &mut artifacts)?;
         }
+        performance.generation_ms = generation_start.elapsed().as_millis();
 
+        let test_start = Instant::now();
         let run = if plan.run_existing_tests || plan.run_generated_tests {
             plugin.run_tests(root, &artifacts, &plan)?
         } else {
             skipped_run(language)
         };
+        performance.test_execution_ms = test_start.elapsed().as_millis();
+
+        let coverage_start = Instant::now();
         let coverage = if budget.nearly_spent() {
             vec![budget_skipped_coverage(language)]
         } else {
             plugin.collect_coverage(root)?.into_iter().collect()
         };
+        performance.coverage_ms = coverage_start.elapsed().as_millis();
         let findings = run.failures.clone();
 
         let mut report = VerificationReport {
@@ -689,6 +702,7 @@ impl CoreEngine {
             quality: VerificationQuality::default(),
             suggested_next_steps: suggested_next_steps(language),
         };
+        let replay_start = Instant::now();
         assign_finding_ids(&mut report);
         self.add_observation_artifacts(
             root,
@@ -700,8 +714,13 @@ impl CoreEngine {
                 .iter()
                 .any(|strategy| matches!(strategy, VerificationStrategy::DifferentialTests)),
         )?;
+        performance.replay_ms = replay_start.elapsed().as_millis();
+        let synthesis_start = Instant::now();
         assign_finding_ids(&mut report);
         refresh_report_quality(&mut report);
+        performance.artifact_synthesis_ms = synthesis_start.elapsed().as_millis();
+        performance.total_ms = total_start.elapsed().as_millis();
+        report.quality.performance = performance;
         Ok(report)
     }
 
@@ -2316,6 +2335,10 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
         .as_deref()
         .unwrap_or_default()
         .to_ascii_lowercase();
+    let param_kinds = replay_param_kinds(language, &input_signature);
+    if param_kinds.len() > 1 {
+        return multi_argument_replay_cases(language, &lowered_symbol, &param_kinds);
+    }
     let has_string_input = signature_contains_string_input(language, &input_signature);
 
     if has_string_input {
@@ -2385,6 +2408,143 @@ fn replay_cases_for_target(language: &str, target: &VerificationTarget) -> Vec<s
         }));
     }
     cases
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplayParamKind {
+    String,
+    Numeric,
+    Bool,
+    Other,
+}
+
+fn multi_argument_replay_cases(
+    language: &str,
+    lowered_symbol: &str,
+    param_kinds: &[ReplayParamKind],
+) -> Vec<serde_json::Value> {
+    if param_kinds.contains(&ReplayParamKind::Other) {
+        return vec![serde_json::json!({
+            "name": "targeted_behavior",
+            "inputs": [],
+            "argument_tuple": true,
+            "assertion": format!("add a promoted {language} assertion for this public API before accepting behavior changes")
+        })];
+    }
+
+    let mut cases = vec![
+        serde_json::json!({
+            "name": "argument_zero_tuple",
+            "inputs": [replay_seed_tuple(param_kinds, "", 0, false)],
+            "argument_tuple": true,
+            "assertion": "replay old/new behavior for the zero-value argument tuple"
+        }),
+        serde_json::json!({
+            "name": "argument_one_tuple",
+            "inputs": [replay_seed_tuple(param_kinds, "veritas-seed", 1, true)],
+            "argument_tuple": true,
+            "assertion": "replay old/new behavior for the one-value argument tuple"
+        }),
+    ];
+
+    if param_kinds.contains(&ReplayParamKind::String) {
+        cases.push(serde_json::json!({
+            "name": "argument_trimmed_tuple",
+            "inputs": [replay_seed_tuple(param_kinds, "  veritas-seed  ", 1, true)],
+            "argument_tuple": true,
+            "assertion": "replay old/new behavior when one argument needs whitespace normalization"
+        }));
+    }
+
+    if lowered_symbol.contains("auth")
+        || lowered_symbol.contains("permission")
+        || lowered_symbol.contains("refund")
+    {
+        cases.push(serde_json::json!({
+            "name": "permission_boundary",
+            "inputs": [
+                replay_seed_tuple(param_kinds, "admin", 50000, true),
+                replay_seed_tuple(param_kinds, "support", 25000, true),
+                replay_seed_tuple(param_kinds, "guest", 1, false)
+            ],
+            "argument_tuple": true,
+            "assertion": "assert privileged, delegated, and denied argument tuples keep their old/new behavior"
+        }));
+    }
+
+    if lowered_symbol.contains("parse")
+        || lowered_symbol.contains("invoice")
+        || lowered_symbol.contains("total")
+    {
+        cases.push(serde_json::json!({
+            "name": "parser_invalid_tuple",
+            "inputs": [
+                replay_seed_tuple(param_kinds, "", 0, false),
+                replay_seed_tuple(param_kinds, "total=0", 0, false),
+                replay_seed_tuple(param_kinds, "not-a-total", 1, true)
+            ],
+            "argument_tuple": true,
+            "assertion": "assert parser invalid-input argument tuples are intentional before accepting the replay"
+        }));
+    }
+
+    cases
+}
+
+fn replay_seed_tuple(
+    kinds: &[ReplayParamKind],
+    string_seed: &str,
+    numeric_seed: i64,
+    bool_seed: bool,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        kinds
+            .iter()
+            .map(|kind| match kind {
+                ReplayParamKind::String => serde_json::json!(string_seed),
+                ReplayParamKind::Numeric => serde_json::json!(numeric_seed),
+                ReplayParamKind::Bool => serde_json::json!(bool_seed),
+                ReplayParamKind::Other => serde_json::Value::Null,
+            })
+            .collect(),
+    )
+}
+
+fn replay_param_kinds(language: &str, input_signature: &str) -> Vec<ReplayParamKind> {
+    split_signature_params(input_signature)
+        .into_iter()
+        .filter(|param| !param.trim().is_empty())
+        .map(|param| replay_param_kind(language, param))
+        .collect()
+}
+
+fn split_signature_params(input_signature: &str) -> Vec<&str> {
+    input_signature
+        .split(',')
+        .map(str::trim)
+        .filter(|param| !param.is_empty())
+        .collect()
+}
+
+fn replay_param_kind(language: &str, param: &str) -> ReplayParamKind {
+    let type_hint = match language {
+        "rust" | "python" => param
+            .split_once(':')
+            .map(|(_, type_hint)| type_hint)
+            .unwrap_or(param),
+        "go" => param.split_whitespace().last().unwrap_or(param),
+        _ => param,
+    };
+    let type_hint = type_hint.trim();
+    if type_hint.contains("&str") || type_hint.contains("String") || type_hint == "str" {
+        ReplayParamKind::String
+    } else if type_hint == "bool" {
+        ReplayParamKind::Bool
+    } else if signature_contains_numeric(type_hint) {
+        ReplayParamKind::Numeric
+    } else {
+        ReplayParamKind::Other
+    }
 }
 
 fn signature_contains_string_input(language: &str, signature: &str) -> bool {
@@ -2571,11 +2731,69 @@ fn assertion_candidate(language: &str, finding: &Failure) -> AssertionCandidate 
         finding_id: finding.id.clone(),
         source,
         domain,
+        semantic_packs: semantic_packs_for_domain(&domain),
         title: finding.message.clone(),
         seed_inputs,
         expected_behavior: expected_behavior_text(language, finding, &domain),
         replay_command,
     }
+}
+
+fn semantic_packs_for_domain(domain: &AssertionDomain) -> Vec<String> {
+    match domain {
+        AssertionDomain::AuthPermission => vec![
+            "auth-permission-matrix".to_string(),
+            "principal-boundaries".to_string(),
+        ],
+        AssertionDomain::Money => vec![
+            "money-boundaries".to_string(),
+            "rounding-and-limits".to_string(),
+        ],
+        AssertionDomain::Parsing => vec![
+            "parser-valid-invalid".to_string(),
+            "normalization-boundaries".to_string(),
+        ],
+        AssertionDomain::Serialization => vec![
+            "serialization-roundtrip".to_string(),
+            "missing-field-compatibility".to_string(),
+        ],
+        AssertionDomain::ErrorHandling => vec![
+            "error-paths".to_string(),
+            "empty-and-null-inputs".to_string(),
+        ],
+        AssertionDomain::Boundary => vec![
+            "boundary-neighbors".to_string(),
+            "comparison-edges".to_string(),
+        ],
+        AssertionDomain::General => vec!["general-regression".to_string()],
+    }
+}
+
+fn semantic_packs_for_domain_name(domain: &str) -> Vec<String> {
+    match domain.replace(['_', '-'], " ").as_str() {
+        "auth permission" | "auth" | "permission" => {
+            semantic_packs_for_domain(&AssertionDomain::AuthPermission)
+        }
+        "money" => semantic_packs_for_domain(&AssertionDomain::Money),
+        "parsing" | "parser" => semantic_packs_for_domain(&AssertionDomain::Parsing),
+        "serialization" => semantic_packs_for_domain(&AssertionDomain::Serialization),
+        "error handling" | "error" => semantic_packs_for_domain(&AssertionDomain::ErrorHandling),
+        "boundary" => semantic_packs_for_domain(&AssertionDomain::Boundary),
+        _ => semantic_packs_for_domain(&AssertionDomain::General),
+    }
+}
+
+fn assertion_domain_name(domain: &AssertionDomain) -> String {
+    match domain {
+        AssertionDomain::AuthPermission => "auth_permission",
+        AssertionDomain::Money => "money",
+        AssertionDomain::Parsing => "parsing",
+        AssertionDomain::Serialization => "serialization",
+        AssertionDomain::ErrorHandling => "error_handling",
+        AssertionDomain::Boundary => "boundary",
+        AssertionDomain::General => "general",
+    }
+    .to_string()
 }
 
 fn assertion_source(finding: &Failure) -> AssertionSource {
@@ -3108,6 +3326,7 @@ fn evolution_candidates(
             ),
             _ => continue,
         };
+        let semantic_packs = semantic_packs_for_domain_name(&record.domain);
         candidates.push(EvolutionCandidateRecord {
             id: format!("evolve-mutant-{}", stable_slug(&record.id)),
             language: language.to_string(),
@@ -3118,6 +3337,7 @@ fn evolution_candidates(
             source_artifact: None,
             source_finding_id: None,
             domain: Some(record.domain.clone()),
+            semantic_packs,
             fitness: evolution_fitness(
                 score,
                 if record.status == MutationStatus::Lived {
@@ -3145,6 +3365,7 @@ fn evolution_candidates(
         {
             continue;
         }
+        let domain = assertion_domain(finding);
         candidates.push(EvolutionCandidateRecord {
             id: format!("{language}-evolve-finding-{index}"),
             language: language.to_string(),
@@ -3157,7 +3378,8 @@ fn evolution_candidates(
             status: EvolutionCandidateStatus::Selected,
             source_artifact: None,
             source_finding_id: finding.id.clone(),
-            domain: None,
+            domain: Some(assertion_domain_name(&domain)),
+            semantic_packs: semantic_packs_for_domain(&domain),
             fitness: evolution_fitness(
                 88,
                 0,
@@ -3194,6 +3416,11 @@ fn evolution_candidate_from_artifact(
     proposed_action: &str,
     keep_if: &str,
 ) -> EvolutionCandidateRecord {
+    let domain = assertion_candidate_domain(artifact);
+    let semantic_packs = domain
+        .as_deref()
+        .map(semantic_packs_for_domain_name)
+        .unwrap_or_else(|| semantic_packs_for_domain(&AssertionDomain::General));
     EvolutionCandidateRecord {
         id: format!("evolve-{}", stable_slug(&artifact.id)),
         language: language.to_string(),
@@ -3203,7 +3430,8 @@ fn evolution_candidate_from_artifact(
         status: candidate_selection_status(score),
         source_artifact: Some(artifact.path.clone()),
         source_finding_id: None,
-        domain: assertion_candidate_domain(artifact),
+        domain,
+        semantic_packs,
         fitness: evolution_fitness(
             score,
             if matches!(kind, EvolutionCandidateKind::Property) {
@@ -3238,7 +3466,7 @@ fn assertion_candidate_domain(artifact: &GeneratedArtifact) -> Option<String> {
     }
     serde_json::from_str::<AssertionCandidate>(&artifact.contents)
         .ok()
-        .map(|candidate| format!("{:?}", candidate.domain).to_ascii_lowercase())
+        .map(|candidate| assertion_domain_name(&candidate.domain))
 }
 
 fn candidate_selection_status(score: u8) -> EvolutionCandidateStatus {
@@ -3480,6 +3708,7 @@ fn behavior_replay_case(value: &serde_json::Value) -> BehaviorReplayCase {
         name: value["name"].as_str().unwrap_or("case").to_string(),
         inputs: value["inputs"].as_array().cloned().unwrap_or_default(),
         assertion: value["assertion"].as_str().map(ToString::to_string),
+        argument_tuple: value["argument_tuple"].as_bool().unwrap_or(false),
     }
 }
 
@@ -4165,6 +4394,7 @@ fn skipped_run(language: &str) -> veritas_plugin_api::TestRunResult {
 
 fn refresh_report_quality(report: &mut VerificationReport) {
     let mut quality = VerificationQuality::default();
+    quality.performance = report.quality.performance.clone();
 
     for run in &report.runs {
         quality.mutation.generated += run.quality.mutation.generated;
@@ -4957,6 +5187,9 @@ mod tests {
         assert_eq!(suite.candidates.len(), 2);
         assert_eq!(suite.selection_budget, 2);
         assert_eq!(suite.candidates[0].fitness.score_percent, 95);
+        assert!(suite.candidates[0]
+            .semantic_packs
+            .contains(&"auth-permission-matrix".to_string()));
         let metrics = evolution_metrics_from_artifacts(&artifacts);
         assert_eq!(metrics.suites, 1);
         assert_eq!(metrics.candidates, 2);
@@ -5001,7 +5234,7 @@ mod tests {
             path: Utf8PathBuf::from("src/lib.rs"),
             symbol: "check".to_string(),
             operator: "comparison".to_string(),
-            domain: "general".to_string(),
+            domain: "auth_permission".to_string(),
             status,
             line_range: None,
             command: None,
@@ -5181,10 +5414,11 @@ index 3333333..4444444 100644
             .iter()
             .filter_map(|case| case["name"].as_str())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"empty_string"));
-        assert!(names.contains(&"zero_boundary"));
-        assert!(names.contains(&"boolean_edges"));
-        assert!(names.contains(&"parser_invalid_input"));
+        assert!(names.contains(&"argument_zero_tuple"));
+        assert!(names.contains(&"argument_one_tuple"));
+        assert!(names.contains(&"argument_trimmed_tuple"));
+        assert!(names.contains(&"parser_invalid_tuple"));
+        assert!(cases.iter().all(|case| case["argument_tuple"] == true));
     }
 
     #[test]
@@ -5341,6 +5575,9 @@ index 3333333..4444444 100644
             serde_json::from_str(&artifacts[0].contents).expect("candidate JSON should parse");
         assert_eq!(candidate.finding_id.as_deref(), Some("vts-test"));
         assert_eq!(candidate.domain, AssertionDomain::AuthPermission);
+        assert!(candidate
+            .semantic_packs
+            .contains(&"auth-permission-matrix".to_string()));
         assert!(candidate
             .expected_behavior
             .contains("distinguishes `<=` from `<`"));

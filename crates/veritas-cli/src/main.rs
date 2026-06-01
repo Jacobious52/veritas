@@ -17,7 +17,8 @@ use veritas_core::{
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
-    ArtifactKind, FailureSeverity, RiskLevel, VerificationReport, VerificationStrategy,
+    ArtifactKind, FailureSeverity, PerformanceMetrics, RiskLevel, VerificationReport,
+    VerificationStrategy,
 };
 use veritas_python::PythonPlugin;
 use veritas_report::{render_junit, render_markdown, render_sarif};
@@ -134,6 +135,10 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    RepairPrompt {
+        #[arg(long)]
+        github_step_summary: bool,
+    },
     Bench {
         #[arg(long)]
         suite: Option<PathBuf>,
@@ -248,6 +253,7 @@ struct BenchMetrics {
     evolution_candidates: usize,
     evolution_selected: usize,
     evolution_average_fitness_percent: Option<u8>,
+    phase_timings: PerformanceMetrics,
 }
 
 fn main() -> Result<()> {
@@ -402,6 +408,24 @@ fn main() -> Result<()> {
             let summary = accept_findings(&root, &id, all)?;
             print_baseline_summary(&summary);
         }
+        Command::RepairPrompt {
+            github_step_summary,
+        } => {
+            let report = read_saved_report(&root)?;
+            let prompt = render_ai_repair_prompt(&report);
+            if github_step_summary {
+                let path = std::env::var("GITHUB_STEP_SUMMARY")
+                    .context("GITHUB_STEP_SUMMARY is not set")?;
+                use std::io::Write;
+                let mut file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .with_context(|| format!("failed to open {path}"))?;
+                writeln!(file, "{prompt}")?;
+            }
+            println!("{prompt}");
+        }
         Command::Bench { suite, format } => {
             let report = run_bench_suite(&root, suite.as_deref())?;
             print_bench_report(&report, format)?;
@@ -445,6 +469,85 @@ fn run_bench_suite(root: &Path, suite: Option<&Path>) -> Result<BenchReport> {
         passed,
         cases,
     })
+}
+
+fn render_ai_repair_prompt(report: &VerificationReport) -> String {
+    let mut out = String::from("# veritas AI repair prompt\n\n");
+    out.push_str("Use this as the next verification repair loop for the current repo.\n\n");
+    out.push_str("## Commands\n\n");
+    out.push_str("```bash\n");
+    out.push_str("veritas verify --changed --profile ci\n");
+    out.push_str("veritas score\n");
+    out.push_str("veritas replay-corpus --dry-run\n");
+    out.push_str("veritas evolve --dry-run\n");
+    out.push_str("```\n\n");
+
+    out.push_str("## Findings\n\n");
+    if report.findings.is_empty() {
+        out.push_str("- No active findings. Focus on improving coverage, replay, and mutation score without broad rewrites.\n");
+    } else {
+        for finding in report.findings.iter().take(10) {
+            out.push_str(&format!(
+                "- `{}` {:?}: {}\n",
+                finding.id.as_deref().unwrap_or("unassigned"),
+                finding.severity,
+                finding.message
+            ));
+            if let Some(target_id) = &finding.target_id {
+                out.push_str(&format!("  Target: `{target_id}`\n"));
+            }
+            out.push_str(&format!("  Command: `{}`\n", finding.command));
+            if let Some(repro) = &finding.repro {
+                out.push_str(&format!("  Repro: `{}`\n", repro.command));
+                if let Some(path) = &repro.path {
+                    out.push_str(&format!("  Path: `{path}`\n"));
+                }
+            }
+        }
+    }
+
+    let interesting_artifacts = report
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            matches!(
+                artifact.kind,
+                ArtifactKind::AssertionCandidate
+                    | ArtifactKind::CorpusEntry
+                    | ArtifactKind::CorpusReplay
+                    | ArtifactKind::DifferentialReplay
+                    | ArtifactKind::ReplayResult
+                    | ArtifactKind::EvolutionCandidate
+                    | ArtifactKind::EvolutionSuite
+                    | ArtifactKind::RegressionTest
+                    | ArtifactKind::MutationCampaign
+                    | ArtifactKind::BudgetPlan
+            )
+        })
+        .collect::<Vec<_>>();
+    out.push_str("\n## Artifacts To Inspect\n\n");
+    if interesting_artifacts.is_empty() {
+        out.push_str("- No AI-facing verification artifacts were recorded in the latest report.\n");
+    } else {
+        for artifact in interesting_artifacts.iter().take(16) {
+            out.push_str(&format!(
+                "- `{:?}` `{}`: {}\n",
+                artifact.kind, artifact.path, artifact.description
+            ));
+        }
+    }
+
+    out.push_str("\n## Repair Rules\n\n");
+    out.push_str("- Prefer adding the smallest owned regression, property, fuzz seed, or replay assertion before changing production code.\n");
+    out.push_str("- Use `.veritas/assertions`, `.veritas/corpus`, `.veritas/differential`, and `.veritas/evolution` as the work queue.\n");
+    out.push_str("- Keep a candidate only if the next `veritas score` improves or explains why confidence is unchanged.\n");
+    if report.quality.performance.total_ms > 0 {
+        out.push_str(&format!(
+            "- Current verification runtime was `{}` ms; tune budgets if replay, coverage, or mutation dominates.\n",
+            report.quality.performance.total_ms
+        ));
+    }
+    out
 }
 
 fn run_bench_case(suite_root: &Path, case: BenchCase) -> Result<BenchCaseReport> {
@@ -649,6 +752,7 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         evolution_candidates: report.quality.evolution.candidates,
         evolution_selected: report.quality.evolution.selected,
         evolution_average_fitness_percent: report.quality.evolution.average_fitness_percent,
+        phase_timings: report.quality.performance.clone(),
     }
 }
 
@@ -795,6 +899,18 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 println!("- Findings: `{}`", case.findings);
                 println!("- Artifacts: `{}`", case.artifacts);
                 println!("- Commands: `{}`", case.metrics.command_count);
+                if case.metrics.phase_timings.total_ms > 0 {
+                    println!(
+                        "- Phase timings: total `{}` ms, discovery `{}`, generation `{}`, tests `{}`, coverage `{}`, replay `{}`, synthesis `{}`",
+                        case.metrics.phase_timings.total_ms,
+                        case.metrics.phase_timings.discovery_ms,
+                        case.metrics.phase_timings.generation_ms,
+                        case.metrics.phase_timings.test_execution_ms,
+                        case.metrics.phase_timings.coverage_ms,
+                        case.metrics.phase_timings.replay_ms,
+                        case.metrics.phase_timings.artifact_synthesis_ms,
+                    );
+                }
                 println!(
                     "- Mutation score: `{}`",
                     case.metrics
