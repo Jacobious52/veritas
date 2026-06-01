@@ -39,6 +39,12 @@ jobs:
       - name: Package crates
         run: ./scripts/publish-crates.sh --dry-run
 
+      - name: Install smoke
+        run: |
+          cargo install --path crates/veritas-cli --locked --force
+          veritas --help
+          veritas scan --root fixtures/sample-rust
+
   publish:
     name: Publish crates.io
     runs-on: ubuntu-latest

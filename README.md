@@ -147,6 +147,7 @@ veritas evolve --dry-run
 veritas evolve --index 0
 veritas evolve --all-selected
 veritas evolve --all-selected --evaluate
+veritas conformance
 veritas accept-baseline --id <finding-id>
 veritas accept-baseline --all
 veritas bench --root examples
@@ -200,6 +201,7 @@ Python verification:
 - detects Python projects through `pyproject.toml` or Python source roots
 - discovers functions with Tree-sitter and emits symbol graph artifacts
 - runs `python3 -m pytest -q` when the project prefers pytest and it is installed, otherwise falls back to `python3 -m unittest discover`
+- writes reviewable Hypothesis property candidates and executes them when both `hypothesis` and `pytest` are installed, otherwise records a skipped command
 - collects coverage through `coverage.py` when enabled
 - runs executable source-range mutation checks for supported comparisons, boolean connectors, and default returns
 - supports replay cases for primitive single-argument and multi-argument public functions
@@ -213,6 +215,8 @@ Reports and artifacts:
 - summarizes current confidence and baseline deltas with `veritas score`
 - writes API signature baselines and accepted finding baselines
 - writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` now emit before/after proof artifacts and remove generated candidates that regress or fail evaluation
+- `veritas conformance` checks the plugin contract for stable IDs, source-relative paths, function symbols, line ranges, and existing target files
 - cleans generated artifacts with `veritas cleanup`
 
 Scale and performance posture:
@@ -221,13 +225,15 @@ Scale and performance posture:
 - Go package graphs and Rust workspace discovery keep command scope close to the edited surface
 - command budgets, fuzz caps, mutation caps, package caps, and policy filters are configurable per repo
 - Rust test and coverage commands can run inside systemd scopes with CPU and memory limits on shared hosts
+- target discovery writes `.veritas/cache/<language>_targets.json` and reports cache hits as `target_cache` artifacts so stable large-repo scans can avoid repeated Tree-sitter discovery
 - every report records phase timings for discovery, generation, test execution, coverage, replay, synthesis, and total runtime
 - benchmark suites and external canaries track whether Veritas still works beyond tiny fixtures
-- near-term performance goals are plugin-safe concurrency, cacheable symbol/package graphs, adaptive mutation sampling, and reusable corpus/baseline data across runs
+- near-term performance goals are plugin-safe concurrency, adaptive mutation sampling, and reusable corpus/baseline data across runs
 
 CI behavior:
 
 - `.github/workflows/ci.yml` runs format, workspace tests, clippy, and Rust/Go/Python fixture scan/verify smoke checks on pull requests and pushes to `main`
+- CI also runs `veritas conformance` across the Rust, Go, and Python fixtures
 - `veritas verify --profile ci` implies `--changed`
 - CI profile disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure on error severity by default
 - policy filters can select severity, language, artifact kind, and target risk

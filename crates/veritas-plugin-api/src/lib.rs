@@ -245,6 +245,7 @@ pub enum ArtifactKind {
     EvolutionCandidate,
     EvolutionSuite,
     CorpusReplay,
+    TargetCache,
     SiteAsset,
 }
 

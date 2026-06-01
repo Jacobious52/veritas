@@ -70,14 +70,20 @@ Run fixture checks:
 ```bash
 cargo run -p veritas-cli -- scan --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
+cargo run -p veritas-cli -- conformance --root fixtures/sample-rust
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/rust-workspace --lang rust --target .
 cargo run -p veritas-cli -- cleanup --root fixtures/rust-workspace
 cargo run -p veritas-cli -- scan --root fixtures/sample-go
 cargo run -p veritas-cli -- verify --root fixtures/sample-go --lang go --target .
+cargo run -p veritas-cli -- conformance --root fixtures/sample-go
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-go
 cargo run -p veritas-cli -- verify --root fixtures/go-multimodule --lang go --target services/billing/pkg/invoice
 cargo run -p veritas-cli -- cleanup --root fixtures/go-multimodule
+cargo run -p veritas-cli -- scan --root fixtures/sample-python
+cargo run -p veritas-cli -- verify --root fixtures/sample-python --lang python --target invoice.py
+cargo run -p veritas-cli -- conformance --root fixtures/sample-python
+cargo run -p veritas-cli -- cleanup --root fixtures/sample-python
 ```
 
 Run example test beds:
@@ -123,8 +129,9 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Reports include first-class quality metrics for mutation score/trends, property strength, generated-test failures, fuzz execution, corpus replay, and persisted repros.
 - `veritas score` reads `.veritas/report.json` and summarizes confidence from mutation score, findings, assertion candidates, corpus entries/replay, replay cases, baseline deltas, and budget health.
 - `veritas accept-quality-baseline` stores `.veritas/baselines/quality.json` after a reviewed good state.
-- Observation artifacts now include structured `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
-- Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, and summarize quality deltas. Keep candidates only when the next verification run improves.
+- `veritas conformance` checks the generic plugin contract for stable IDs, source-relative paths, function symbols, line ranges, and existing target files.
+- Observation artifacts now include structured `.veritas/cache/*_targets.json`, `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
+- Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, write `.veritas/evolution/*_evaluation_*.md`, and remove generated candidate files when the evaluated report regresses or cannot be evaluated.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
 - Rust and Go mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Shared mutation config supports operator allow/deny lists, path exclusions, dry-run discovery, timeout coefficients, campaign status filtering, and worker counts. Rust and Go use isolated temporary project roots when `workers > 1`; `workers = 1` preserves source-rewrite serial behavior. Reports include requested/effective workers, isolation failures, and isolated-copy setup milliseconds.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
@@ -134,7 +141,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
-- Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
+- Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, Hypothesis property candidate execution when `hypothesis` and `pytest` are installed, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
 - Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.
@@ -148,6 +155,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/report.json`
 - `.veritas/ai/*.md`
 - `.veritas/baselines/*.json`
+- `.veritas/cache/*.json`
 - `.veritas/assertions/*.json`
 - `.veritas/corpus/*.json`
 - `.veritas/corpus/replay_result.json`
@@ -164,6 +172,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/evolution/*.md`
 - `.veritas/evolution/*_candidates.json`
 - `.veritas/evolution/*_suite.json`
+- `.veritas/evolution/*_evaluation_*.md`
 - `.veritas/evolution/*_generation_*.json`
 - `.veritas/promotions/*.md`
 - Rust generated tests under `tests/veritas_generated*` or package-local equivalents

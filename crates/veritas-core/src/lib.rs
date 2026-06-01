@@ -117,6 +117,23 @@ pub struct CorpusReplaySummary {
     pub report: VerificationReport,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TargetCache {
+    version: u8,
+    language: String,
+    created_unix_seconds: u64,
+    git_head: Option<String>,
+    sources: Vec<TargetCacheSource>,
+    targets: Vec<VerificationTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TargetCacheSource {
+    path: Utf8PathBuf,
+    len: u64,
+    modified_unix_seconds: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulerSummary {
     pub requested_jobs: usize,
@@ -513,7 +530,22 @@ impl CoreEngine {
         } else {
             None
         };
+        if let Some(evaluation) = &evaluation {
+            if !evolution_evaluation_keeps_candidates(evaluation.outcome) {
+                remove_generated_evolution_paths(root, &written_paths)?;
+                if let Some(before) = report.as_ref() {
+                    let _ = self.save_report(root, before);
+                }
+            }
+        }
         if !dry_run {
+            if let Some(evaluation) = &evaluation {
+                let evaluation_artifact =
+                    evolution_evaluation_artifact(root, &language, evaluation, &summaries)?;
+                written_paths.push(evaluation_artifact.path.clone());
+                let mut evaluation_artifacts = vec![evaluation_artifact];
+                write_artifacts(root, &mut evaluation_artifacts)?;
+            }
             let generation_artifact = evolution_generation_artifact(
                 root,
                 &language,
@@ -659,8 +691,9 @@ impl CoreEngine {
         let plugin = self.registry.get(language)?;
         let discovery_start = Instant::now();
         let project = plugin.detect_project(root)?;
-        let target = self.resolve_target(root, plugin.as_ref(), language, target_path)?;
-        let all_targets = plugin.discover_targets(root)?;
+        let (all_targets, cache_artifact) =
+            self.discover_targets_cached(root, plugin.as_ref(), &project)?;
+        let target = self.resolve_target_from_targets(language, target_path, &all_targets, root)?;
         let report_targets = expand_report_targets(&target, &all_targets);
         performance.discovery_ms = discovery_start.elapsed().as_millis();
 
@@ -670,7 +703,11 @@ impl CoreEngine {
             plan.strategies = requested_strategies;
         }
 
-        let mut artifacts = merge_artifacts(plugin.generate_tests(&target, &plan)?);
+        let mut artifacts = plugin.generate_tests(&target, &plan)?;
+        if let Some(cache_artifact) = cache_artifact {
+            artifacts.push(cache_artifact);
+        }
+        let mut artifacts = merge_artifacts(artifacts);
         if plan.write_generated_tests {
             write_artifacts(root, &mut artifacts)?;
         }
@@ -770,7 +807,8 @@ impl CoreEngine {
                 Err(_) if language.is_none() => continue,
                 Err(error) => return Err(error),
             };
-            let targets = plugin.discover_targets(root)?;
+            let (targets, cache_artifact) =
+                self.discover_targets_cached(root, plugin.as_ref(), &project)?;
             let changed_targets = targets_for_changed_files(plugin.id(), &targets, &changed_files);
             if changed_targets.is_empty() {
                 continue;
@@ -798,6 +836,9 @@ impl CoreEngine {
                 continue;
             }
 
+            if let Some(cache_artifact) = cache_artifact {
+                artifacts.push(cache_artifact);
+            }
             let mut artifacts = merge_artifacts(artifacts);
             if plans.first().is_some_and(|plan| plan.write_generated_tests) {
                 write_artifacts(root, &mut artifacts)?;
@@ -867,7 +908,9 @@ impl CoreEngine {
     ) -> Result<VerificationReport> {
         let plugin = self.registry.get(language)?;
         let project = plugin.detect_project(root)?;
-        let target = self.resolve_target(root, plugin.as_ref(), language, target_path)?;
+        let (targets, cache_artifact) =
+            self.discover_targets_cached(root, plugin.as_ref(), &project)?;
+        let target = self.resolve_target_from_targets(language, target_path, &targets, root)?;
         let mut plan = self.planner.plan(&project, &target)?;
         if !strategies.is_empty() {
             plan.strategies = strategies;
@@ -875,7 +918,11 @@ impl CoreEngine {
         plan.run_existing_tests = false;
         plan.run_generated_tests = false;
 
-        let mut artifacts = merge_artifacts(plugin.generate_tests(&target, &plan)?);
+        let mut artifacts = plugin.generate_tests(&target, &plan)?;
+        if let Some(cache_artifact) = cache_artifact {
+            artifacts.push(cache_artifact);
+        }
+        let mut artifacts = merge_artifacts(artifacts);
         if plan.write_generated_tests {
             write_artifacts(root, &mut artifacts)?;
         }
@@ -910,7 +957,7 @@ impl CoreEngine {
                 Err(_) if language.is_none() => continue,
                 Err(error) => return Err(error),
             };
-            let targets = plugin.discover_targets(root)?;
+            let (targets, _) = self.discover_targets_cached(root, plugin.as_ref(), &project)?;
             let target = targets
                 .iter()
                 .find(|target| target.kind != TargetKind::Project)
@@ -957,17 +1004,22 @@ impl CoreEngine {
                 Err(_) if language.is_none() => continue,
                 Err(error) => return Err(error),
             };
-            let targets = plugin.discover_targets(root)?;
+            let (targets, cache_artifact) =
+                self.discover_targets_cached(root, plugin.as_ref(), &project)?;
             let changed_targets = targets_for_changed_files(plugin.id(), &targets, &changed_files);
             report.project.get_or_insert(project);
             report.targets.extend(changed_targets.clone());
             all_changed_targets.extend(changed_targets);
+            if let Some(cache_artifact) = cache_artifact {
+                report.artifacts.push(cache_artifact);
+            }
         }
 
         let mut artifacts = vec![
             change_digest_artifact(root, &changed_files, &all_changed_targets)?,
             ai_feedback_artifact(&changed_files, &all_changed_targets),
         ];
+        artifacts.extend(std::mem::take(&mut report.artifacts));
         if self.config.write_generated_tests {
             write_artifacts(root, &mut artifacts)?;
         }
@@ -1047,14 +1099,32 @@ impl CoreEngine {
         }
     }
 
-    fn resolve_target(
+    fn discover_targets_cached(
         &self,
         root: &Path,
         plugin: &dyn LanguagePlugin,
+        project: &ProjectInfo,
+    ) -> Result<(Vec<VerificationTarget>, Option<GeneratedArtifact>)> {
+        let language = plugin.id();
+        if let Some(cache) = read_valid_target_cache(root, language)? {
+            let artifact = target_cache_artifact(language, &cache, "hit")?;
+            return Ok((cache.targets, Some(artifact)));
+        }
+
+        let targets = plugin.discover_targets(root)?;
+        let cache = build_target_cache(root, language, project, &targets)?;
+        write_target_cache(root, &cache)?;
+        let artifact = target_cache_artifact(language, &cache, "refreshed")?;
+        Ok((targets, Some(artifact)))
+    }
+
+    fn resolve_target_from_targets(
+        &self,
         language: &str,
         target_path: Option<&Path>,
+        targets: &[VerificationTarget],
+        root: &Path,
     ) -> Result<VerificationTarget> {
-        let targets = plugin.discover_targets(root)?;
         if let Some(path) = target_path {
             let relative = normalize_target_path(root, path)?;
             if relative.as_str() != "." && relative.extension().is_some() {
@@ -1105,8 +1175,9 @@ impl CoreEngine {
         }
 
         targets
-            .into_iter()
+            .iter()
             .find(|target| target.kind != TargetKind::Project)
+            .cloned()
             .or_else(|| {
                 Some(VerificationTarget {
                     id: format!("{language}:project"),
@@ -1122,6 +1193,152 @@ impl CoreEngine {
             })
             .ok_or_else(|| anyhow!("no target could be resolved"))
     }
+}
+
+fn read_valid_target_cache(root: &Path, language: &str) -> Result<Option<TargetCache>> {
+    let path = target_cache_path(root, language);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read target cache {}", path.display()))?;
+    let cache: TargetCache = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse target cache {}", path.display()))?;
+    if cache.version != 1 || cache.language != language {
+        return Ok(None);
+    }
+    if cache.git_head != git_head(root) {
+        return Ok(None);
+    }
+    if cache
+        .sources
+        .iter()
+        .all(|source| source_matches(root, source))
+    {
+        Ok(Some(cache))
+    } else {
+        Ok(None)
+    }
+}
+
+fn build_target_cache(
+    root: &Path,
+    language: &str,
+    project: &ProjectInfo,
+    targets: &[VerificationTarget],
+) -> Result<TargetCache> {
+    let mut source_paths = BTreeSet::new();
+    for manifest in &project.manifests {
+        source_paths.insert(manifest.clone());
+    }
+    for target in targets {
+        if target.path.as_str() != "." {
+            source_paths.insert(target.path.clone());
+        }
+    }
+    let mut sources = Vec::new();
+    for path in source_paths {
+        let absolute = root.join(&path);
+        if absolute.is_file() {
+            if let Some(source) = target_cache_source(root, &absolute)? {
+                sources.push(source);
+            }
+        }
+    }
+    Ok(TargetCache {
+        version: 1,
+        language: language.to_string(),
+        created_unix_seconds: unix_timestamp_seconds(),
+        git_head: git_head(root),
+        sources,
+        targets: targets.to_vec(),
+    })
+}
+
+fn write_target_cache(root: &Path, cache: &TargetCache) -> Result<()> {
+    let path = target_cache_path(root, &cache.language);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, serde_json::to_string_pretty(cache)?)
+        .with_context(|| format!("failed to write target cache {}", path.display()))
+}
+
+fn target_cache_path(root: &Path, language: &str) -> PathBuf {
+    root.join(".veritas/cache")
+        .join(format!("{language}_targets.json"))
+}
+
+fn target_cache_artifact(
+    language: &str,
+    cache: &TargetCache,
+    state: &str,
+) -> Result<GeneratedArtifact> {
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": language,
+        "state": state,
+        "targets": cache.targets.len(),
+        "sources": cache.sources.len(),
+        "git_head": cache.git_head,
+        "created_unix_seconds": cache.created_unix_seconds,
+        "cache_path": format!(".veritas/cache/{language}_targets.json"),
+        "next_step": "Reuse this cache on clean, fingerprint-matching runs to avoid repeated Tree-sitter target discovery on large repositories."
+    }))?;
+    Ok(GeneratedArtifact {
+        id: format!("{language}-target-cache-{state}"),
+        language: language.to_string(),
+        kind: ArtifactKind::TargetCache,
+        target_id: format!("{language}:project"),
+        path: Utf8PathBuf::from(format!(".veritas/cache/{language}_targets.summary.json")),
+        contents,
+        description: "Reusable target graph cache metadata for large-repo verification".to_string(),
+        status: ArtifactStatus::Written,
+    })
+}
+
+fn target_cache_source(root: &Path, path: &Path) -> Result<Option<TargetCacheSource>> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to inspect {}", path.display()))?;
+    let modified_unix_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    Ok(Some(TargetCacheSource {
+        path: relative_utf8(root, path)?,
+        len: metadata.len(),
+        modified_unix_seconds,
+    }))
+}
+
+fn source_matches(root: &Path, source: &TargetCacheSource) -> bool {
+    let path = root.join(&source.path);
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() != source.len {
+        return false;
+    }
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() == source.modified_unix_seconds)
+        .unwrap_or(false)
+}
+
+fn git_head(root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", root.to_string_lossy().as_ref(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 impl DeterministicPlanner {
@@ -1497,6 +1714,93 @@ fn applied_evolution_candidate_artifact(
         description: "Reviewable applied evolution candidate guidance".to_string(),
         status: ArtifactStatus::Planned,
     }
+}
+
+fn evolution_evaluation_keeps_candidates(outcome: EvolutionOutcome) -> bool {
+    outcome == EvolutionOutcome::Improved
+}
+
+fn remove_generated_evolution_paths(root: &Path, paths: &[Utf8PathBuf]) -> Result<()> {
+    for path in paths {
+        let path = root.join(path);
+        if path.exists() {
+            remove_generated_path(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn evolution_evaluation_artifact(
+    root: &Path,
+    language: &str,
+    evaluation: &EvolveEvaluationSummary,
+    candidates: &[EvolveCandidateSummary],
+) -> Result<GeneratedArtifact> {
+    let generation = next_evolution_generation(root, language)?;
+    let decision = if evolution_evaluation_keeps_candidates(evaluation.outcome) {
+        "kept"
+    } else {
+        "rejected"
+    };
+    let mut contents = String::from("# Evolution Evaluation\n\n");
+    contents.push_str(
+        "Generated by veritas after applying selected candidates and rerunning verification.\n\n",
+    );
+    contents.push_str(&format!("- Outcome: `{:?}`\n", evaluation.outcome));
+    contents.push_str(&format!("- Decision: `{decision}`\n"));
+    contents.push_str(&format!(
+        "- Confidence: `{}` -> `{}` (`{:+}`)\n",
+        evaluation.before_confidence,
+        evaluation.after_confidence,
+        evaluation.delta.confidence_delta
+    ));
+    if let Some(delta) = evaluation.delta.mutation_score_delta {
+        contents.push_str(&format!("- Mutation score delta: `{delta:+}`\n"));
+    }
+    contents.push_str(&format!(
+        "- Surviving mutant delta: `{:+}`\n- Finding delta: `{:+}`\n- Replay case delta: `{:+}`\n",
+        evaluation.delta.surviving_mutants_delta,
+        evaluation.delta.findings_delta,
+        evaluation.delta.replay_cases_delta
+    ));
+    if let Some(error) = &evaluation.error {
+        contents.push_str(&format!("- Error: {error}\n"));
+    }
+    contents.push_str("\n## Candidate Decisions\n\n");
+    for candidate in candidates {
+        contents.push_str(&format!(
+            "- `[{}]` `{}`: {}{}\n",
+            candidate.index,
+            candidate.id,
+            if candidate.applied {
+                decision
+            } else {
+                "skipped"
+            },
+            candidate
+                .skipped_reason
+                .as_ref()
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default()
+        ));
+    }
+    contents.push_str("\n## Keep Rule\n\n");
+    contents.push_str("Veritas keeps generated evolution artifacts only when the evaluated report improves. Rejected artifacts are removed and the previous report is restored for review.\n");
+
+    Ok(GeneratedArtifact {
+        id: format!("{language}-evolution-evaluation-{generation}"),
+        language: language.to_string(),
+        kind: ArtifactKind::EvolutionCandidate,
+        target_id: format!("{language}:evolution"),
+        path: Utf8PathBuf::from(format!(
+            ".veritas/evolution/{}_evaluation_{}.md",
+            language, generation
+        )),
+        contents,
+        description: "Before/after proof and keep-or-reject decision for an evolution generation"
+            .to_string(),
+        status: ArtifactStatus::Planned,
+    })
 }
 
 fn evolution_generation_artifact(

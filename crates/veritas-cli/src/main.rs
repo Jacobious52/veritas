@@ -147,6 +147,10 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
     },
+    Conformance {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -303,6 +307,24 @@ struct BenchMetrics {
     evolution_selected: usize,
     evolution_average_fitness_percent: Option<u8>,
     phase_timings: PerformanceMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct ConformanceReport {
+    passed: bool,
+    plugins: Vec<ConformancePluginReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConformancePluginReport {
+    language: String,
+    project: String,
+    targets: usize,
+    function_targets: usize,
+    file_targets: usize,
+    package_targets: usize,
+    line_ranges: usize,
+    failures: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -482,6 +504,13 @@ fn main() -> Result<()> {
                 bail!("benchmark suite did not meet expected detections");
             }
         }
+        Command::Conformance { format } => {
+            let report = run_plugin_conformance(&engine, &root)?;
+            print_conformance_report(&report, format)?;
+            if !report.passed {
+                bail!("plugin conformance checks failed");
+            }
+        }
     }
 
     Ok(())
@@ -522,6 +551,91 @@ fn run_bench_suite(root: &Path, suite: Option<&Path>) -> Result<BenchReport> {
         summary,
         cases,
     })
+}
+
+fn run_plugin_conformance(engine: &CoreEngine, root: &Path) -> Result<ConformanceReport> {
+    let scan = engine.scan(root)?;
+    let mut plugins = Vec::new();
+    for project in &scan.projects {
+        let targets = scan
+            .targets
+            .iter()
+            .filter(|target| target.language == project.language)
+            .collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        if !targets
+            .iter()
+            .any(|target| target.kind == TargetKind::Project && target.path.as_str() == ".")
+        {
+            failures.push("missing project target at `.`".to_string());
+        }
+        let mut ids = BTreeMap::<String, usize>::new();
+        for target in &targets {
+            *ids.entry(target.id.clone()).or_default() += 1;
+            if target.language != project.language {
+                failures.push(format!(
+                    "target `{}` has mismatched language `{}`",
+                    target.id, target.language
+                ));
+            }
+            if target.id.trim().is_empty() {
+                failures.push("target with empty stable id".to_string());
+            }
+            if matches!(target.kind, TargetKind::File | TargetKind::Function)
+                && target.path.as_str() == "."
+            {
+                failures.push(format!("non-project target `{}` uses root path", target.id));
+            }
+            if target.kind == TargetKind::Function && target.symbol.is_none() {
+                failures.push(format!("function target `{}` has no symbol", target.id));
+            }
+            if let Some(range) = &target.line_range {
+                if range.start == 0 || range.end < range.start {
+                    failures.push(format!(
+                        "target `{}` has invalid line range {}-{}",
+                        target.id, range.start, range.end
+                    ));
+                }
+            } else if target.kind == TargetKind::Function {
+                failures.push(format!("function target `{}` has no line range", target.id));
+            }
+            if target.path.as_str() != "." && !root.join(&target.path).exists() {
+                failures.push(format!(
+                    "target `{}` path `{}` does not exist",
+                    target.id, target.path
+                ));
+            }
+        }
+        for (id, count) in ids {
+            if count > 1 {
+                failures.push(format!("target id `{id}` appears {count} times"));
+            }
+        }
+        plugins.push(ConformancePluginReport {
+            language: project.language.clone(),
+            project: project.name.clone(),
+            targets: targets.len(),
+            function_targets: targets
+                .iter()
+                .filter(|target| target.kind == TargetKind::Function)
+                .count(),
+            file_targets: targets
+                .iter()
+                .filter(|target| target.kind == TargetKind::File)
+                .count(),
+            package_targets: targets
+                .iter()
+                .filter(|target| target.kind == TargetKind::Package)
+                .count(),
+            line_ranges: targets
+                .iter()
+                .filter(|target| target.line_range.is_some())
+                .count(),
+            failures,
+        });
+    }
+    let passed = !plugins.is_empty() && plugins.iter().all(|plugin| plugin.failures.is_empty());
+    Ok(ConformanceReport { passed, plugins })
 }
 
 fn render_ai_repair_prompt(report: &VerificationReport) -> String {
@@ -1264,6 +1378,44 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
         }
         OutputFormat::Sarif | OutputFormat::Junit => {
             bail!("bench supports --format markdown or --format json")
+        }
+    }
+    Ok(())
+}
+
+fn print_conformance_report(report: &ConformanceReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(report)?),
+        OutputFormat::Markdown => {
+            println!("# veritas conformance\n");
+            println!("- Passed: `{}`", report.passed);
+            println!("- Plugins: `{}`", report.plugins.len());
+            println!();
+            println!("| Language | Project | Targets | Functions | Line ranges | Failures |");
+            println!("| --- | --- | ---: | ---: | ---: | ---: |");
+            for plugin in &report.plugins {
+                println!(
+                    "| {} | {} | {} | {} | {} | {} |",
+                    plugin.language,
+                    plugin.project,
+                    plugin.targets,
+                    plugin.function_targets,
+                    plugin.line_ranges,
+                    plugin.failures.len()
+                );
+            }
+            for plugin in &report.plugins {
+                if plugin.failures.is_empty() {
+                    continue;
+                }
+                println!("\n## {}", plugin.language);
+                for failure in &plugin.failures {
+                    println!("- {failure}");
+                }
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("conformance supports --format markdown or --format json")
         }
     }
     Ok(())

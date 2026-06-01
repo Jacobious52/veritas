@@ -55,6 +55,7 @@ Clean generated artifacts before finalizing unless intentionally committing revi
 10. Promote useful repros with `veritas promote-repro --dry-run` and then `veritas promote-repro` when the promotion note is useful.
 11. Promote test gaps with `veritas promote-regression --dry-run` and then `veritas promote-regression --index <n>` when a finding should become a package-owned test scaffold.
 12. Inspect evolutionary candidates with `veritas evolve --dry-run`, then apply one selected candidate with `veritas evolve --index <n> --evaluate` or all safe selected candidates with `veritas evolve --all-selected --evaluate`.
+13. Treat `.veritas/evolution/*_evaluation_*.md` as the keep/reject proof: generated candidates are kept only when the evaluated report improves.
 13. Run `veritas cleanup` before final response unless generated artifacts are intentionally reviewed and committed.
 
 ## Concrete Evolution Loop

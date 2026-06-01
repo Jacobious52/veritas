@@ -422,6 +422,7 @@ fn artifact_icon(artifact: &GeneratedArtifact) -> &'static str {
         ArtifactKind::EvolutionCandidate => "[candidate]",
         ArtifactKind::EvolutionSuite => "[evolution-suite]",
         ArtifactKind::CorpusReplay => "[corpus-replay]",
+        ArtifactKind::TargetCache => "[cache]",
         ArtifactKind::SiteAsset => "[site]",
     }
 }

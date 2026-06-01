@@ -35,6 +35,15 @@ A production plugin should make these fields stable before it is advertised as a
 
 The CLI integration suite verifies this contract across the Rust, Go, and Python fixtures by checking target IDs, symbol metadata, generated artifact shape, phase timings, and report quality fields.
 
+Run the reusable contract check directly from any candidate plugin repository:
+
+```bash
+veritas conformance
+veritas conformance --format json
+```
+
+The conformance command is intentionally language-neutral. It scans detected plugins and fails when target IDs are duplicated, function targets lack symbols or line ranges, paths are not source-relative, or target files do not exist.
+
 ## Stable Target IDs
 
 Use this shape for function targets:
@@ -72,6 +81,7 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 - Tree-sitter function and method discovery
 - symbol graph artifacts
 - pytest detection with fallback to `python3 -m unittest discover`
+- Hypothesis property candidate execution when both `hypothesis` and `pytest` are available, with skipped command records otherwise
 - coverage.py summaries when coverage is enabled and coverage.py is installed
 - executable mutation checks for simple Python AST-adjacent operators
 - batched executable differential replay for supported primitive free-function arguments

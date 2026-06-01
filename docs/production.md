@@ -207,11 +207,12 @@ veritas cleanup
 - Coverage and fuzz repro extraction are best effort and depend on language tool output.
 - Surviving mutants and minimized fuzz/proptest inputs become reviewable regression artifacts before they become committed tests.
 - `veritas promote-regression` turns selected findings into ignored/skipped package-owned test scaffolds for Rust and Go; review and replace the placeholder before relying on them.
-- `veritas evolve --dry-run` reads `.veritas/evolution/*_suite.json` and lists ranked candidates. `veritas evolve --index <n> --evaluate` or `--all-selected --evaluate` applies safe candidates as reviewable guidance or language-owned regression scaffolds, reruns scoped verification, and reports quality deltas.
+- `veritas evolve --dry-run` reads `.veritas/evolution/*_suite.json` and lists ranked candidates. `veritas evolve --index <n> --evaluate` or `--all-selected --evaluate` applies safe candidates as reviewable guidance or language-owned regression scaffolds, reruns scoped verification, writes an evaluation proof artifact, and removes generated candidate files when the evaluated report regresses or cannot be evaluated.
 - Differential checks persist API signatures, replay-case manifests, and replay result summaries. Treat them as the handoff point for comparing old/new behavior and promoting changed observations into assertions.
 - `veritas replay-corpus` replays executable persisted corpus commands and skips guidance-only mutation entries until they are promoted into owned tests.
 - `veritas score` summarizes mutation score, findings, assertion candidates, corpus entries/replay, replay cases, property strength, and budget health into one AI-change confidence view.
 - `veritas accept-quality-baseline` records the reviewed quality floor used for later mutation and confidence deltas.
+- `veritas conformance` verifies the generic plugin contract: stable target IDs, source-relative paths, function symbols, line ranges, and existing files.
 
 ## External Canaries
 

@@ -180,6 +180,31 @@ fn plugin_sdk_scan_contract_is_stable_across_language_fixtures() {
 }
 
 #[test]
+fn conformance_command_validates_fixture_plugin_contracts() {
+    let rust = copy_fixture("sample-rust");
+    let mut rust_cmd = veritas();
+    rust_cmd
+        .current_dir(rust.path())
+        .args(["conformance", "--format", "json"]);
+    rust_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"passed\": true"))
+        .stdout(predicate::str::contains("\"language\": \"rust\""));
+
+    let python = copy_fixture("sample-python");
+    let mut python_cmd = veritas();
+    python_cmd
+        .current_dir(python.path())
+        .args(["conformance", "--format", "json"]);
+    python_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"passed\": true"))
+        .stdout(predicate::str::contains("\"language\": \"python\""));
+}
+
+#[test]
 fn verifies_python_fixture_and_writes_sdk_artifacts() {
     let fixture = copy_fixture("sample-python");
     let mut cmd = veritas();
@@ -203,6 +228,11 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
         .expect("artifacts array")
         .iter()
         .any(|artifact| artifact["kind"] == "symbol_graph"));
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| artifact["kind"] == "target_cache"));
     assert!(report["artifacts"]
         .as_array()
         .expect("artifacts array")

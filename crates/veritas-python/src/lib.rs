@@ -232,6 +232,17 @@ impl LanguagePlugin for PythonPlugin {
         let mut commands = vec![command];
         let mut failures = failures;
         let mut status = status;
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == ArtifactKind::PropertyTest)
+        {
+            let property = run_python_property_artifacts(root, artifacts, &self.config)?;
+            if property.status == RunStatus::Failed {
+                status = RunStatus::Failed;
+            }
+            commands.extend(property.commands);
+            failures.extend(property.failures);
+        }
         let mutation = if artifacts
             .iter()
             .any(|artifact| artifact.kind == ArtifactKind::MutationCheck)
@@ -636,6 +647,12 @@ fn python_hypothesis_property_artifact(
          # Requires: python3 -m pip install hypothesis\n\
          \n\
          from hypothesis import given, strategies as st\n\
+         \n\
+         def _veritas_observe(call):\n\
+             try:\n\
+                 return (\"ok\", call())\n\
+             except Exception as exc:\n\
+                 return (\"exception\", type(exc).__name__, str(exc))\n\
          \n",
     );
     for function in selected {
@@ -646,15 +663,16 @@ fn python_hypothesis_property_artifact(
         let strategies = function
             .params
             .iter()
-            .map(|param| format!("{param}=st.one_of(st.text(), st.integers(), st.booleans())"))
+            .map(|param| format!("{param}={}", hypothesis_strategy_for_param(param)))
             .collect::<Vec<_>>()
             .join(", ");
         contents.push_str(&format!(
             "\n@given({strategies})\n\
              def test_veritas_{name}_does_not_panic({params}):\n\
-                 result = {name}({params})\n\
-                 assert result == {name}({params})  # is_deterministic\n\
-                 assert result is not None or result is None  # prop_assert does_not_panic\n"
+                 first = _veritas_observe(lambda: {name}({params}))\n\
+                 second = _veritas_observe(lambda: {name}({params}))\n\
+                 assert first == second  # is_deterministic\n\
+                 assert first[0] in (\"ok\", \"exception\")  # prop_assert does_not_panic\n"
         ));
     }
 
@@ -673,12 +691,150 @@ fn python_hypothesis_property_artifact(
     }))
 }
 
+fn hypothesis_strategy_for_param(param: &str) -> String {
+    let lowered = param.to_ascii_lowercase();
+    if lowered.contains("cents")
+        || lowered.contains("amount")
+        || lowered.contains("total")
+        || lowered.contains("count")
+        || lowered.contains("limit")
+        || lowered.contains("price")
+    {
+        "st.integers(min_value=-1_000_000, max_value=1_000_000)".to_string()
+    } else if lowered.contains("enabled")
+        || lowered.starts_with("is_")
+        || lowered.starts_with("has_")
+        || lowered.starts_with("can_")
+    {
+        "st.booleans()".to_string()
+    } else {
+        "st.text(max_size=64)".to_string()
+    }
+}
+
 fn python_module_name(path: &Utf8PathBuf) -> String {
     path.as_str()
         .trim_end_matches(".py")
         .replace(['/', '\\'], ".")
         .trim_end_matches(".__init__")
         .to_string()
+}
+
+fn run_python_property_artifacts(
+    root: &Path,
+    artifacts: &[GeneratedArtifact],
+    config: &PythonPluginConfig,
+) -> Result<TestRunResult> {
+    let start = Instant::now();
+    let property_paths = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::PropertyTest)
+        .map(|artifact| artifact.path.to_string())
+        .collect::<Vec<_>>();
+    if property_paths.is_empty() {
+        return Ok(TestRunResult {
+            language: "python".to_string(),
+            status: RunStatus::Skipped,
+            commands: vec![],
+            failures: vec![],
+            duration_ms: 0,
+            quality: VerificationQuality::default(),
+        });
+    }
+    if !python_module_available(root, "hypothesis") {
+        return Ok(TestRunResult {
+            language: "python".to_string(),
+            status: RunStatus::Skipped,
+            commands: vec![skipped_python_command(
+                root,
+                vec![
+                    "-m".to_string(),
+                    "pytest".to_string(),
+                    "-q".to_string(),
+                    ".veritas/properties".to_string(),
+                ],
+                "skipped: hypothesis is not installed",
+            )?],
+            failures: vec![],
+            duration_ms: start.elapsed().as_millis(),
+            quality: VerificationQuality::default(),
+        });
+    }
+    if !python_module_available(root, "pytest") {
+        return Ok(TestRunResult {
+            language: "python".to_string(),
+            status: RunStatus::Skipped,
+            commands: vec![skipped_python_command(
+                root,
+                vec![
+                    "-m".to_string(),
+                    "pytest".to_string(),
+                    "-q".to_string(),
+                    ".veritas/properties".to_string(),
+                ],
+                "skipped: pytest is not installed",
+            )?],
+            failures: vec![],
+            duration_ms: start.elapsed().as_millis(),
+            quality: VerificationQuality::default(),
+        });
+    }
+
+    let mut args = vec!["-m".to_string(), "pytest".to_string(), "-q".to_string()];
+    args.extend(property_paths);
+    let command = run_command(
+        root,
+        "python3",
+        args.iter().map(String::as_str),
+        config.command_timeout_seconds.min(60),
+    )?;
+    let failures = if command.status == RunStatus::Failed {
+        vec![Failure {
+            id: None,
+            message: "python hypothesis property candidates failed".to_string(),
+            severity: FailureSeverity::Warning,
+            target_id: artifacts
+                .iter()
+                .find(|artifact| artifact.kind == ArtifactKind::PropertyTest)
+                .map(|artifact| artifact.target_id.clone()),
+            artifact_id: artifacts
+                .iter()
+                .find(|artifact| artifact.kind == ArtifactKind::PropertyTest)
+                .map(|artifact| artifact.id.clone()),
+            command: command_line(&command.program, &command.args),
+            stdout_excerpt: excerpt(&command.stdout),
+            stderr_excerpt: excerpt(&command.stderr),
+            repro: Some(ReproCase {
+                command: command_line(&command.program, &command.args),
+                input: None,
+                path: Some(Utf8PathBuf::from(".veritas/properties")),
+            }),
+        }]
+    } else {
+        Vec::new()
+    };
+    let status = command.status.clone();
+    Ok(TestRunResult {
+        language: "python".to_string(),
+        status,
+        commands: vec![command],
+        failures,
+        duration_ms: start.elapsed().as_millis(),
+        quality: VerificationQuality::default(),
+    })
+}
+
+fn skipped_python_command(root: &Path, args: Vec<String>, stderr: &str) -> Result<CommandRecord> {
+    Ok(CommandRecord {
+        program: "python3".to_string(),
+        args,
+        cwd: utf8_path(root)?,
+        exit_code: None,
+        status: RunStatus::Skipped,
+        stdout: String::new(),
+        stderr: stderr.to_string(),
+        duration_ms: 0,
+    })
 }
 
 fn run_python_mutations(

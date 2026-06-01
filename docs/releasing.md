@@ -89,6 +89,8 @@ The crates.io account that owns the token must have a verified email address bef
 
 The release workflow checks that `CARGO_REGISTRY_TOKEN` is present before running `cargo publish`. If the token is present but publishing fails with a verified-email error, fix the crates.io account profile and rerun the workflow; that failure is outside GitHub secret wiring.
 
+The validate job also installs `veritas-cli` from the checked-out workspace and runs a fixture scan. This catches broken install metadata before publishing starts.
+
 ## Local Checks
 
 Run before publishing:
