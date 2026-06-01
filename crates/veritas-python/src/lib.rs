@@ -14,7 +14,10 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 use tree_sitter::{Node, Parser};
-use veritas_core::config::{MutationConfig, PythonPluginConfig};
+use veritas_core::{
+    config::{MutationConfig, PythonPluginConfig},
+    persist_mutation_record_artifacts, start_mutation_run,
+};
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
     BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
@@ -849,8 +852,10 @@ fn run_python_mutations(
     let functions = discover_functions(root)?;
     let candidates = python_mutation_candidates(root, &functions, artifacts)?
         .into_iter()
-        .filter(|candidate| python_mutation_candidate_allowed(candidate, config))
         .filter(|candidate| python_mutation_candidate_in_shard(candidate, &config.mutation))
+        .filter(|candidate| {
+            config.mutation.report_filtered || python_mutation_candidate_allowed(candidate, config)
+        })
         .collect::<Vec<_>>();
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = candidates.len();
@@ -858,24 +863,41 @@ fn run_python_mutations(
     let mut commands = Vec::new();
     let mut failures = Vec::new();
     let mut status = RunStatus::Passed;
+    let run_dir = start_mutation_run(root, "python")?;
 
     for candidate in candidates.into_iter().take(8) {
         let domain = python_mutation_domain(&candidate);
         let operator = python_mutation_operator(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !python_mutation_candidate_allowed(&candidate, config) {
+            let mut record = python_mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        }
         if config.mutation.dry_run {
             quality.mutation.runnable += 1;
             record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
             record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(python_mutation_record(
+            let mut record = python_mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Runnable,
                 None,
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         quality.mutation.runnable += 1;
@@ -931,14 +953,16 @@ fn run_python_mutations(
             record_mutation_killed(&mut quality.mutation.by_operator, &operator);
             MutationStatus::Killed
         };
-        quality.mutation.records.push(python_mutation_record(
+        let mut record = python_mutation_record(
             &candidate,
             &domain,
             &operator,
             mutation_status,
             Some(&command_text),
             command.duration_ms,
-        ));
+        );
+        persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+        quality.mutation.records.push(record);
         commands.push(command);
     }
     quality.mutation.skipped = quality
@@ -981,6 +1005,10 @@ fn python_mutation_candidates(
         let path = root.join(&function.path);
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
+        if function_has_mutation_skip_annotation(&contents, function.start_byte, function.end_byte)
+        {
+            continue;
+        }
         push_python_mutation(
             &contents,
             function,
@@ -1060,6 +1088,12 @@ fn python_mutation_candidates(
             && left.to == right.to
     });
     Ok(candidates)
+}
+
+fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
+    source
+        .get(start_byte..end_byte)
+        .is_some_and(|body| body.contains("veritas:skip-mutation"))
 }
 
 fn push_python_mutation(
@@ -1159,10 +1193,17 @@ fn python_mutation_record(
             end_byte: candidate.end_byte,
         }),
         diff: Some(python_mutation_diff(candidate)),
+        diff_path: None,
+        outcome_path: None,
+        command_log_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
         risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: None,
+        test_selection_fallback: None,
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
@@ -1192,7 +1233,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
     match status {
         MutationStatus::NotCovered => Some("no selected tests cover this mutant".to_string()),
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }
@@ -1245,13 +1289,31 @@ fn python_mutation_candidate_allowed(
     {
         return false;
     }
+    let target_id = python_mutation_candidate_target_id(candidate);
+    if !config.mutation.include_target_ids.is_empty()
+        && !config
+            .mutation
+            .include_target_ids
+            .iter()
+            .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_target_ids
+        .iter()
+        .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
     let id = python_mutation_candidate_id(candidate);
     if !config.mutation.include_mutant_ids.is_empty()
         && !config
             .mutation
             .include_mutant_ids
             .iter()
-            .any(|configured| configured == &id)
+            .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -1259,7 +1321,7 @@ fn python_mutation_candidate_allowed(
         .mutation
         .exclude_mutant_ids
         .iter()
-        .any(|configured| configured == &id)
+        .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -1298,6 +1360,10 @@ fn python_mutation_candidate_allowed(
         .any(|disabled| taxonomy_matches(&operator, disabled))
 }
 
+fn python_mutation_candidate_target_id(candidate: &PythonMutationCandidate) -> String {
+    format!("python:{}:{}", candidate.path, candidate.function)
+}
+
 fn python_mutation_candidate_in_shard(
     candidate: &PythonMutationCandidate,
     config: &MutationConfig,
@@ -1319,10 +1385,20 @@ fn python_mutation_candidate_in_shard(
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
     let configured = configured.replace('-', "_").to_ascii_lowercase();
-    operator.contains(configured.trim())
+    text_matches(operator, configured.trim())
 }
 
 fn text_matches(text: &str, pattern: &str) -> bool {
+    if let Some(exact) = pattern.strip_prefix("exact:") {
+        return text.eq_ignore_ascii_case(exact);
+    }
+    if let Some(regex) = pattern.strip_prefix("regex:") {
+        return regex::RegexBuilder::new(regex)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(text));
+    }
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
     let text = text.to_ascii_lowercase();
     let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_suffix('$') {
@@ -2079,6 +2155,23 @@ mod tests {
         fs::remove_dir_all(&root).ok();
         assert_eq!(runner, "unittest");
         assert_eq!(args, ["-m", "unittest", "discover"]);
+    }
+
+    #[test]
+    fn python_mutation_skip_annotation_is_function_local() {
+        let source =
+            "def kept():\n    return 1\n\ndef skipped():\n    # veritas:skip-mutation\n    return 2\n";
+        let kept_start = source.find("def kept").unwrap();
+        let kept_end = source.find("def skipped").unwrap();
+        let skipped_start = kept_end;
+        assert!(!function_has_mutation_skip_annotation(
+            source, kept_start, kept_end
+        ));
+        assert!(function_has_mutation_skip_annotation(
+            source,
+            skipped_start,
+            source.len()
+        ));
     }
 
     fn unique_test_root(name: &str) -> PathBuf {

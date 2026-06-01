@@ -54,3 +54,23 @@ func TestRetryTransientStopsAfterSuccess(t *testing.T) {
 		t.Fatalf("calls=%d", calls)
 	}
 }
+
+func TestAdvancedMutationDomainsHaveKilledExamples(t *testing.T) {
+	if !ConcurrentWorkerJoinObserved() {
+		t.Fatal("expected worker join to be observed")
+	}
+	if !SyncLockWriteGuarded() {
+		t.Fatal("expected sync lock write guard")
+	}
+	done := make(chan struct{})
+	close(done)
+	if !ChannelSelectReady(done) {
+		t.Fatal("expected ready channel branch")
+	}
+	if RetryAttemptsForTransientError(RetryPolicy{}) != 3 {
+		t.Fatal("expected retry policy attempts")
+	}
+	if ClockSeamUsesInjectedTime(Clock{}) != 42 {
+		t.Fatal("expected injected clock value")
+	}
+}

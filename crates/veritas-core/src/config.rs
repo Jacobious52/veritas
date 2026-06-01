@@ -82,9 +82,15 @@ pub struct MutationConfig {
     pub exclude_paths: Vec<String>,
     pub include_symbols: Vec<String>,
     pub exclude_symbols: Vec<String>,
+    pub include_target_ids: Vec<String>,
+    pub exclude_target_ids: Vec<String>,
     pub include_mutant_ids: Vec<String>,
     pub exclude_mutant_ids: Vec<String>,
+    pub report_filtered: bool,
     pub dry_run: bool,
+    pub max_mutants: Option<usize>,
+    pub disable_test_selection: bool,
+    pub baseline_timing: bool,
     pub workers: usize,
     pub test_cpu: Option<usize>,
     pub timeout_coefficient: u64,
@@ -194,9 +200,15 @@ struct MutationConfigPartial {
     exclude_paths: Option<Vec<String>>,
     include_symbols: Option<Vec<String>>,
     exclude_symbols: Option<Vec<String>>,
+    include_target_ids: Option<Vec<String>>,
+    exclude_target_ids: Option<Vec<String>>,
     include_mutant_ids: Option<Vec<String>>,
     exclude_mutant_ids: Option<Vec<String>>,
+    report_filtered: Option<bool>,
     dry_run: Option<bool>,
+    max_mutants: Option<usize>,
+    disable_test_selection: Option<bool>,
+    baseline_timing: Option<bool>,
     workers: Option<usize>,
     test_cpu: Option<usize>,
     timeout_coefficient: Option<u64>,
@@ -442,14 +454,32 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
     if let Some(value) = &partial.exclude_symbols {
         config.exclude_symbols = value.clone();
     }
+    if let Some(value) = &partial.include_target_ids {
+        config.include_target_ids = value.clone();
+    }
+    if let Some(value) = &partial.exclude_target_ids {
+        config.exclude_target_ids = value.clone();
+    }
     if let Some(value) = &partial.include_mutant_ids {
         config.include_mutant_ids = value.clone();
     }
     if let Some(value) = &partial.exclude_mutant_ids {
         config.exclude_mutant_ids = value.clone();
     }
+    if let Some(value) = partial.report_filtered {
+        config.report_filtered = value;
+    }
     if let Some(value) = partial.dry_run {
         config.dry_run = value;
+    }
+    if let Some(value) = partial.max_mutants {
+        config.max_mutants = Some(value.max(1));
+    }
+    if let Some(value) = partial.disable_test_selection {
+        config.disable_test_selection = value;
+    }
+    if let Some(value) = partial.baseline_timing {
+        config.baseline_timing = value;
     }
     if let Some(value) = partial.workers {
         config.workers = value;
@@ -513,7 +543,13 @@ min_mutant_coverage = 80
 [mutation]
 disabled_operators = ["loop"]
 exclude_paths = ["vendor/", "_generated.go$"]
+include_target_ids = ["exact:rust:src/lib.rs:parse"]
+exclude_target_ids = ["regex:^rust:vendor/"]
+report_filtered = true
 dry_run = true
+max_mutants = 17
+disable_test_selection = true
+baseline_timing = true
 workers = 4
 test_cpu = 2
 timeout_coefficient = 3
@@ -563,6 +599,18 @@ cpu_quota = "150%"
             vec!["loop"]
         );
         assert!(config.plugins.rust.mutation.dry_run);
+        assert_eq!(config.plugins.rust.mutation.max_mutants, Some(17));
+        assert!(config.plugins.rust.mutation.disable_test_selection);
+        assert!(config.plugins.rust.mutation.baseline_timing);
+        assert_eq!(
+            config.plugins.rust.mutation.include_target_ids,
+            vec!["exact:rust:src/lib.rs:parse"]
+        );
+        assert_eq!(
+            config.plugins.rust.mutation.exclude_target_ids,
+            vec!["regex:^rust:vendor/"]
+        );
+        assert!(config.plugins.rust.mutation.report_filtered);
         assert_eq!(config.plugins.rust.mutation.test_cpu, Some(2));
         assert_eq!(config.plugins.rust.mutation.timeout_coefficient, 3);
         assert_eq!(

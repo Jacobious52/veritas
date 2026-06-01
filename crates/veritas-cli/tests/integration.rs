@@ -316,6 +316,80 @@ fn verifies_go_fixture_and_writes_fuzz_test() {
 
     assert!(fixture.path().join("veritas_fuzz_test.go").exists());
     assert!(fixture.path().join(".veritas/report.json").exists());
+
+    let report = read_report(fixture.path());
+    let records = report["quality"]["mutation"]["records"]
+        .as_array()
+        .expect("mutation records");
+    let survivor = records
+        .iter()
+        .find(|record| record["status"] == "lived" && record["stdout_log_path"].as_str().is_some())
+        .expect("surviving mutant with command logs");
+    for key in [
+        "diff_path",
+        "outcome_path",
+        "command_log_path",
+        "stdout_log_path",
+        "stderr_log_path",
+    ] {
+        let path = survivor[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {key}"));
+        assert!(
+            fixture.path().join(path).exists(),
+            "expected mutation artifact {key} at {path}"
+        );
+    }
+
+    let campaign: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.path().join(".veritas/mutations/go_campaign.json"))
+            .expect("read go mutation campaign"),
+    )
+    .expect("parse go mutation campaign");
+    assert_eq!(
+        campaign["layout"]["run_outputs"]["records"],
+        "records/{mutant}.json"
+    );
+    assert_eq!(
+        campaign["layout"]["run_outputs"]["logs"],
+        "logs/{mutant}.{command,stdout,stderr}.log"
+    );
+    assert!(fixture
+        .path()
+        .join(".veritas/mutations/go_progress.live.md")
+        .exists());
+    let progress = fs::read_to_string(fixture.path().join(".veritas/mutations/go_progress.md"))
+        .expect("read go progress");
+    assert!(progress.contains("Artifacts: outcome"));
+
+    let mut markdown = veritas();
+    markdown
+        .current_dir(fixture.path())
+        .args(["report", "--format", "markdown"]);
+    markdown
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mutation artifacts:"))
+        .stdout(predicate::str::contains(".stdout.log"));
+
+    let mut sarif = veritas();
+    sarif
+        .current_dir(fixture.path())
+        .args(["report", "--format", "sarif"]);
+    sarif
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".stdout.log"));
+
+    let mut junit = veritas();
+    junit
+        .current_dir(fixture.path())
+        .args(["report", "--format", "junit"]);
+    junit
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mutation artifacts:"))
+        .stdout(predicate::str::contains(".stderr.log"));
 }
 
 #[test]
@@ -430,6 +504,59 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
     assert!(graph.contains("\"root\": \"services/billing\""));
     assert!(graph.contains("\"root\": \"services/gateway\""));
     assert!(graph.contains("\"run_reason\": \"reverse dependency\""));
+
+    let report =
+        fs::read_to_string(fixture.path().join(".veritas/report.json")).expect("read report");
+    let report: Value = serde_json::from_str(&report).expect("report json");
+    let records = report["quality"]["mutation"]["records"]
+        .as_array()
+        .expect("mutation records");
+    assert!(records.iter().any(|record| {
+        record["status"] == "killed"
+            && record["selected_test_command"]
+                .as_str()
+                .is_some_and(|command| {
+                    command.contains("go test ./pkg/invoice") && !command.contains("./...")
+                })
+            && record["test_selection_hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("reverse dependencies"))
+    }));
+}
+
+#[test]
+fn go_timeout_fixture_records_adaptive_mutation_timeout_and_continues() {
+    if !go_available() {
+        return;
+    }
+
+    let fixture = copy_fixture("go-timeout");
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path())
+        .args(["verify", "--lang", "go", "--target", "."]);
+    cmd.assert().success();
+
+    let report = fs::read_to_string(fixture.path().join(".veritas/report.json"))
+        .expect("read timeout report");
+    let report: Value = serde_json::from_str(&report).expect("timeout report json");
+    let mutation = &report["quality"]["mutation"];
+    assert!(mutation["baseline_duration_ms"].as_u64().is_some());
+    assert_eq!(mutation["computed_timeout_seconds"], 1);
+    assert!(mutation["timeout_source"]
+        .as_str()
+        .is_some_and(|source| source.contains("baseline duration")));
+    assert_eq!(mutation["timed_out"], 1);
+    assert!(mutation["killed"]
+        .as_u64()
+        .is_some_and(|killed| killed >= 1));
+
+    let records = mutation["records"].as_array().expect("mutation records");
+    assert!(records.iter().any(|record| {
+        record["status"] == "timed_out"
+            && record["skip_reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("deterministic test seams"))
+    }));
 }
 
 #[test]

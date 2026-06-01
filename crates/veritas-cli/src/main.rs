@@ -327,6 +327,8 @@ struct BenchCase {
     min_commands: Option<usize>,
     min_mutation_findings: Option<usize>,
     min_mutants_executed: Option<usize>,
+    min_mutants_killed: Option<usize>,
+    min_mutants_survived: Option<usize>,
     min_mutation_score: Option<u8>,
     min_mutation_effective_workers: Option<usize>,
     max_surviving_mutants: Option<usize>,
@@ -2061,6 +2063,22 @@ fn bench_threshold_failures(
             ));
         }
     }
+    if let Some(min_mutants_killed) = case.min_mutants_killed {
+        if metrics.mutants_killed < min_mutants_killed {
+            failures.push(format!(
+                "mutants_killed {} < min_mutants_killed {min_mutants_killed}",
+                metrics.mutants_killed
+            ));
+        }
+    }
+    if let Some(min_mutants_survived) = case.min_mutants_survived {
+        if metrics.mutants_survived < min_mutants_survived {
+            failures.push(format!(
+                "mutants_survived {} < min_mutants_survived {min_mutants_survived}",
+                metrics.mutants_survived
+            ));
+        }
+    }
     if let Some(min_mutation_score) = case.min_mutation_score {
         let actual = metrics.mutation_score_percent.unwrap_or(0);
         if actual < min_mutation_score {
@@ -2692,6 +2710,12 @@ fn print_mutant_record(record: &MutationRecord, diffs: bool) {
     }
     if let Some(command) = &record.selected_test_command {
         println!("- Selected test command: `{command}`");
+    }
+    if let Some(hint) = &record.test_selection_hint {
+        println!("- Test selection: {hint}");
+    }
+    if let Some(reason) = &record.test_selection_fallback {
+        println!("- Test selection fallback: {reason}");
     }
     if let Some(reason) = &record.skip_reason {
         println!("- Skip reason: {reason}");

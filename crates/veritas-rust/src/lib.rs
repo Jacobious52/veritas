@@ -16,7 +16,8 @@ use serde::Serialize;
 use tree_sitter::{Node, Parser};
 use veritas_core::{
     config::{MutationConfig, RustPluginConfig},
-    isolated_mutation_root, run_parallel_jobs,
+    isolated_mutation_root, persist_mutation_record_artifacts, run_parallel_jobs,
+    start_mutation_run,
 };
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
@@ -301,6 +302,7 @@ impl LanguagePlugin for RustPlugin {
         let mut quality = VerificationQuality::default();
         let package_roots = test_package_roots(root, artifacts)?;
         let test_commands = run_cargo_tests(root, &package_roots, &self.config)?;
+        let baseline_duration_ms = mutation_baseline_duration(&test_commands, &self.config);
         let mut status = if test_commands
             .iter()
             .any(|command| command.status == RunStatus::Failed)
@@ -332,6 +334,7 @@ impl LanguagePlugin for RustPlugin {
                     start,
                     plan,
                     &package_roots,
+                    baseline_duration_ms,
                 )?;
                 if mutation.status == RunStatus::Failed {
                     status = RunStatus::Failed;
@@ -1583,19 +1586,34 @@ struct MutationCandidate {
 struct RustMutationJob {
     index: usize,
     candidate: MutationCandidate,
-    package_roots: BTreeSet<Utf8PathBuf>,
+    selection: RustMutationSelection,
     config: RustPluginConfig,
+    timeout_seconds: u64,
     root: Utf8PathBuf,
 }
 
 #[derive(Debug)]
 struct RustMutationOutcome {
     candidate: MutationCandidate,
+    selection: RustMutationSelection,
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
     isolation_setup_ms: u128,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RustMutationSelection {
+    package_roots: BTreeSet<Utf8PathBuf>,
+    hint: String,
+    fallback: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MutationTimeout {
+    seconds: u64,
+    source: String,
 }
 
 fn run_mutation_checks(
@@ -1605,13 +1623,16 @@ fn run_mutation_checks(
     run_start: Instant,
     plan: &VerificationPlan,
     package_roots: &BTreeSet<Utf8PathBuf>,
+    baseline_duration_ms: Option<u128>,
 ) -> Result<TestRunResult> {
     let start = Instant::now();
     let functions = discover_functions(root)?;
     let candidates = rust_mutation_candidates(&functions, root, artifacts)?
         .into_iter()
-        .filter(|candidate| mutation_candidate_allowed(candidate, config))
         .filter(|candidate| mutation_candidate_in_shard(candidate, &config.mutation))
+        .filter(|candidate| {
+            config.mutation.report_filtered || mutation_candidate_allowed(candidate, config)
+        })
         .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
@@ -1621,6 +1642,11 @@ fn run_mutation_checks(
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
     quality.mutation.effective_workers = 1;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
+    let run_dir = start_mutation_run(root, "rust")?;
 
     if config.mutation.workers > 1 && !config.mutation.dry_run {
         return run_parallel_mutation_checks(
@@ -1630,43 +1656,67 @@ fn run_mutation_checks(
             run_start,
             plan,
             package_roots,
+            baseline_duration_ms,
+            run_dir,
             start,
             candidates,
             generated,
         );
     }
 
-    for candidate in candidates.into_iter().take(8) {
+    for candidate in candidates.into_iter().take(mutation_max_mutants(config)) {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if package_roots.is_empty() {
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        }
+        if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if config.mutation.dry_run {
             quality.mutation.runnable += 1;
             record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
             record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Runnable,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -1696,12 +1746,8 @@ fn run_mutation_checks(
             )
         })?;
 
-        let mutation_commands = run_cargo_tests_with_timeout(
-            root,
-            package_roots,
-            config,
-            mutation_timeout_seconds(config),
-        );
+        let mutation_commands =
+            run_cargo_tests_with_timeout(root, &selection.package_roots, config, timeout.seconds);
         fs::write(&path, original)
             .with_context(|| format!("failed to restore {}", path.display()))?;
         let mutation_commands = mutation_commands?;
@@ -1757,14 +1803,17 @@ fn run_mutation_checks(
                     path: Some(candidate.path.clone()),
                 }),
             });
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Lived,
                 Some(&command_line(&command.program, &command.args)),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.duration_ms,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+            quality.mutation.records.push(record);
         } else {
             let command = representative_command.as_ref();
             let status = if mutant_timed_out {
@@ -1783,7 +1832,7 @@ fn run_mutation_checks(
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 MutationStatus::Killed
             };
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -1791,8 +1840,11 @@ fn run_mutation_checks(
                 command
                     .map(|command| command_line(&command.program, &command.args))
                     .as_deref(),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.map(|command| command.duration_ms).unwrap_or(0),
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, command)?;
+            quality.mutation.records.push(record);
         }
     }
     quality.mutation.skipped = quality
@@ -1832,6 +1884,8 @@ fn run_parallel_mutation_checks(
     run_start: Instant,
     plan: &VerificationPlan,
     package_roots: &BTreeSet<Utf8PathBuf>,
+    baseline_duration_ms: Option<u128>,
+    run_dir: Utf8PathBuf,
     start: Instant,
     candidates: Vec<MutationCandidate>,
     generated: usize,
@@ -1842,26 +1896,53 @@ fn run_parallel_mutation_checks(
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     let mut jobs = Vec::new();
     let root_utf8 = utf8_path(root)?;
-    for (index, candidate) in candidates.into_iter().take(8).enumerate() {
+    for (index, candidate) in candidates
+        .into_iter()
+        .take(mutation_max_mutants(config))
+        .enumerate()
+    {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if package_roots.is_empty() {
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        }
+        if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -1875,8 +1956,9 @@ fn run_parallel_mutation_checks(
         jobs.push(RustMutationJob {
             index,
             candidate,
-            package_roots: package_roots.clone(),
+            selection,
             config: config.clone(),
+            timeout_seconds: timeout.seconds,
             root: root_utf8.clone(),
         });
     }
@@ -1886,6 +1968,7 @@ fn run_parallel_mutation_checks(
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
         quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
+        let selection = outcome.selection.clone();
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -1899,14 +1982,17 @@ fn run_parallel_mutation_checks(
                     .as_deref()
                     .unwrap_or("failed to prepare isolated mutation root"),
             )?);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Skipped,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
 
@@ -1941,53 +2027,65 @@ fn run_parallel_mutation_checks(
                 )?);
                 run_status = RunStatus::Failed;
                 failures.push(rust_mutation_failure(artifacts, &candidate, &command));
-                quality.mutation.records.push(mutation_record(
+                let mut record = mutation_record(
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::Lived,
                     Some(&command_line(&command.program, &command.args)),
+                    Some((&selection.hint, selection.fallback.as_deref())),
                     command.duration_ms,
-                ));
+                );
+                persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+                quality.mutation.records.push(record);
             }
             MutationStatus::TimedOut => {
                 quality.mutation.timed_out += 1;
                 record_mutation_timed_out(&mut quality.mutation.by_domain, &domain);
                 record_mutation_timed_out(&mut quality.mutation.by_operator, &operator);
                 push_rust_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::TimedOut,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
             MutationStatus::NotViable => {
                 quality.mutation.not_viable += 1;
                 record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
                 record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
                 push_rust_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::NotViable,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
             _ => {
                 quality.mutation.killed += 1;
                 record_mutation_killed(&mut quality.mutation.by_domain, &domain);
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 push_rust_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::Killed,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
         }
     }
@@ -2023,12 +2121,14 @@ fn run_parallel_mutation_checks(
 
 fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
     let candidate = job.candidate;
+    let selection = job.selection;
     let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "rust", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
             return RustMutationOutcome {
                 candidate,
+                selection,
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
@@ -2038,11 +2138,18 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
         }
     };
     let isolation_setup_ms = isolation_start.elapsed().as_millis();
-    match execute_rust_mutation(isolated.path(), &candidate, &job.package_roots, &job.config) {
+    match execute_rust_mutation(
+        isolated.path(),
+        &candidate,
+        &selection.package_roots,
+        &job.config,
+        job.timeout_seconds,
+    ) {
         Ok(commands) => {
             let status = classify_rust_mutation_status(&commands);
             RustMutationOutcome {
                 candidate,
+                selection,
                 commands,
                 status,
                 isolation_failed: false,
@@ -2052,6 +2159,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
         }
         Err(error) => RustMutationOutcome {
             candidate,
+            selection,
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
@@ -2066,6 +2174,7 @@ fn execute_rust_mutation(
     candidate: &MutationCandidate,
     package_roots: &BTreeSet<Utf8PathBuf>,
     config: &RustPluginConfig,
+    timeout_seconds: u64,
 ) -> Result<Vec<CommandRecord>> {
     let path = root.join(&candidate.path);
     let original =
@@ -2079,12 +2188,7 @@ fn execute_rust_mutation(
             path.display()
         )
     })?;
-    run_cargo_tests_with_timeout(
-        root,
-        package_roots,
-        config,
-        mutation_timeout_seconds(config),
-    )
+    run_cargo_tests_with_timeout(root, package_roots, config, timeout_seconds)
 }
 
 fn classify_rust_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
@@ -2113,15 +2217,19 @@ fn classify_rust_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_rust_mutation_record(
+    root: &Path,
+    run_dir: &Utf8PathBuf,
     quality: &mut VerificationQuality,
     candidate: &MutationCandidate,
     domain: &str,
     operator: &str,
     status: MutationStatus,
     command: Option<&CommandRecord>,
-) {
-    quality.mutation.records.push(mutation_record(
+    selection: &RustMutationSelection,
+) -> Result<()> {
+    let mut record = mutation_record(
         candidate,
         domain,
         operator,
@@ -2129,8 +2237,12 @@ fn push_rust_mutation_record(
         command
             .map(|command| command_line(&command.program, &command.args))
             .as_deref(),
+        Some((&selection.hint, selection.fallback.as_deref())),
         command.map(|command| command.duration_ms).unwrap_or(0),
-    ));
+    );
+    persist_mutation_record_artifacts(root, run_dir, &mut record, command)?;
+    quality.mutation.records.push(record);
+    Ok(())
 }
 
 fn rust_mutation_failure(
@@ -2257,13 +2369,31 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
     {
         return false;
     }
+    let target_id = mutation_candidate_target_id(candidate);
+    if !config.mutation.include_target_ids.is_empty()
+        && !config
+            .mutation
+            .include_target_ids
+            .iter()
+            .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_target_ids
+        .iter()
+        .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
     let id = mutation_candidate_id(candidate);
     if !config.mutation.include_mutant_ids.is_empty()
         && !config
             .mutation
             .include_mutant_ids
             .iter()
-            .any(|configured| configured == &id)
+            .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2271,7 +2401,7 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
         .mutation
         .exclude_mutant_ids
         .iter()
-        .any(|configured| configured == &id)
+        .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2310,6 +2440,10 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
         .any(|disabled| taxonomy_matches(&operator, disabled))
 }
 
+fn mutation_candidate_target_id(candidate: &MutationCandidate) -> String {
+    format!("rust:{}:{}", candidate.path, candidate.function)
+}
+
 fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationConfig) -> bool {
     let Some(shard_count) = config.shard_count else {
         return true;
@@ -2328,10 +2462,20 @@ fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationC
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
     let configured = configured.replace('-', "_").to_ascii_lowercase();
-    operator.contains(configured.trim())
+    text_matches(operator, configured.trim())
 }
 
 fn text_matches(text: &str, pattern: &str) -> bool {
+    if let Some(exact) = pattern.strip_prefix("exact:") {
+        return text.eq_ignore_ascii_case(exact);
+    }
+    if let Some(regex) = pattern.strip_prefix("regex:") {
+        return regex::RegexBuilder::new(regex)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(text));
+    }
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
     let text = text.to_ascii_lowercase();
     let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_suffix('$') {
@@ -2356,6 +2500,7 @@ fn mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&str>,
+    selection: Option<(&str, Option<&str>)>,
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
@@ -2374,10 +2519,18 @@ fn mutation_record(
             end_byte: candidate.end_byte,
         }),
         diff: Some(mutation_diff(candidate)),
+        diff_path: None,
+        outcome_path: None,
+        command_log_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
         risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: selection.map(|(hint, _)| hint.to_string()),
+        test_selection_fallback: selection
+            .and_then(|(_, fallback)| fallback.map(ToString::to_string)),
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
@@ -2409,7 +2562,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
             Some("no selected package tests cover this mutant".to_string())
         }
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }
@@ -2424,16 +2580,48 @@ fn mutation_not_viable(command: &CommandRecord) -> bool {
         || output.contains("not found in this scope")
 }
 
-fn mutation_timeout_seconds(config: &RustPluginConfig) -> u64 {
+fn mutation_baseline_duration(
+    commands: &[CommandRecord],
+    config: &RustPluginConfig,
+) -> Option<u128> {
+    config
+        .mutation
+        .baseline_timing
+        .then(|| commands.iter().map(|command| command.duration_ms).sum())
+}
+
+fn mutation_timeout(
+    config: &RustPluginConfig,
+    baseline_duration_ms: Option<u128>,
+) -> MutationTimeout {
     let coefficient = config.mutation.timeout_coefficient.max(1);
-    let mut timeout = config.command_timeout_seconds.saturating_mul(coefficient);
+    let (base_seconds, base_source) = baseline_duration_ms
+        .map(|duration| (((duration as u64).saturating_add(999)) / 1000).max(1))
+        .map(|seconds| (seconds, "baseline duration".to_string()))
+        .unwrap_or_else(|| {
+            (
+                config.command_timeout_seconds,
+                "configured command timeout".to_string(),
+            )
+        });
+    let mut timeout = base_seconds.saturating_mul(coefficient);
+    let mut source = format!("{base_source} {base_seconds}s * coefficient {coefficient}");
     if let Some(minimum) = config.mutation.timeout_min_seconds {
         timeout = timeout.max(minimum);
+        source.push_str(&format!(", min {minimum}s"));
     }
     if let Some(maximum) = config.mutation.timeout_max_seconds {
         timeout = timeout.min(maximum);
+        source.push_str(&format!(", max {maximum}s"));
     }
-    timeout
+    MutationTimeout {
+        seconds: timeout.max(1),
+        source,
+    }
+}
+
+fn mutation_max_mutants(config: &RustPluginConfig) -> usize {
+    config.mutation.max_mutants.unwrap_or(8)
 }
 
 fn test_package_roots(
@@ -2496,6 +2684,43 @@ fn run_cargo_tests_with_timeout(
     Ok(commands)
 }
 
+fn select_rust_mutation_tests(
+    candidate: &MutationCandidate,
+    package_roots: &BTreeSet<Utf8PathBuf>,
+    config: &RustPluginConfig,
+) -> RustMutationSelection {
+    if config.mutation.disable_test_selection {
+        return RustMutationSelection {
+            package_roots: package_roots.clone(),
+            hint: "selection disabled; using all selected Rust package roots".to_string(),
+            fallback: Some("mutation.disable_test_selection is true".to_string()),
+        };
+    }
+
+    let selected = package_roots
+        .iter()
+        .filter(|root| root.as_str() == "." || candidate.path.starts_with(*root))
+        .max_by_key(|root| root.as_str().len())
+        .cloned();
+
+    if let Some(package_root) = selected {
+        return RustMutationSelection {
+            package_roots: BTreeSet::from([package_root.clone()]),
+            hint: format!(
+                "selected Rust package-local tests from symbol ownership: `{}`",
+                package_root
+            ),
+            fallback: None,
+        };
+    }
+
+    RustMutationSelection {
+        package_roots: package_roots.clone(),
+        hint: "selected all Rust package roots because the mutant owner was ambiguous".to_string(),
+        fallback: Some("owning package root was not present in selected artifacts".to_string()),
+    }
+}
+
 fn rust_path_from_target_id(target_id: &str) -> Option<Utf8PathBuf> {
     let rest = target_id.strip_prefix("rust:")?;
     if rest == "project" {
@@ -2553,11 +2778,24 @@ fn rust_mutation_candidates(
             .parse(&contents, None)
             .ok_or_else(|| anyhow!("failed to parse Rust source {}", path))?;
         for function in path_functions {
+            if function_has_mutation_skip_annotation(
+                &contents,
+                function.start_byte,
+                function.end_byte,
+            ) {
+                continue;
+            }
             collect_rust_mutation_nodes(tree.root_node(), &contents, function, &mut candidates)?;
         }
     }
 
     Ok(candidates)
+}
+
+fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
+    source
+        .get(start_byte..end_byte)
+        .is_some_and(|body| body.contains("veritas:skip-mutation"))
 }
 
 fn collect_rust_mutation_nodes(
@@ -2654,9 +2892,6 @@ fn rust_mutation_candidate_from_identifier(
         "wrapping_add" => Some(("wrapping arithmetic direction", "wrapping_sub")),
         "is_ok" => Some(("result branch inversion", "is_err")),
         "is_err" => Some(("result branch inversion", "is_ok")),
-        "spawn" => Some(("concurrency_lifecycle task_spawn mutation", "block_on")),
-        "join" => Some(("concurrency_lifecycle await_join mutation", "try_join")),
-        "write" => Some(("synchronization lock_mode mutation", "read")),
         "read" => Some(("synchronization lock_mode mutation", "write")),
         "SeqCst" => Some(("synchronization atomic_ordering mutation", "Relaxed")),
         "Acquire" => Some(("synchronization atomic_ordering mutation", "Relaxed")),
@@ -2667,7 +2902,6 @@ fn rust_mutation_candidate_from_identifier(
         "rollback" => Some(("database rollback_commit mutation", "commit")),
         "begin" => Some(("database transaction_boundary mutation", "rollback")),
         "retry" => Some(("retry_resilience retry_attempt mutation", "try_once")),
-        "backoff" => Some(("retry_resilience backoff_cap mutation", "no_backoff")),
         "now" => Some(("testability injected_clock mutation", "default")),
         "random" => Some(("testability injected_randomness mutation", "default")),
         _ => None,
@@ -2767,12 +3001,33 @@ fn rust_mutation_candidate_from_boolean(
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
-        label: domain_mutation_label(&function.symbol, "boolean inversion"),
+        label: domain_mutation_label(
+            &function.symbol,
+            boolean_mutation_label_for_symbol(&function.symbol),
+        ),
         from: text.to_string(),
         to: to.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn boolean_mutation_label_for_symbol(symbol: &str) -> &'static str {
+    let lowered = symbol.to_ascii_lowercase();
+    if lowered.contains("concurrent") || lowered.contains("worker") || lowered.contains("join") {
+        "concurrency_lifecycle await_join mutation"
+    } else if lowered.contains("sync") || lowered.contains("lock") || lowered.contains("atomic") {
+        "synchronization lock_mode mutation"
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        "retry_resilience retry_classifier mutation"
+    } else if lowered.contains("clock") || lowered.contains("random") || lowered.contains("seam") {
+        "testability injected_clock mutation"
+    } else {
+        "boolean inversion"
+    }
 }
 
 fn rust_mutation_candidate_from_integer(
@@ -2850,6 +3105,9 @@ fn rust_target_matches_function(target_id: &str, function: &RustFunction) -> boo
 }
 
 fn domain_mutation_label(symbol: &str, base: &str) -> String {
+    if mutation_taxonomy::normalize_domain(base) != "general" {
+        return base.to_string();
+    }
     let lowered = symbol.to_ascii_lowercase();
     let domain = if lowered.contains("auth")
         || lowered.contains("permission")
@@ -2880,6 +3138,30 @@ fn domain_mutation_label(symbol: &str, base: &str) -> String {
         || lowered.contains("option")
     {
         Some("error_handling")
+    } else if lowered.contains("concurrent")
+        || lowered.contains("worker")
+        || lowered.contains("spawn")
+        || lowered.contains("join")
+        || lowered.contains("async")
+    {
+        Some("concurrency_lifecycle")
+    } else if lowered.contains("clock")
+        || lowered.contains("random")
+        || lowered.contains("seam")
+        || lowered.contains("deterministic")
+    {
+        Some("testability")
+    } else if lowered.contains("sync")
+        || lowered.contains("lock")
+        || lowered.contains("atomic")
+        || lowered.contains("channel")
+    {
+        Some("synchronization")
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        Some("retry_resilience")
     } else if lowered.contains("limit")
         || lowered.contains("threshold")
         || lowered.contains("min")
@@ -3361,6 +3643,22 @@ mod tests {
             Some("rust-property-example")
         );
         assert_eq!(failures[0].target_id.as_deref(), Some("rust:project"));
+    }
+
+    #[test]
+    fn rust_mutation_skip_annotation_is_function_local() {
+        let source = "fn kept() -> i32 { 1 }\nfn skipped() -> i32 { // veritas:skip-mutation\n2\n}";
+        let kept_start = source.find("fn kept").unwrap();
+        let kept_end = source.find("fn skipped").unwrap();
+        let skipped_start = kept_end;
+        assert!(!function_has_mutation_skip_annotation(
+            source, kept_start, kept_end
+        ));
+        assert!(function_has_mutation_skip_annotation(
+            source,
+            skipped_start,
+            source.len()
+        ));
     }
 
     fn write_file(root: &Path, relative: &str, contents: &str) {

@@ -534,6 +534,12 @@ pub struct MutationMetrics {
     pub isolation_failures: usize,
     #[serde(default, skip_serializing_if = "is_zero_u128")]
     pub isolation_setup_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_duration_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -585,6 +591,16 @@ pub struct MutationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_test: Option<String>,
@@ -592,6 +608,10 @@ pub struct MutationRecord {
     pub skip_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_test_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_selection_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_selection_fallback: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub brittleness_probe: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

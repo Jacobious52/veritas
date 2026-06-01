@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 use veritas_core::{
     config::{GoPluginConfig, MutationConfig},
-    isolated_mutation_root, run_parallel_jobs,
+    isolated_mutation_root, persist_mutation_record_artifacts, run_parallel_jobs,
+    start_mutation_run,
 };
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
@@ -446,6 +447,7 @@ impl LanguagePlugin for GoPlugin {
             }
             commands.push(existing);
         }
+        let baseline_duration_ms = mutation_baseline_duration(&commands, &self.config);
 
         if status == RunStatus::Passed {
             if budget_nearly_spent(start, plan.budget_seconds) {
@@ -498,6 +500,7 @@ impl LanguagePlugin for GoPlugin {
                     &context,
                     &self.config,
                     &package_args,
+                    baseline_duration_ms,
                     start,
                     plan,
                 )?;
@@ -1607,16 +1610,41 @@ fn go_test_args(config: &GoPluginConfig, package_args: &[String]) -> Vec<String>
     args
 }
 
-fn mutation_timeout_seconds(config: &GoPluginConfig) -> u64 {
+fn mutation_baseline_duration(commands: &[CommandRecord], config: &GoPluginConfig) -> Option<u128> {
+    config
+        .mutation
+        .baseline_timing
+        .then(|| commands.iter().map(|command| command.duration_ms).sum())
+}
+
+fn mutation_timeout(
+    config: &GoPluginConfig,
+    baseline_duration_ms: Option<u128>,
+) -> MutationTimeout {
     let coefficient = config.mutation.timeout_coefficient.max(1);
-    let mut timeout = config.command_timeout_seconds.saturating_mul(coefficient);
+    let (base_seconds, base_source) = baseline_duration_ms
+        .map(|duration| (((duration as u64).saturating_add(999)) / 1000).max(1))
+        .map(|seconds| (seconds, "baseline duration".to_string()))
+        .unwrap_or_else(|| {
+            (
+                config.command_timeout_seconds,
+                "configured command timeout".to_string(),
+            )
+        });
+    let mut timeout = base_seconds.saturating_mul(coefficient);
+    let mut source = format!("{base_source} {base_seconds}s * coefficient {coefficient}");
     if let Some(minimum) = config.mutation.timeout_min_seconds {
         timeout = timeout.max(minimum);
+        source.push_str(&format!(", min {minimum}s"));
     }
     if let Some(maximum) = config.mutation.timeout_max_seconds {
         timeout = timeout.min(maximum);
+        source.push_str(&format!(", max {maximum}s"));
     }
-    timeout
+    MutationTimeout {
+        seconds: timeout.max(1),
+        source,
+    }
 }
 
 fn go_tags_arg(config: &GoPluginConfig) -> Option<String> {
@@ -2105,14 +2133,16 @@ struct GoMutationJob {
     index: usize,
     candidate: MutationCandidate,
     modules: Vec<GoModule>,
-    package_args: Vec<String>,
+    selection: GoMutationSelection,
     config: GoPluginConfig,
+    timeout_seconds: u64,
     root: Utf8PathBuf,
 }
 
 #[derive(Debug)]
 struct GoMutationOutcome {
     candidate: MutationCandidate,
+    selection: GoMutationSelection,
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
@@ -2120,20 +2150,38 @@ struct GoMutationOutcome {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct GoMutationSelection {
+    package_args: Vec<String>,
+    hint: String,
+    fallback: Option<String>,
+    has_tests: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MutationTimeout {
+    seconds: u64,
+    source: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_mutation_checks(
     root: &Path,
     artifacts: &[GeneratedArtifact],
     context: &GoVerificationContext,
     config: &GoPluginConfig,
     package_args: &[String],
+    baseline_duration_ms: Option<u128>,
     run_start: Instant,
     plan: &VerificationPlan,
 ) -> Result<TestRunResult> {
     let start = Instant::now();
     let candidates = go_mutation_candidates(&context.functions, root, artifacts)?
         .into_iter()
-        .filter(|candidate| mutation_candidate_allowed(candidate, config))
         .filter(|candidate| mutation_candidate_in_shard(candidate, &config.mutation))
+        .filter(|candidate| {
+            config.mutation.report_filtered || mutation_candidate_allowed(candidate, config)
+        })
         .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
@@ -2143,6 +2191,11 @@ fn run_mutation_checks(
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
     quality.mutation.effective_workers = 1;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
+    let run_dir = start_mutation_run(root, "go")?;
 
     if config.mutation.workers > 1 && !config.mutation.dry_run {
         return run_parallel_mutation_checks(
@@ -2151,8 +2204,10 @@ fn run_mutation_checks(
             context,
             config,
             package_args,
+            baseline_duration_ms,
             run_start,
             plan,
+            run_dir,
             start,
             candidates,
             generated,
@@ -2162,34 +2217,56 @@ fn run_mutation_checks(
     for candidate in candidates.into_iter().take(config.max_mutants) {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if !candidate_has_package_tests(&candidate, context) {
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        }
+        if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if config.mutation.dry_run {
             quality.mutation.runnable += 1;
             record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
             record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Runnable,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -2221,14 +2298,14 @@ fn run_mutation_checks(
 
         let mut mutation_commands = Vec::new();
         for (module_root, module_package_args) in
-            module_package_args(&context.modules, package_args)
+            module_package_args(&context.modules, &selection.package_args)
         {
             let test_args = go_test_args(config, &module_package_args);
             mutation_commands.push(run_command(
                 &root.join(&module_root),
                 "go",
                 test_args,
-                mutation_timeout_seconds(config),
+                timeout.seconds,
             ));
         }
         fs::write(&path, original)
@@ -2283,20 +2360,23 @@ fn run_mutation_checks(
                         candidate.from,
                         candidate.to,
                         candidate.path,
-                        package_args.join(" ")
+                        selection.package_args.join(" ")
                     ),
                     input: None,
                     path: Some(candidate.path.clone()),
                 }),
             });
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Lived,
                 Some(&command_line(&command.program, &command.args)),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.duration_ms,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+            quality.mutation.records.push(record);
         } else {
             let command = representative_command.as_ref();
             let status = if mutant_timed_out {
@@ -2315,7 +2395,7 @@ fn run_mutation_checks(
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 MutationStatus::Killed
             };
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2323,8 +2403,11 @@ fn run_mutation_checks(
                 command
                     .map(|command| command_line(&command.program, &command.args))
                     .as_deref(),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.map(|command| command.duration_ms).unwrap_or(0),
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, command)?;
+            quality.mutation.records.push(record);
         }
     }
     quality.mutation.skipped = quality
@@ -2363,8 +2446,10 @@ fn run_parallel_mutation_checks(
     context: &GoVerificationContext,
     config: &GoPluginConfig,
     package_args: &[String],
+    baseline_duration_ms: Option<u128>,
     run_start: Instant,
     plan: &VerificationPlan,
+    run_dir: Utf8PathBuf,
     start: Instant,
     candidates: Vec<MutationCandidate>,
     generated: usize,
@@ -2375,26 +2460,49 @@ fn run_parallel_mutation_checks(
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     let mut jobs = Vec::new();
     let root_utf8 = utf8_path(root)?;
     for (index, candidate) in candidates.into_iter().take(config.max_mutants).enumerate() {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if !candidate_has_package_tests(&candidate, context) {
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        }
+        if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -2409,8 +2517,9 @@ fn run_parallel_mutation_checks(
             index,
             candidate,
             modules: context.modules.clone(),
-            package_args: package_args.to_vec(),
+            selection,
             config: config.clone(),
+            timeout_seconds: timeout.seconds,
             root: root_utf8.clone(),
         });
     }
@@ -2419,6 +2528,7 @@ fn run_parallel_mutation_checks(
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
         quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
+        let selection = outcome.selection.clone();
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -2432,14 +2542,17 @@ fn run_parallel_mutation_checks(
                     .as_deref()
                     .unwrap_or("failed to prepare isolated mutation root"),
             )?);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Skipped,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
 
@@ -2467,55 +2580,67 @@ fn run_parallel_mutation_checks(
                     artifacts,
                     &candidate,
                     &command,
-                    package_args,
+                    &selection.package_args,
                 ));
-                quality.mutation.records.push(mutation_record(
+                let mut record = mutation_record(
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::Lived,
                     Some(&command_line(&command.program, &command.args)),
+                    Some((&selection.hint, selection.fallback.as_deref())),
                     command.duration_ms,
-                ));
+                );
+                persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+                quality.mutation.records.push(record);
             }
             MutationStatus::TimedOut => {
                 quality.mutation.timed_out += 1;
                 record_mutation_timed_out(&mut quality.mutation.by_domain, &domain);
                 record_mutation_timed_out(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::TimedOut,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
             MutationStatus::NotViable => {
                 quality.mutation.not_viable += 1;
                 record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
                 record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::NotViable,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
             _ => {
                 quality.mutation.killed += 1;
                 record_mutation_killed(&mut quality.mutation.by_domain, &domain);
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
                     &operator,
                     MutationStatus::Killed,
                     representative_command.as_ref(),
-                );
+                    &selection,
+                )?;
             }
         }
     }
@@ -2551,12 +2676,14 @@ fn run_parallel_mutation_checks(
 
 fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
     let candidate = job.candidate;
+    let selection = job.selection;
     let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "go", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
             return GoMutationOutcome {
                 candidate,
+                selection,
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
@@ -2570,13 +2697,15 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
         isolated.path(),
         &candidate,
         &job.modules,
-        &job.package_args,
+        &selection.package_args,
         &job.config,
+        job.timeout_seconds,
     ) {
         Ok(commands) => {
             let status = classify_go_mutation_status(&commands);
             GoMutationOutcome {
                 candidate,
+                selection,
                 commands,
                 status,
                 isolation_failed: false,
@@ -2586,6 +2715,7 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
         }
         Err(error) => GoMutationOutcome {
             candidate,
+            selection,
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
@@ -2601,6 +2731,7 @@ fn execute_go_mutation(
     modules: &[GoModule],
     package_args: &[String],
     config: &GoPluginConfig,
+    timeout_seconds: u64,
 ) -> Result<Vec<CommandRecord>> {
     let path = root.join(&candidate.path);
     let original =
@@ -2622,7 +2753,7 @@ fn execute_go_mutation(
             &root.join(&module_root),
             "go",
             test_args,
-            mutation_timeout_seconds(config),
+            timeout_seconds,
         )?);
     }
     Ok(commands)
@@ -2654,15 +2785,19 @@ fn classify_go_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_go_mutation_record(
+    root: &Path,
+    run_dir: &Utf8PathBuf,
     quality: &mut VerificationQuality,
     candidate: &MutationCandidate,
     domain: &str,
     operator: &str,
     status: MutationStatus,
     command: Option<&CommandRecord>,
-) {
-    quality.mutation.records.push(mutation_record(
+    selection: &GoMutationSelection,
+) -> Result<()> {
+    let mut record = mutation_record(
         candidate,
         domain,
         operator,
@@ -2670,8 +2805,12 @@ fn push_go_mutation_record(
         command
             .map(|command| command_line(&command.program, &command.args))
             .as_deref(),
+        Some((&selection.hint, selection.fallback.as_deref())),
         command.map(|command| command.duration_ms).unwrap_or(0),
-    ));
+    );
+    persist_mutation_record_artifacts(root, run_dir, &mut record, command)?;
+    quality.mutation.records.push(record);
+    Ok(())
 }
 
 fn go_mutation_failure(
@@ -2746,11 +2885,24 @@ fn go_mutation_candidates(
             .parse(&contents, None)
             .ok_or_else(|| anyhow!("failed to parse Go source {}", path))?;
         for function in path_functions {
+            if function_has_mutation_skip_annotation(
+                &contents,
+                function.start_byte,
+                function.end_byte,
+            ) {
+                continue;
+            }
             collect_go_mutation_nodes(tree.root_node(), &contents, function, &mut candidates)?;
         }
     }
 
     Ok(candidates)
+}
+
+fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
+    source
+        .get(start_byte..end_byte)
+        .is_some_and(|body| body.contains("veritas:skip-mutation"))
 }
 
 fn mutation_domain_from_label(label: &str) -> String {
@@ -2834,13 +2986,31 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
     {
         return false;
     }
+    let target_id = mutation_candidate_target_id(candidate);
+    if !config.mutation.include_target_ids.is_empty()
+        && !config
+            .mutation
+            .include_target_ids
+            .iter()
+            .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_target_ids
+        .iter()
+        .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
     let id = mutation_candidate_id(candidate);
     if !config.mutation.include_mutant_ids.is_empty()
         && !config
             .mutation
             .include_mutant_ids
             .iter()
-            .any(|configured| configured == &id)
+            .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2848,7 +3018,7 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
         .mutation
         .exclude_mutant_ids
         .iter()
-        .any(|configured| configured == &id)
+        .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2887,6 +3057,10 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
         .any(|disabled| taxonomy_matches(&operator, disabled))
 }
 
+fn mutation_candidate_target_id(candidate: &MutationCandidate) -> String {
+    format!("go:{}:{}", candidate.path, candidate.function)
+}
+
 fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationConfig) -> bool {
     let Some(shard_count) = config.shard_count else {
         return true;
@@ -2903,23 +3077,84 @@ fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationC
     (hasher.finish() as usize % shard_count) == shard_index
 }
 
-fn candidate_has_package_tests(
+fn select_go_mutation_tests(
     candidate: &MutationCandidate,
     context: &GoVerificationContext,
-) -> bool {
-    let dir = package_dir(&candidate.path);
-    context.packages.iter().any(|package| {
-        package.dir == dir
+    config: &GoPluginConfig,
+    fallback_package_args: &[String],
+) -> GoMutationSelection {
+    if config.mutation.disable_test_selection {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selection disabled; using the verification package set".to_string(),
+            fallback: Some("mutation.disable_test_selection is true".to_string()),
+            has_tests: true,
+        };
+    }
+
+    if context.packages.is_empty() {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selected verification package set because go list metadata was unavailable"
+                .to_string(),
+            fallback: Some("Go package graph was unavailable".to_string()),
+            has_tests: true,
+        };
+    }
+
+    let candidate_dir = package_dir(&candidate.path);
+    let selected_dirs = BTreeSet::from([candidate_dir.clone()]);
+    let scoped_dirs = scoped_package_dirs(
+        &context.packages,
+        &selected_dirs,
+        config.reverse_dependency_depth,
+        config.max_packages,
+    );
+    let has_tests = context.packages.iter().any(|package| {
+        scoped_dirs.contains(&package.dir)
             && (!package.test_go_files.is_empty() || !package.x_test_go_files.is_empty())
-    })
+    });
+    let package_args = scoped_dirs.iter().map(package_arg).collect::<Vec<_>>();
+
+    if package_args.is_empty() {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selected verification package set because the mutant package was ambiguous"
+                .to_string(),
+            fallback: Some(format!(
+                "candidate package `{candidate_dir}` was not present in the Go package graph"
+            )),
+            has_tests: true,
+        };
+    }
+
+    GoMutationSelection {
+        package_args,
+        hint: format!(
+            "selected Go package `{candidate_dir}` plus reverse dependencies to depth {}",
+            config.reverse_dependency_depth
+        ),
+        fallback: None,
+        has_tests,
+    }
 }
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
     let configured = configured.replace('-', "_").to_ascii_lowercase();
-    operator.contains(configured.trim())
+    text_matches(operator, configured.trim())
 }
 
 fn text_matches(text: &str, pattern: &str) -> bool {
+    if let Some(exact) = pattern.strip_prefix("exact:") {
+        return text.eq_ignore_ascii_case(exact);
+    }
+    if let Some(regex) = pattern.strip_prefix("regex:") {
+        return regex::RegexBuilder::new(regex)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(text));
+    }
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
     let text = text.to_ascii_lowercase();
     let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_suffix('$') {
@@ -2944,6 +3179,7 @@ fn mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&str>,
+    selection: Option<(&str, Option<&str>)>,
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
@@ -2962,10 +3198,18 @@ fn mutation_record(
             end_byte: candidate.end_byte,
         }),
         diff: Some(mutation_diff(candidate)),
+        diff_path: None,
+        outcome_path: None,
+        command_log_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
         risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: selection.map(|(hint, _)| hint.to_string()),
+        test_selection_fallback: selection
+            .and_then(|(_, fallback)| fallback.map(ToString::to_string)),
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
@@ -2995,7 +3239,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
     match status {
         MutationStatus::NotCovered => Some("no package tests cover this mutant".to_string()),
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }
@@ -3088,6 +3335,16 @@ fn collect_go_mutation_nodes(
                 if let Some(candidate) =
                     mutation_candidate_from_context_call(node, source, function)?
                 {
+                    candidates.push(candidate);
+                }
+                if let Some(candidate) =
+                    mutation_candidate_from_make_channel(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "select_statement" => {
+                if let Some(candidate) = mutation_candidate_from_select(node, source, function)? {
                     candidates.push(candidate);
                 }
             }
@@ -3326,12 +3583,30 @@ fn mutation_candidate_from_literal(
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
-        label: domain_mutation_label(function, "literal value mutation"),
+        label: domain_mutation_label(function, literal_mutation_label_for_function(function)),
         from: text.to_string(),
         to: to.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn literal_mutation_label_for_function(function: &GoFunction) -> &'static str {
+    let lowered = function.symbol.to_ascii_lowercase();
+    if lowered.contains("concurrent") || lowered.contains("worker") || lowered.contains("join") {
+        "concurrency_lifecycle await_join mutation"
+    } else if lowered.contains("clock") || lowered.contains("random") || lowered.contains("seam") {
+        "testability injected_clock mutation"
+    } else if lowered.contains("sync") || lowered.contains("lock") || lowered.contains("atomic") {
+        "synchronization lock_mode mutation"
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        "retry_resilience retry_classifier mutation"
+    } else {
+        "literal value mutation"
+    }
 }
 
 fn mutation_candidate_from_go_statement(
@@ -3443,6 +3718,49 @@ fn mutation_candidate_from_context_call(
         to: replacement.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_make_channel(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?.trim().to_string();
+    if !text.starts_with("make(chan ") || !text.ends_with(", 1)") {
+        return Ok(None);
+    }
+    let Some(offset) = text.rfind(", 1)") else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "synchronization channel_select mutation"),
+        from: "1".to_string(),
+        to: "0".to_string(),
+        start_byte: node.start_byte() + offset + 2,
+        end_byte: node.start_byte() + offset + 3,
+    }))
+}
+
+fn mutation_candidate_from_select(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?;
+    let Some(offset) = text.find("default:") else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "synchronization channel_select mutation"),
+        from: "default:".to_string(),
+        to: "case <-time.After(time.Nanosecond):".to_string(),
+        start_byte: node.start_byte() + offset,
+        end_byte: node.start_byte() + offset + "default:".len(),
     }))
 }
 
@@ -3602,6 +3920,9 @@ fn is_simple_string_literal(expression: &str) -> bool {
 }
 
 fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
+    if mutation_taxonomy::normalize_domain(base) != "general" {
+        return base.to_string();
+    }
     let lowered = function.symbol.to_ascii_lowercase();
     let domain = if lowered.contains("auth")
         || lowered.contains("permission")
@@ -3631,6 +3952,30 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("valid")
     {
         Some("error_handling")
+    } else if lowered.contains("concurrent")
+        || lowered.contains("worker")
+        || lowered.contains("spawn")
+        || lowered.contains("join")
+        || lowered.contains("async")
+    {
+        Some("concurrency_lifecycle")
+    } else if lowered.contains("clock")
+        || lowered.contains("random")
+        || lowered.contains("seam")
+        || lowered.contains("deterministic")
+    {
+        Some("testability")
+    } else if lowered.contains("sync")
+        || lowered.contains("lock")
+        || lowered.contains("atomic")
+        || lowered.contains("channel")
+    {
+        Some("synchronization")
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        Some("retry_resilience")
     } else if lowered.contains("limit")
         || lowered.contains("threshold")
         || lowered.contains("min")
@@ -4843,6 +5188,45 @@ mod tests {
             grouped.get(&Utf8PathBuf::from("services/api")),
             Some(&vec!["./pkg/http".to_string()])
         );
+    }
+
+    #[test]
+    fn mutation_filters_support_regex_target_and_taxonomy_patterns() {
+        let candidate = MutationCandidate {
+            path: Utf8PathBuf::from("pkg/invoice/invoice.go"),
+            function: "ApplyDiscountCents".to_string(),
+            label: "money arithmetic direction mutation".to_string(),
+            from: "+".to_string(),
+            to: "-".to_string(),
+            start_byte: 10,
+            end_byte: 11,
+        };
+        let mut config = test_go_config();
+        config.mutation.include_paths = vec!["regex:^pkg/invoice/".to_string()];
+        config.mutation.include_symbols = vec!["exact:ApplyDiscountCents".to_string()];
+        config.mutation.include_target_ids = vec!["glob:go:pkg/*:ApplyDiscountCents".to_string()];
+        config.mutation.enabled_domains = vec!["exact:money".to_string()];
+        config.mutation.enabled_operators = vec!["exact:arithmetic".to_string()];
+        assert!(mutation_candidate_allowed(&candidate, &config));
+
+        config.mutation.exclude_target_ids = vec!["regex:ApplyDiscount".to_string()];
+        assert!(!mutation_candidate_allowed(&candidate, &config));
+    }
+
+    #[test]
+    fn go_mutation_skip_annotation_is_function_local() {
+        let source = "func kept() int { return 1 }\nfunc skipped() int { // veritas:skip-mutation\nreturn 2\n}";
+        let kept_start = source.find("func kept").unwrap();
+        let kept_end = source.find("func skipped").unwrap();
+        let skipped_start = kept_end;
+        assert!(!function_has_mutation_skip_annotation(
+            source, kept_start, kept_end
+        ));
+        assert!(function_has_mutation_skip_annotation(
+            source,
+            skipped_start,
+            source.len()
+        ));
     }
 
     fn test_go_config() -> GoPluginConfig {

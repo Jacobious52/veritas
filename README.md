@@ -221,10 +221,10 @@ Reports and artifacts:
 - saves the latest report to `.veritas/report.json`
 - lists and previews candidate mutants without executing tests through `veritas mutants list`, including JSON output, byte-range spans, diff previews, shard/filter controls, risk notes, and suggested tests
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
-- reports mutation score attribution/trends, per-mutant campaign records, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- reports mutation score attribution/trends, per-mutant campaign records, per-run survivor diffs/logs, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
 - summarizes current confidence and baseline deltas with `veritas score`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, tail-able mutation run directories under `.veritas/mutations/runs/`, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` now emit before/after proof artifacts and remove generated candidates that regress or fail evaluation
 - `veritas conformance` checks the plugin contract for stable IDs, source-relative paths, function symbols, line ranges, and existing target files
 - cleans generated artifacts with `veritas cleanup`
@@ -306,9 +306,15 @@ include_paths = []
 exclude_paths = []
 include_symbols = []
 exclude_symbols = []
+include_target_ids = []
+exclude_target_ids = []
 include_mutant_ids = []
 exclude_mutant_ids = []
+report_filtered = false
 dry_run = false
+max_mutants = 8
+disable_test_selection = false # set true to run the broader verification package set for every mutant
+baseline_timing = false # set true to derive mutation timeout metadata from the baseline test duration
 workers = 1 # Rust/Go use isolated temp roots when workers > 1; keep small repos serial by default
 test_cpu = 1
 timeout_coefficient = 1
@@ -341,6 +347,10 @@ max_packages = 64
 max_mutants = 8
 build_tags = []
 ```
+
+By default mutation runs select the narrowest package-level test commands the plugin can justify. Rust uses symbol/package ownership; Go uses the package graph plus reverse dependencies. Set `disable_test_selection = true` when a repo has global integration fixtures, hidden build tags, or cross-package side effects that make broad mutation commands safer than local selection.
+
+Mutation filters are evaluated as include filters first, then exclude filters. Patterns accept `exact:...`, `glob:...` or `*` wildcards, and `regex:...`; legacy unprefixed patterns keep substring matching. Use `include_target_ids` / `exclude_target_ids` for `lang:path:symbol` targets and `include_mutant_ids` / `exclude_mutant_ids` for stable per-mutant IDs. Add `veritas:skip-mutation` inside a Rust, Go, or Python function to suppress local mutants, and set `report_filtered = true` when filtered candidates should appear as skipped records.
 
 For shared machines, keep Rust coverage disabled unless needed and enable systemd scope limits:
 
