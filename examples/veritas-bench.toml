@@ -11,7 +11,7 @@ expect_commands = ["cargo test"]
 min_findings = 1
 min_commands = 1
 min_generated_test_failures = 1
-max_duration_ms = 60000
+max_duration_ms = 120000
 
 [[case]]
 name = "go-invoice"

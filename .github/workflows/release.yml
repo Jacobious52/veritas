@@ -13,7 +13,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -36,6 +36,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Installer syntax
+        run: sh -n install.sh
+
       - name: Package crates
         run: ./scripts/publish-crates.sh --dry-run
 
@@ -44,6 +47,121 @@ jobs:
           cargo install --path crates/veritas-cli --locked --force
           veritas --help
           veritas scan --root fixtures/sample-rust
+
+  binaries:
+    name: Build binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            native_smoke: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            native_smoke: false
+          - os: macos-13
+            target: x86_64-apple-darwin
+            native_smoke: true
+          - os: macos-14
+            target: aarch64-apple-darwin
+            native_smoke: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+
+      - name: Install Linux ARM linker
+        if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build -p veritas-cli --locked --release --target "${{ matrix.target }}"
+
+      - name: Native smoke
+        if: ${{ matrix.native_smoke }}
+        run: |
+          host_arch="$(uname -m)"
+          case "${{ matrix.target }}" in
+            x86_64-*) [ "$host_arch" = "x86_64" ] || exit 0 ;;
+            aarch64-*) [ "$host_arch" = "arm64" ] || [ "$host_arch" = "aarch64" ] || exit 0 ;;
+          esac
+          "target/${{ matrix.target }}/release/veritas" --help
+          "target/${{ matrix.target }}/release/veritas" scan --root fixtures/sample-rust
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="veritas-${{ matrix.target }}.tar.gz"
+          mkdir -p dist/pkg
+          cp "target/${{ matrix.target }}/release/veritas" dist/pkg/veritas
+          chmod +x dist/pkg/veritas
+          cp README.md dist/pkg/README.md
+          tar -C dist/pkg -czf "dist/${asset}" veritas README.md
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "dist/${asset}" > "dist/${asset}.sha256"
+          else
+            shasum -a 256 "dist/${asset}" > "dist/${asset}.sha256"
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-${{ matrix.target }}
+          path: |
+            dist/veritas-${{ matrix.target }}.tar.gz
+            dist/veritas-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  github-release:
+    name: Upload GitHub Release assets
+    runs-on: ubuntu-latest
+    needs: binaries
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: veritas-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp install.sh dist/release/install.sh
+          chmod 755 dist/release/install.sh
+          cd dist/release
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum veritas-*.tar.gz install.sh > veritas-checksums.txt
+          else
+            shasum -a 256 veritas-*.tar.gz install.sh > veritas-checksums.txt
+          fi
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/release/* --clobber
+          else
+            gh release create "$tag" dist/release/* --title "$tag" --generate-notes
+          fi
 
   publish:
     name: Publish crates.io

@@ -47,15 +47,30 @@ Publishing also runs on tags matching `v*`.
 
 ## Release Binaries
 
-Release tags are the home for prebuilt CLI binaries. When binary packaging is enabled for a platform, attach assets to the GitHub Release for that tag using names like:
+Release tags build and attach prebuilt CLI binaries to the GitHub Release. The release workflow publishes:
 
 ```text
+install.sh
+veritas-checksums.txt
 veritas-x86_64-unknown-linux-gnu.tar.gz
+veritas-aarch64-unknown-linux-gnu.tar.gz
 veritas-aarch64-apple-darwin.tar.gz
-veritas-x86_64-pc-windows-msvc.zip
+veritas-x86_64-apple-darwin.tar.gz
 ```
 
-Until a platform has an attached binary, users should install with:
+The public installer downloads the right binary for Linux/macOS and verifies it against `veritas-checksums.txt` when `sha256sum` or `shasum` is available:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+```
+
+To install a specific release:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | VERSION=v0.1.1 sh
+```
+
+Users can still build locally with:
 
 ```bash
 cargo install veritas-cli --locked
@@ -68,6 +83,8 @@ cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
 ```
 
 The publish script is resumable: it skips crate versions that already exist on crates.io and retries once after short crates.io rate-limit responses. If a first workspace release partially succeeds, rerun the failed workflow after the crates.io retry time instead of changing the published artifacts.
+
+Manual `dry_run=true` release workflow runs validate crates and build/upload binary artifacts to the workflow run without creating a GitHub Release. Tag pushes matching `v*` create or update the GitHub Release assets.
 
 After any successful publish, bump the workspace package version and internal crate dependency versions before landing new feature work.
 
@@ -100,6 +117,7 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ./scripts/publish-crates.sh --dry-run
+sh -n install.sh
 ```
 
 While editing locally, the package dry-run can include uncommitted files:

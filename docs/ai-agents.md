@@ -8,6 +8,9 @@ Use this document when an AI coding agent is editing a repository that should be
 Use veritas as the adversarial verification loop for this change.
 
 Install if needed:
+  curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+
+If a release binary is not available for this machine:
   cargo install veritas-cli --locked
 
 If the crate release is not available yet:

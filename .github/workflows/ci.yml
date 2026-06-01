@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - ".github/workflows/ci.yml"
+      - ".github/workflows/release.yml"
+      - ".github/actions/**"
+      - "install.sh"
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**"
@@ -17,6 +20,9 @@ on:
       - main
     paths:
       - ".github/workflows/ci.yml"
+      - ".github/workflows/release.yml"
+      - ".github/actions/**"
+      - "install.sh"
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/**"
@@ -68,3 +74,6 @@ jobs:
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-rust
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-go
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-python
+
+      - name: Installer syntax
+        run: sh -n install.sh

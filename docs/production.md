@@ -144,8 +144,7 @@ jobs:
         shard_index: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install veritas-cli --locked
+      - run: curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
       - run: mkdir -p .veritas/mutations/shards/${{ matrix.shard_index }}
       - name: Discover shard mutants
         run: |
@@ -180,8 +179,7 @@ jobs:
           pattern: veritas-mutants-*
           path: .veritas/mutations/merged-inputs
           merge-multiple: true
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install veritas-cli --locked
+      - run: curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
       - run: |
           veritas mutants merge \
             .veritas/mutations/merged-inputs/*.json \
