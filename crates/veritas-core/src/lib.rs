@@ -16,16 +16,16 @@ use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain, AssertionSource,
-    BehaviorReplayCase, BehaviorReplayObservation, BehaviorReplayStatus, CommandBudget,
-    CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry, EvolutionCandidateKind,
-    EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness, EvolutionGeneration,
-    EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta, EvolutionStrategy,
-    EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange,
-    MutationAttribution, MutationStatus, PerformanceMetrics, ProjectInfo, QualityBaseline,
-    QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult, VerificationPlan,
-    VerificationPlanner, VerificationQuality, VerificationReport, VerificationStrategy,
-    VerificationTarget,
+    mutation_taxonomy, ArtifactKind, ArtifactStatus, AssertionCandidate, AssertionDomain,
+    AssertionSource, BehaviorReplayCase, BehaviorReplayObservation, BehaviorReplayStatus,
+    CommandBudget, CommandRecord, ConfidenceGrade, ConfidenceScore, CorpusEntry,
+    EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
+    EvolutionGeneration, EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta,
+    EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
+    LineRange, MutationAttribution, MutationStatus, PerformanceMetrics, ProjectInfo,
+    QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
+    VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -4402,20 +4402,72 @@ fn mutation_campaign_artifacts(
     let contents = serde_json::to_string_pretty(&serde_json::json!({
         "version": 1,
         "language": language,
+        "layout": {
+            "campaign": format!(".veritas/mutations/{language}_campaign.json"),
+            "progress": format!(".veritas/mutations/{language}_progress.md"),
+            "repros": ".veritas/repros",
+            "scratch_roots": "created outside the project and removed when workers finish"
+        },
         "output_statuses": output_statuses,
         "metrics": mutation,
         "records": records,
     }))?;
-    Ok(vec![GeneratedArtifact {
-        id: format!("{language}-mutation-campaign"),
-        language: language.to_string(),
-        kind: ArtifactKind::MutationCampaign,
-        target_id: format!("{language}:mutation-campaign"),
-        path: Utf8PathBuf::from(format!(".veritas/mutations/{language}_campaign.json")),
-        contents,
-        description: "Per-mutant campaign records and status metrics".to_string(),
-        status: ArtifactStatus::Planned,
-    }])
+    let mut progress = String::new();
+    progress.push_str(&format!("# {language} mutation campaign\n\n"));
+    progress.push_str(&format!("- Generated: `{}`\n", mutation.generated));
+    progress.push_str(&format!("- Runnable: `{}`\n", mutation.runnable));
+    progress.push_str(&format!("- Executed: `{}`\n", mutation.executed));
+    progress.push_str(&format!("- Killed: `{}`\n", mutation.killed));
+    progress.push_str(&format!("- Survived: `{}`\n", mutation.survived));
+    progress.push_str(&format!("- Not covered: `{}`\n", mutation.not_covered));
+    progress.push_str(&format!("- Timed out: `{}`\n", mutation.timed_out));
+    progress.push_str(&format!("- Not viable: `{}`\n", mutation.not_viable));
+    progress.push_str(&format!("- Skipped: `{}`\n", mutation.skipped));
+    progress.push_str(&format!(
+        "- Workers: requested `{}`, effective `{}`\n",
+        mutation.requested_workers, mutation.effective_workers
+    ));
+    progress.push_str("\n## Survivors And Gaps\n\n");
+    for record in records.iter().filter(|record| {
+        matches!(
+            record.status,
+            MutationStatus::Lived | MutationStatus::NotCovered | MutationStatus::TimedOut
+        )
+    }) {
+        progress.push_str(&format!(
+            "- `{}` `{}`/`{}` in `{}`: {}\n",
+            mutation_status_label(record.status),
+            record.domain,
+            record.operator,
+            record.symbol,
+            record
+                .suggested_test
+                .as_deref()
+                .unwrap_or("add a behavior-focused regression assertion")
+        ));
+    }
+    Ok(vec![
+        GeneratedArtifact {
+            id: format!("{language}-mutation-campaign"),
+            language: language.to_string(),
+            kind: ArtifactKind::MutationCampaign,
+            target_id: format!("{language}:mutation-campaign"),
+            path: Utf8PathBuf::from(format!(".veritas/mutations/{language}_campaign.json")),
+            contents,
+            description: "Per-mutant campaign records and status metrics".to_string(),
+            status: ArtifactStatus::Planned,
+        },
+        GeneratedArtifact {
+            id: format!("{language}-mutation-progress"),
+            language: language.to_string(),
+            kind: ArtifactKind::MutationCampaign,
+            target_id: format!("{language}:mutation-progress"),
+            path: Utf8PathBuf::from(format!(".veritas/mutations/{language}_progress.md")),
+            contents: progress,
+            description: "Human-readable mutation progress and survivor queue".to_string(),
+            status: ArtifactStatus::Planned,
+        },
+    ])
 }
 
 fn filtered_mutation_records(
@@ -5022,39 +5074,11 @@ fn property_strength_score(property: &veritas_plugin_api::PropertyMetrics) -> Op
 }
 
 fn mutation_domain_label(finding: &Failure) -> String {
-    let text = finding.message.to_ascii_lowercase();
-    for domain in [
-        "auth/permission",
-        "money",
-        "parsing/normalization",
-        "serialization",
-        "error handling",
-        "boundary",
-    ] {
-        if text.contains(domain) {
-            return domain.to_string();
-        }
-    }
-    "general".to_string()
+    mutation_taxonomy::normalize_domain(&finding.message).to_string()
 }
 
 fn mutation_operator_label(finding: &Failure) -> String {
-    let text = finding.message.to_ascii_lowercase();
-    for operator in [
-        "comparison",
-        "equality",
-        "boolean",
-        "arithmetic",
-        "default",
-        "nil",
-        "error",
-        "boundary",
-    ] {
-        if text.contains(operator) {
-            return operator.to_string();
-        }
-    }
-    "general".to_string()
+    mutation_taxonomy::normalize_operator(&finding.message).to_string()
 }
 
 pub fn confidence_score(report: &VerificationReport) -> ConfidenceScore {
@@ -5627,7 +5651,16 @@ mod tests {
             operator: "comparison".to_string(),
             domain: "auth_permission".to_string(),
             status,
+            from: None,
+            to: None,
             line_range: None,
+            source_span: None,
+            diff: None,
+            risk_note: None,
+            suggested_test: None,
+            skip_reason: None,
+            selected_test_command: None,
+            brittleness_probe: false,
             command: None,
             duration_ms: 0,
         }

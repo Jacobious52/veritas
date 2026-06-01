@@ -69,17 +69,29 @@ pub struct GoPluginConfig {
 pub struct PythonPluginConfig {
     pub command_timeout_seconds: u64,
     pub coverage_enabled: bool,
+    pub mutation: MutationConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MutationConfig {
+    pub enabled_domains: Vec<String>,
+    pub disabled_domains: Vec<String>,
     pub enabled_operators: Vec<String>,
     pub disabled_operators: Vec<String>,
+    pub include_paths: Vec<String>,
     pub exclude_paths: Vec<String>,
+    pub include_symbols: Vec<String>,
+    pub exclude_symbols: Vec<String>,
+    pub include_mutant_ids: Vec<String>,
+    pub exclude_mutant_ids: Vec<String>,
     pub dry_run: bool,
     pub workers: usize,
     pub test_cpu: Option<usize>,
     pub timeout_coefficient: u64,
+    pub timeout_min_seconds: Option<u64>,
+    pub timeout_max_seconds: Option<u64>,
+    pub shard_index: Option<usize>,
+    pub shard_count: Option<usize>,
     pub output_statuses: Vec<String>,
 }
 
@@ -169,17 +181,29 @@ struct GoPluginConfigPartial {
 struct PythonPluginConfigPartial {
     command_timeout_seconds: Option<u64>,
     coverage_enabled: Option<bool>,
+    mutation: Option<MutationConfigPartial>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct MutationConfigPartial {
+    enabled_domains: Option<Vec<String>>,
+    disabled_domains: Option<Vec<String>>,
     enabled_operators: Option<Vec<String>>,
     disabled_operators: Option<Vec<String>>,
+    include_paths: Option<Vec<String>>,
     exclude_paths: Option<Vec<String>>,
+    include_symbols: Option<Vec<String>>,
+    exclude_symbols: Option<Vec<String>>,
+    include_mutant_ids: Option<Vec<String>>,
+    exclude_mutant_ids: Option<Vec<String>>,
     dry_run: Option<bool>,
     workers: Option<usize>,
     test_cpu: Option<usize>,
     timeout_coefficient: Option<u64>,
+    timeout_min_seconds: Option<u64>,
+    timeout_max_seconds: Option<u64>,
+    shard_index: Option<usize>,
+    shard_count: Option<usize>,
     output_statuses: Option<Vec<String>>,
 }
 
@@ -233,6 +257,7 @@ impl Default for VeritasConfig {
                 python: PythonPluginConfig {
                     command_timeout_seconds: 120,
                     coverage_enabled: false,
+                    mutation: MutationConfig::default(),
                 },
             },
         }
@@ -382,6 +407,9 @@ impl VeritasConfig {
                 if let Some(value) = python.coverage_enabled {
                     config.plugins.python.coverage_enabled = value;
                 }
+                if let Some(value) = python.mutation {
+                    apply_mutation_config(&mut config.plugins.python.mutation, &value);
+                }
             }
         }
 
@@ -390,14 +418,35 @@ impl VeritasConfig {
 }
 
 fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPartial) {
+    if let Some(value) = &partial.enabled_domains {
+        config.enabled_domains = value.clone();
+    }
+    if let Some(value) = &partial.disabled_domains {
+        config.disabled_domains = value.clone();
+    }
     if let Some(value) = &partial.enabled_operators {
         config.enabled_operators = value.clone();
     }
     if let Some(value) = &partial.disabled_operators {
         config.disabled_operators = value.clone();
     }
+    if let Some(value) = &partial.include_paths {
+        config.include_paths = value.clone();
+    }
     if let Some(value) = &partial.exclude_paths {
         config.exclude_paths = value.clone();
+    }
+    if let Some(value) = &partial.include_symbols {
+        config.include_symbols = value.clone();
+    }
+    if let Some(value) = &partial.exclude_symbols {
+        config.exclude_symbols = value.clone();
+    }
+    if let Some(value) = &partial.include_mutant_ids {
+        config.include_mutant_ids = value.clone();
+    }
+    if let Some(value) = &partial.exclude_mutant_ids {
+        config.exclude_mutant_ids = value.clone();
     }
     if let Some(value) = partial.dry_run {
         config.dry_run = value;
@@ -410,6 +459,18 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
     }
     if let Some(value) = partial.timeout_coefficient {
         config.timeout_coefficient = value;
+    }
+    if let Some(value) = partial.timeout_min_seconds {
+        config.timeout_min_seconds = Some(value);
+    }
+    if let Some(value) = partial.timeout_max_seconds {
+        config.timeout_max_seconds = Some(value);
+    }
+    if let Some(value) = partial.shard_index {
+        config.shard_index = Some(value);
+    }
+    if let Some(value) = partial.shard_count {
+        config.shard_count = Some(value.max(1));
     }
     if let Some(value) = &partial.output_statuses {
         config.output_statuses = value.clone();

@@ -349,6 +349,35 @@ command_timeout_seconds = 20
 }
 
 #[test]
+fn mutants_list_previews_advanced_records_without_executing_tests() {
+    let fixture = copy_example("rust-concurrency-db");
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path()).args([
+        "mutants",
+        "list",
+        "--lang",
+        "rust",
+        "--target",
+        "src/lib.rs",
+        "--format",
+        "json",
+        "--domain",
+        "synchronization",
+    ]);
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let json: Value = serde_json::from_slice(&output).expect("mutants list json");
+    assert!(json["count"].as_u64().expect("count") > 0);
+    let records = json["records"].as_array().expect("records");
+    assert!(records.iter().any(|record| {
+        record["operator"] == "atomic_ordering"
+            && record["status"] == "runnable"
+            && record["diff"]
+                .as_str()
+                .is_some_and(|diff| diff.contains("@@ bytes"))
+    }));
+}
+
+#[test]
 fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
     if !go_available() {
         return;
@@ -675,7 +704,7 @@ fn benchmark_suite_scores_seeded_examples() {
         .args(["--root", "examples", "bench", "--format", "json"]);
     json.assert()
         .success()
-        .stdout(predicate::str::contains("\"total_cases\": 10"))
+        .stdout(predicate::str::contains("\"total_cases\": 12"))
         .stdout(predicate::str::contains("\"passed\": true"))
         .stdout(predicate::str::contains("\"profile\": \"seeded\""))
         .stdout(predicate::str::contains("\"summary\""))
@@ -687,6 +716,8 @@ fn benchmark_suite_scores_seeded_examples() {
         .stdout(predicate::str::contains("\"go-api-service\""))
         .stdout(predicate::str::contains("\"rust-evolution-loop\""))
         .stdout(predicate::str::contains("\"go-evolution-loop\""))
+        .stdout(predicate::str::contains("\"rust-concurrency-db\""))
+        .stdout(predicate::str::contains("\"go-concurrency-db\""))
         .stdout(predicate::str::contains("\"command_count\""))
         .stdout(predicate::str::contains("\"mutation_score_percent\""))
         .stdout(predicate::str::contains(

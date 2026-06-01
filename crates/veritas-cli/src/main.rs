@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -18,7 +18,7 @@ use veritas_core::{
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
     ArtifactKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionSuite,
-    FailureSeverity, PerformanceMetrics, RiskLevel, TargetKind, VerificationReport,
+    FailureSeverity, MutationRecord, PerformanceMetrics, RiskLevel, TargetKind, VerificationReport,
     VerificationStrategy,
 };
 use veritas_python::PythonPlugin;
@@ -177,6 +177,77 @@ enum Command {
     },
     Conformance {
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
+    Mutants {
+        #[command(subcommand)]
+        command: MutantsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MutantsCommand {
+    List {
+        #[arg(long)]
+        lang: Option<String>,
+
+        #[arg(long)]
+        target: Option<PathBuf>,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+
+        #[arg(long)]
+        diffs: bool,
+
+        #[arg(long)]
+        domain: Vec<String>,
+
+        #[arg(long)]
+        operator: Vec<String>,
+
+        #[arg(long)]
+        include_path: Vec<String>,
+
+        #[arg(long)]
+        exclude_path: Vec<String>,
+
+        #[arg(long)]
+        include_symbol: Vec<String>,
+
+        #[arg(long)]
+        exclude_symbol: Vec<String>,
+
+        #[arg(long)]
+        shard_index: Option<usize>,
+
+        #[arg(long)]
+        shard_count: Option<usize>,
+    },
+    Run {
+        #[arg(long)]
+        lang: Option<String>,
+
+        #[arg(long)]
+        target: Option<PathBuf>,
+
+        #[arg(long)]
+        from_campaign: PathBuf,
+
+        #[arg(long, default_value = "lived")]
+        status: Vec<String>,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+    },
+    Merge {
+        #[arg(required = true)]
+        input: Vec<PathBuf>,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
         format: OutputFormat,
     },
 }
@@ -476,6 +547,7 @@ fn main() -> Result<()> {
     if let Command::Verify { profile, .. } = &cli.command {
         apply_verify_profile(&mut config, *profile);
     }
+    apply_mutants_list_config(&root, &mut config, &cli.command)?;
     let engine = engine(config);
 
     match cli.command {
@@ -668,9 +740,239 @@ fn main() -> Result<()> {
                 bail!("plugin conformance checks failed");
             }
         }
+        Command::Mutants { command } => match command {
+            MutantsCommand::List {
+                lang,
+                target,
+                format,
+                diffs,
+                ..
+            } => {
+                let report = run_mutants_verify(&engine, &root, lang, target.as_deref())?;
+                engine.save_report(&root, &report)?;
+                print_mutants_list(&report, format, diffs)?;
+            }
+            MutantsCommand::Run {
+                lang,
+                target,
+                format,
+                ..
+            } => {
+                let report = run_mutants_verify(&engine, &root, lang, target.as_deref())?;
+                engine.save_report(&root, &report)?;
+                print_mutants_list(&report, format, false)?;
+            }
+            MutantsCommand::Merge {
+                input,
+                output,
+                format,
+            } => {
+                let merged = merge_mutation_campaigns(&root, &input)?;
+                if let Some(output) = output {
+                    let path = if output.is_absolute() {
+                        output
+                    } else {
+                        root.join(output)
+                    };
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&path, serde_json::to_string_pretty(&merged)?)?;
+                }
+                print_mutation_merge(&merged, format)?;
+            }
+        },
     }
 
     Ok(())
+}
+
+fn apply_mutants_list_config(
+    root: &Path,
+    config: &mut VeritasConfig,
+    command: &Command,
+) -> Result<()> {
+    let Command::Mutants {
+        command: mutants_command,
+    } = command
+    else {
+        return Ok(());
+    };
+    match mutants_command {
+        MutantsCommand::List {
+            domain,
+            operator,
+            include_path,
+            exclude_path,
+            include_symbol,
+            exclude_symbol,
+            shard_index,
+            shard_count,
+            ..
+        } => {
+            for mutation in [
+                &mut config.plugins.rust.mutation,
+                &mut config.plugins.go.mutation,
+                &mut config.plugins.python.mutation,
+            ] {
+                mutation.dry_run = true;
+                if !domain.is_empty() {
+                    mutation.enabled_domains = domain.clone();
+                }
+                if !operator.is_empty() {
+                    mutation.enabled_operators = operator.clone();
+                }
+                if !include_path.is_empty() {
+                    mutation.include_paths = include_path.clone();
+                }
+                if !exclude_path.is_empty() {
+                    mutation.exclude_paths = exclude_path.clone();
+                }
+                if !include_symbol.is_empty() {
+                    mutation.include_symbols = include_symbol.clone();
+                }
+                if !exclude_symbol.is_empty() {
+                    mutation.exclude_symbols = exclude_symbol.clone();
+                }
+                mutation.shard_index = *shard_index;
+                mutation.shard_count = shard_count.map(|count| count.max(1));
+            }
+        }
+        MutantsCommand::Run {
+            from_campaign,
+            status,
+            ..
+        } => {
+            let ids = mutant_ids_from_campaign(root, from_campaign, status)?;
+            for mutation in [
+                &mut config.plugins.rust.mutation,
+                &mut config.plugins.go.mutation,
+                &mut config.plugins.python.mutation,
+            ] {
+                mutation.include_mutant_ids = ids.clone();
+            }
+        }
+        MutantsCommand::Merge { .. } => {}
+    }
+    Ok(())
+}
+
+fn run_mutants_verify(
+    engine: &CoreEngine,
+    root: &Path,
+    lang: Option<String>,
+    target: Option<&Path>,
+) -> Result<VerificationReport> {
+    let language = match lang {
+        Some(lang) => lang,
+        None => infer_language(root, target, &VerificationStrategy::MutationChecks)?,
+    };
+    with_current_dir(root, || {
+        engine.verify(
+            root,
+            &language,
+            target,
+            vec![VerificationStrategy::MutationChecks],
+        )
+    })
+}
+
+fn mutant_ids_from_campaign(root: &Path, path: &Path, statuses: &[String]) -> Result<Vec<String>> {
+    let path = resolve_root_path(root, path);
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let wanted = statuses
+        .iter()
+        .map(|status| normalize_status(status))
+        .collect::<BTreeSet<_>>();
+    let records = value
+        .get("records")
+        .and_then(|records| records.as_array())
+        .or_else(|| {
+            value
+                .get("metrics")
+                .and_then(|metrics| metrics.get("records"))
+                .and_then(|records| records.as_array())
+        })
+        .context("mutation campaign does not contain a records array")?;
+    let ids = records
+        .iter()
+        .filter(|record| {
+            record
+                .get("status")
+                .and_then(|status| status.as_str())
+                .is_some_and(|status| wanted.contains(&normalize_status(status)))
+        })
+        .filter_map(|record| record.get("id").and_then(|id| id.as_str()))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        bail!(
+            "no mutants with status {:?} were found in {}",
+            statuses,
+            path.display()
+        );
+    }
+    Ok(ids)
+}
+
+fn normalize_status(status: &str) -> String {
+    status.replace(['-', '_'], " ").to_ascii_lowercase()
+}
+
+fn resolve_root_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn merge_mutation_campaigns(root: &Path, inputs: &[PathBuf]) -> Result<serde_json::Value> {
+    let mut records_by_id = BTreeMap::new();
+    let mut sources = Vec::new();
+    for input in inputs {
+        let path = resolve_root_path(root, input);
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let records = value
+            .get("records")
+            .and_then(|records| records.as_array())
+            .or_else(|| {
+                value
+                    .get("metrics")
+                    .and_then(|metrics| metrics.get("records"))
+                    .and_then(|records| records.as_array())
+            })
+            .context("mutation campaign does not contain a records array")?;
+        sources.push(path.display().to_string());
+        for record in records {
+            if let Some(id) = record.get("id").and_then(|id| id.as_str()) {
+                records_by_id
+                    .entry(id.to_string())
+                    .or_insert_with(|| record.clone());
+            }
+        }
+    }
+    let records = records_by_id.into_values().collect::<Vec<_>>();
+    let mut by_status = BTreeMap::<String, usize>::new();
+    for record in &records {
+        if let Some(status) = record.get("status").and_then(|status| status.as_str()) {
+            *by_status.entry(status.to_string()).or_default() += 1;
+        }
+    }
+    Ok(serde_json::json!({
+        "version": 1,
+        "source_count": sources.len(),
+        "sources": sources,
+        "record_count": records.len(),
+        "by_status": by_status,
+        "records": records,
+    }))
 }
 
 fn run_bench_suite(root: &Path, suite: Option<&Path>) -> Result<BenchReport> {
@@ -2274,6 +2576,114 @@ fn print_report(report: &VerificationReport, format: OutputFormat) -> Result<()>
         }
         OutputFormat::Junit => {
             println!("{}", render_junit(report));
+        }
+    }
+    Ok(())
+}
+
+fn print_mutants_list(
+    report: &VerificationReport,
+    format: OutputFormat,
+    diffs: bool,
+) -> Result<()> {
+    let records = report
+        .runs
+        .iter()
+        .flat_map(|run| run.quality.mutation.records.iter().cloned())
+        .collect::<Vec<_>>();
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "version": 1,
+                    "count": records.len(),
+                    "records": records,
+                }))?
+            );
+        }
+        OutputFormat::Markdown => {
+            println!("# veritas mutants list\n");
+            println!("- Mutants: `{}`", records.len());
+            println!(
+                "- Mutation score: `{}`",
+                report
+                    .quality
+                    .mutation
+                    .score_percent
+                    .map(|score| format!("{score}%"))
+                    .unwrap_or_else(|| "n/a".to_string())
+            );
+            for record in &records {
+                print_mutant_record(record, diffs);
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("mutants list supports --format markdown or --format json")
+        }
+    }
+    Ok(())
+}
+
+fn print_mutant_record(record: &MutationRecord, diffs: bool) {
+    println!("\n## `{}`\n", record.id);
+    println!("- Status: `{:?}`", record.status);
+    println!("- Language: `{}`", record.language);
+    println!("- Target: `{}` / `{}`", record.path, record.symbol);
+    println!(
+        "- Domain/operator: `{}` / `{}`",
+        record.domain, record.operator
+    );
+    if let (Some(from), Some(to)) = (&record.from, &record.to) {
+        println!("- Replacement: `{from}` -> `{to}`");
+    }
+    if let Some(command) = &record.selected_test_command {
+        println!("- Selected test command: `{command}`");
+    }
+    if let Some(reason) = &record.skip_reason {
+        println!("- Skip reason: {reason}");
+    }
+    if let Some(note) = &record.risk_note {
+        println!("- Risk: {note}");
+    }
+    if let Some(suggested) = &record.suggested_test {
+        println!("- Suggested test: {suggested}");
+    }
+    if diffs {
+        if let Some(diff) = &record.diff {
+            println!("\n```diff\n{diff}\n```");
+        }
+    }
+}
+
+fn print_mutation_merge(merged: &serde_json::Value, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(merged)?),
+        OutputFormat::Markdown => {
+            println!("# veritas mutants merge\n");
+            println!(
+                "- Sources: `{}`",
+                merged
+                    .get("source_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+            );
+            println!(
+                "- Records: `{}`",
+                merged
+                    .get("record_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+            );
+            if let Some(by_status) = merged.get("by_status").and_then(|value| value.as_object()) {
+                println!("\n## Status\n");
+                for (status, count) in by_status {
+                    println!("- `{status}`: `{count}`");
+                }
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("mutants merge supports --format markdown or --format json")
         }
     }
     Ok(())

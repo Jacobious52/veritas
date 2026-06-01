@@ -575,11 +575,293 @@ pub struct MutationRecord {
     pub domain: String,
     pub status: MutationStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_range: Option<LineRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_span: Option<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_test: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_test_command: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub brittleness_probe: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default)]
     pub duration_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+pub mod mutation_taxonomy {
+    pub const DOMAINS: &[&str] = &[
+        "auth_permission",
+        "money",
+        "parsing_normalization",
+        "serialization",
+        "error_handling",
+        "boundary",
+        "concurrency_lifecycle",
+        "synchronization",
+        "database",
+        "retry_resilience",
+        "testability",
+        "brittleness",
+        "general",
+    ];
+
+    pub const OPERATORS: &[&str] = &[
+        "comparison",
+        "equality",
+        "boolean",
+        "arithmetic",
+        "bitwise",
+        "assignment",
+        "increment",
+        "loop",
+        "literal",
+        "negation",
+        "default",
+        "nil",
+        "error",
+        "boundary",
+        "await_join",
+        "task_spawn",
+        "context_timeout",
+        "lock_mode",
+        "unlock_guard",
+        "channel_select",
+        "atomic_ordering",
+        "transaction_boundary",
+        "rollback_commit",
+        "isolation_lock",
+        "idempotency",
+        "tenant_filter",
+        "affected_rows",
+        "retry_attempt",
+        "retry_classifier",
+        "backoff_cap",
+        "injected_clock",
+        "injected_randomness",
+        "injected_repository",
+        "test_scheduler",
+        "config_lookup",
+        "temp_isolation",
+        "error_shape",
+        "equivalent_ordering",
+        "log_metric_noise",
+        "private_refactor",
+        "general",
+    ];
+
+    pub fn valid_domain(domain: &str) -> bool {
+        DOMAINS.contains(&domain)
+    }
+
+    pub fn valid_operator(operator: &str) -> bool {
+        OPERATORS.contains(&operator)
+    }
+
+    pub fn normalize_domain(label: &str) -> &'static str {
+        let label = label.to_ascii_lowercase().replace(['/', '-'], "_");
+        for domain in DOMAINS {
+            if label.contains(domain) {
+                return domain;
+            }
+        }
+        if label.contains("permission") || label.contains("auth") || label.contains("token") {
+            "auth_permission"
+        } else if label.contains("parse") || label.contains("format") || label.contains("normal") {
+            "parsing_normalization"
+        } else if label.contains("error") || label.contains("err") || label.contains("nil") {
+            "error_handling"
+        } else if label.contains("await") || label.contains("spawn") || label.contains("task") {
+            "concurrency_lifecycle"
+        } else if label.contains("lock")
+            || label.contains("unlock")
+            || label.contains("channel")
+            || label.contains("select")
+            || label.contains("atomic")
+            || label.contains("ordering")
+        {
+            "synchronization"
+        } else if label.contains("transaction")
+            || label.contains("commit")
+            || label.contains("rollback")
+            || label.contains("isolation")
+            || label.contains("tenant")
+            || label.contains("idempot")
+            || label.contains("rows affected")
+        {
+            "database"
+        } else if label.contains("retry")
+            || label.contains("backoff")
+            || label.contains("transient")
+        {
+            "retry_resilience"
+        } else if label.contains("clock")
+            || label.contains("random")
+            || label.contains("repository")
+            || label.contains("scheduler")
+            || label.contains("config")
+            || label.contains("temp")
+        {
+            "testability"
+        } else if label.contains("equivalent")
+            || label.contains("noise")
+            || label.contains("private")
+            || label.contains("brittle")
+        {
+            "brittleness"
+        } else if label.contains("boundary")
+            || label.contains("limit")
+            || label.contains("threshold")
+            || label.contains("min")
+            || label.contains("max")
+        {
+            "boundary"
+        } else if label.contains("money")
+            || label.contains("price")
+            || label.contains("invoice")
+            || label.contains("total")
+            || label.contains("refund")
+            || label.contains("discount")
+        {
+            "money"
+        } else if label.contains("serial") || label.contains("json") || label.contains("marshal") {
+            "serialization"
+        } else {
+            "general"
+        }
+    }
+
+    pub fn normalize_operator(label: &str) -> &'static str {
+        let label = label.to_ascii_lowercase().replace(['/', '-'], "_");
+        for operator in OPERATORS {
+            if label.contains(operator) {
+                return operator;
+            }
+        }
+        if label.contains("equality") {
+            "equality"
+        } else if label.contains("comparison") {
+            "comparison"
+        } else if label.contains("boolean") || label.contains("connector") {
+            "boolean"
+        } else if label.contains("arithmetic") {
+            "arithmetic"
+        } else if label.contains("bitwise") {
+            "bitwise"
+        } else if label.contains("assignment") {
+            "assignment"
+        } else if label.contains("increment") || label.contains("decrement") {
+            "increment"
+        } else if label.contains("loop") {
+            "loop"
+        } else if label.contains("literal") || label.contains("value perturbation") {
+            "literal"
+        } else if label.contains("negation") {
+            "negation"
+        } else if label.contains("default") {
+            "default"
+        } else if label.contains("nil") {
+            "nil"
+        } else if label.contains("error") {
+            "error"
+        } else if label.contains("boundary") {
+            "boundary"
+        } else {
+            "general"
+        }
+    }
+
+    pub fn risk_note(domain: &str, operator: &str) -> &'static str {
+        match (domain, operator) {
+            ("concurrency_lifecycle", "await_join") => {
+                "Async lifecycle mutation: tests should prove awaited work is observed before returning."
+            }
+            ("concurrency_lifecycle", "task_spawn") => {
+                "Task lifecycle mutation: tests should catch fire-and-forget or missing goroutine behavior."
+            }
+            ("synchronization", "lock_mode") => {
+                "Synchronization mutation: tests should catch read/write lock or critical-section weakening."
+            }
+            ("synchronization", "unlock_guard") => {
+                "Synchronization mutation: tests should detect lock release timing and cleanup guarantees."
+            }
+            ("synchronization", "channel_select") => {
+                "Channel/select mutation: tests should cover cancellation, timeout, and chosen receive/send paths."
+            }
+            ("synchronization", "atomic_ordering") => {
+                "Atomic ordering mutation: tests should exercise concurrent visibility assumptions."
+            }
+            ("database", "transaction_boundary") | ("database", "rollback_commit") => {
+                "Database mutation: tests should assert transaction commit/rollback behavior and failure atomicity."
+            }
+            ("database", "isolation_lock") => {
+                "Database isolation mutation: tests should catch lost locking or isolation guarantees."
+            }
+            ("database", "tenant_filter") => {
+                "Tenant isolation mutation: tests should prove cross-tenant data cannot leak."
+            }
+            ("database", "idempotency") => {
+                "Idempotency mutation: tests should replay duplicate requests and assert stable side effects."
+            }
+            ("retry_resilience", _) => {
+                "Retry/resilience mutation: tests should cover transient failures, retry limits, and backoff choices."
+            }
+            ("testability", _) => {
+                "Testing seam mutation: this code may be brittle without injected time, randomness, IO, or schedulers."
+            }
+            ("brittleness", _) => {
+                "Brittleness probe: surviving equivalent-style mutants can point to over-specified tests or noisy assertions."
+            }
+            _ => "Mutation should be killed by behavior-focused tests over the affected symbol.",
+        }
+    }
+
+    pub fn suggested_test(domain: &str, operator: &str) -> &'static str {
+        match (domain, operator) {
+            ("concurrency_lifecycle", _) => {
+                "Add a deterministic concurrent test that waits for completion and asserts observable side effects."
+            }
+            ("synchronization", "channel_select") => {
+                "Add channel/select tests for ready, blocked, cancellation, and timeout paths."
+            }
+            ("synchronization", _) => {
+                "Add a contention test with deterministic scheduling or repeated stress under the focused symbol."
+            }
+            ("database", "tenant_filter") => {
+                "Add a cross-tenant fixture and assert each query/update is scoped to the active tenant."
+            }
+            ("database", _) => {
+                "Add transaction tests that force success and failure paths and inspect persisted state."
+            }
+            ("retry_resilience", _) => {
+                "Use a fake dependency that fails transiently, then assert retry count, backoff cap, and final result."
+            }
+            ("testability", _) => {
+                "Introduce an injectable seam for time/randomness/IO and assert deterministic behavior through it."
+            }
+            ("brittleness", _) => {
+                "Prefer behavior assertions over exact ordering/log/noise expectations unless the order is contractual."
+            }
+            _ => "Add a regression assertion that distinguishes the original expression from this mutant.",
+        }
+    }
 }
 
 fn is_zero(value: &usize) -> bool {

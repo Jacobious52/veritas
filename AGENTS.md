@@ -15,6 +15,7 @@ crates/
   veritas-plugin-api/   # shared traits and report/data model
   veritas-rust/         # Rust detection, Tree-sitter symbols, proptest, cargo, coverage, mutation
   veritas-go/           # Go detection, Tree-sitter symbols, fuzzing, go test, coverage, mutation
+  veritas-python/       # Python detection, Tree-sitter symbols, pytest/unittest, coverage, mutation
   veritas-report/       # Markdown, SARIF, and JUnit renderers
 fixtures/
   sample-rust/          # small integration fixture
@@ -28,6 +29,8 @@ examples/
   go-mutation-score/    # seeded Go benchmark with killed and surviving mutants
   rust-risk-suite/      # broader Rust risk benchmark for auth, money, parsing, serialization
   go-risk-suite/        # broader Go risk benchmark for fuzzing and mutation attribution
+  rust-concurrency-db/  # advanced Rust mutation fixture for locks, transactions, retries, threads
+  go-concurrency-db/    # advanced Go mutation fixture for goroutines, locks, transactions, retries
   veritas-bench.toml    # benchmark manifest of expected detections
 docs/                   # durable docs plus GitHub Pages landing page
 scripts/run-canaries.sh # pinned external repo smoke/verify checks
@@ -95,6 +98,11 @@ cargo run -p veritas-cli -- cleanup --root examples/rust-invoice
 (cd examples/go-invoice && go test ./...)
 cargo run -p veritas-cli -- verify --root examples/go-invoice --lang go --target .
 cargo run -p veritas-cli -- cleanup --root examples/go-invoice
+cargo test --manifest-path examples/rust-concurrency-db/Cargo.toml
+(cd examples/go-concurrency-db && go test ./...)
+cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants list --lang rust --target src/lib.rs --diffs
+cargo run -p veritas-cli -- --root examples/go-concurrency-db mutants list --lang go --target . --diffs
+cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
 cargo run -p veritas-cli -- --root examples bench
 ```
 
@@ -126,6 +134,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
 - Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, isolated parallel mutation workers, and AST-scoped mutation probes.
 - `veritas bench` runs seeded examples in temporary copies and scores expected finding, artifact, command, threshold, mutation attribution, mutation worker/isolation, property strength, corpus, replay, and budget metrics from `veritas-bench.toml`.
+- `veritas mutants list` previews candidate mutants without executing native tests. It supports Markdown/JSON output, diff previews, domain/operator/path/symbol filters, and shard selection. `veritas mutants run --from-campaign ... --status lived` focuses reruns on previous survivors by stable mutant ID, and `veritas mutants merge` combines shard campaign artifacts.
 - Reports include first-class quality metrics for mutation score/trends, property strength, generated-test failures, fuzz execution, corpus replay, and persisted repros.
 - `veritas score` reads `.veritas/report.json` and summarizes confidence from mutation score, findings, assertion candidates, corpus entries/replay, replay cases, baseline deltas, and budget health.
 - `veritas accept-quality-baseline` stores `.veritas/baselines/quality.json` after a reviewed good state.
@@ -137,8 +146,8 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `veritas badge` writes `.veritas/badge.svg` with confidence grade and mutation score for README/Pages use.
 - Observation artifacts now include structured `.veritas/cache/*_targets.json`, `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
 - Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, write `.veritas/evolution/*_evaluation_*.md`, and remove generated candidate files when the evaluated report regresses or cannot be evaluated.
-- Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
-- Rust and Go mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Shared mutation config supports operator allow/deny lists, path exclusions, dry-run discovery, timeout coefficients, campaign status filtering, and worker counts. Rust and Go use isolated temporary project roots when `workers > 1`; `workers = 1` preserves source-rewrite serial behavior. Reports include requested/effective workers, isolation failures, and isolated-copy setup milliseconds.
+- Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic/bitwise/assignment operators, loop/literal/default mutations, async/task lifecycle, lock/defer/atomic synchronization, transaction/rollback/isolation/tenant/idempotency database surfaces, retry/backoff/transient-error behavior, testability seams, and brittleness/equivalence probes where the active language plugin can detect them.
+- Rust, Go, and Python mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Records include source spans, replacements, diff previews, risk notes, suggested tests, skip reasons, selected commands, and shared domain/operator taxonomy. Shared mutation config supports domain/operator allow/deny lists, include/exclude path and symbol filters, dry-run discovery, timeout floors/caps/multipliers, sharding, campaign status filtering, and worker counts. Rust and Go use isolated temporary project roots when `workers > 1`; `workers = 1` preserves source-rewrite serial behavior. Reports include requested/effective workers, isolation failures, and isolated-copy setup milliseconds.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
 - Differential behavior replay is batched through the plugin contract with `replay_behaviors`; `replay_behavior` is the compatibility fallback for future plugins.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
@@ -172,6 +181,8 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/trends/*.json`
 - `.veritas/feedback/*.md`
 - `.veritas/mutations/*.txt`
+- `.veritas/mutations/*_campaign.json`
+- `.veritas/mutations/*_progress.md`
 - `.veritas/package_graph/*.json`
 - `.veritas/symbol_graph/*.json`
 - `.veritas/repros/*.md`

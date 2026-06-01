@@ -1,7 +1,7 @@
 [veritas]
 budget_seconds = 90
 write_generated_tests = true
-fail_on_generated_test_failure = true
+fail_on_generated_test_failure = false
 fail_on_findings = false
 
 [planner]

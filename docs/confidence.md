@@ -20,6 +20,8 @@
    - `examples/go-risk-suite`: Go fuzzing plus mutation-score attribution across auth, parsing, and serialization surfaces.
    - `examples/rust-evolution-loop`: Rust refund, parsing, and status behavior with a multi-candidate evolution suite.
    - `examples/go-evolution-loop`: Go refund, parsing, and status behavior with a before/candidate/after evolution demo.
+   - `examples/rust-concurrency-db`: tenant/idempotency, transaction, lock, atomic-ordering, retry/backoff, and thread-join mutation surfaces.
+   - `examples/go-concurrency-db`: goroutine, deferred unlock, context, tenant/idempotency, transaction, retry/backoff, and atomic mutation surfaces.
 5. Benchmark suites in `examples/veritas-bench.toml` run seeded examples in temporary copies and score expected findings, commands, thresholds, and metrics.
 
 ## Required Checks
@@ -50,6 +52,8 @@ Run the local benchmark suite when changing generation, mutation, fuzzing, repor
 ```bash
 cargo run -p veritas-cli -- --root examples bench
 cargo run -p veritas-cli -- --root examples bench --format json
+cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants list --lang rust --target src/lib.rs --diffs
+cargo run -p veritas-cli -- --root examples/go-concurrency-db mutants list --lang go --target . --format json
 ```
 
 Each benchmark case declares expected finding-message substrings, artifact kinds, command substrings, and thresholds such as `min_findings`, `min_commands`, `min_generated_test_failures`, and `max_duration_ms`. A suite can set `profile = "seeded"`, `profile = "large-repo"`, or `profile = "canary"` to separate small regression fixtures from scale/performance probes. The command copies each case to a temporary directory, runs `veritas verify`, writes the report inside that copy, and removes the copy when done. A case fails when an expected detection disappears, a required command is skipped, or a threshold is violated.

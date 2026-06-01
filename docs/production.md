@@ -74,12 +74,24 @@ min_mutant_coverage = 80
 
 [mutation]
 # Shared mutation controls for Rust, Go, and future Tree-sitter plugins.
+enabled_domains = []
+disabled_domains = []
+enabled_operators = []
 disabled_operators = []
+include_paths = []
 exclude_paths = ["vendor/", "_generated.go$"]
+include_symbols = []
+exclude_symbols = []
+include_mutant_ids = []
+exclude_mutant_ids = []
 dry_run = false
 workers = 2 # Rust and Go use isolated temp roots for parallel mutants when enabled
 test_cpu = 1
 timeout_coefficient = 2
+timeout_min_seconds = 10
+timeout_max_seconds = 180
+shard_index = 0
+shard_count = 1
 output_statuses = ["lived", "not_covered", "timed_out", "not_viable"]
 
 [plugins.go]
@@ -101,7 +113,7 @@ Reports include phase timings for discovery, generation, test execution, coverag
 
 Set `policy.min_mutation_score`, `policy.min_mutation_efficacy`, and `policy.min_mutant_coverage` when you want Gremlins-style mutation quality gates. These thresholds are enforced after the report is scored, and they are language-neutral so Rust, Go, and future plugins share the same CI contract.
 
-The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, and `negation` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests.
+The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, `negation`, `await_join`, `task_spawn`, `lock_mode`, `atomic_ordering`, `transaction_boundary`, `tenant_filter`, `retry_attempt`, `backoff_cap`, and `injected_clock` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests. Use `veritas mutants list --diffs` before turning on execution in a large repo, `veritas mutants run --from-campaign ... --status lived` for survivor-focused loops, and `veritas mutants merge` for CI shard artifacts.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 
