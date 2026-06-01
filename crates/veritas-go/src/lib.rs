@@ -446,6 +446,7 @@ impl LanguagePlugin for GoPlugin {
             }
             commands.push(existing);
         }
+        let baseline_duration_ms = mutation_baseline_duration(&commands, &self.config);
 
         if status == RunStatus::Passed {
             if budget_nearly_spent(start, plan.budget_seconds) {
@@ -498,6 +499,7 @@ impl LanguagePlugin for GoPlugin {
                     &context,
                     &self.config,
                     &package_args,
+                    baseline_duration_ms,
                     start,
                     plan,
                 )?;
@@ -1607,16 +1609,41 @@ fn go_test_args(config: &GoPluginConfig, package_args: &[String]) -> Vec<String>
     args
 }
 
-fn mutation_timeout_seconds(config: &GoPluginConfig) -> u64 {
+fn mutation_baseline_duration(commands: &[CommandRecord], config: &GoPluginConfig) -> Option<u128> {
+    config
+        .mutation
+        .baseline_timing
+        .then(|| commands.iter().map(|command| command.duration_ms).sum())
+}
+
+fn mutation_timeout(
+    config: &GoPluginConfig,
+    baseline_duration_ms: Option<u128>,
+) -> MutationTimeout {
     let coefficient = config.mutation.timeout_coefficient.max(1);
-    let mut timeout = config.command_timeout_seconds.saturating_mul(coefficient);
+    let (base_seconds, base_source) = baseline_duration_ms
+        .map(|duration| (((duration as u64).saturating_add(999)) / 1000).max(1))
+        .map(|seconds| (seconds, "baseline duration".to_string()))
+        .unwrap_or_else(|| {
+            (
+                config.command_timeout_seconds,
+                "configured command timeout".to_string(),
+            )
+        });
+    let mut timeout = base_seconds.saturating_mul(coefficient);
+    let mut source = format!("{base_source} {base_seconds}s * coefficient {coefficient}");
     if let Some(minimum) = config.mutation.timeout_min_seconds {
         timeout = timeout.max(minimum);
+        source.push_str(&format!(", min {minimum}s"));
     }
     if let Some(maximum) = config.mutation.timeout_max_seconds {
         timeout = timeout.min(maximum);
+        source.push_str(&format!(", max {maximum}s"));
     }
-    timeout
+    MutationTimeout {
+        seconds: timeout.max(1),
+        source,
+    }
 }
 
 fn go_tags_arg(config: &GoPluginConfig) -> Option<String> {
@@ -2107,6 +2134,7 @@ struct GoMutationJob {
     modules: Vec<GoModule>,
     selection: GoMutationSelection,
     config: GoPluginConfig,
+    timeout_seconds: u64,
     root: Utf8PathBuf,
 }
 
@@ -2129,12 +2157,20 @@ struct GoMutationSelection {
     has_tests: bool,
 }
 
+#[derive(Debug, Clone)]
+struct MutationTimeout {
+    seconds: u64,
+    source: String,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_mutation_checks(
     root: &Path,
     artifacts: &[GeneratedArtifact],
     context: &GoVerificationContext,
     config: &GoPluginConfig,
     package_args: &[String],
+    baseline_duration_ms: Option<u128>,
     run_start: Instant,
     plan: &VerificationPlan,
 ) -> Result<TestRunResult> {
@@ -2152,6 +2188,10 @@ fn run_mutation_checks(
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
     quality.mutation.effective_workers = 1;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     if config.mutation.workers > 1 && !config.mutation.dry_run {
         return run_parallel_mutation_checks(
@@ -2160,6 +2200,7 @@ fn run_mutation_checks(
             context,
             config,
             package_args,
+            baseline_duration_ms,
             run_start,
             plan,
             start,
@@ -2240,7 +2281,7 @@ fn run_mutation_checks(
                 &root.join(&module_root),
                 "go",
                 test_args,
-                mutation_timeout_seconds(config),
+                timeout.seconds,
             ));
         }
         fs::write(&path, original)
@@ -2377,6 +2418,7 @@ fn run_parallel_mutation_checks(
     context: &GoVerificationContext,
     config: &GoPluginConfig,
     package_args: &[String],
+    baseline_duration_ms: Option<u128>,
     run_start: Instant,
     plan: &VerificationPlan,
     start: Instant,
@@ -2389,6 +2431,10 @@ fn run_parallel_mutation_checks(
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     let mut jobs = Vec::new();
     let root_utf8 = utf8_path(root)?;
@@ -2427,6 +2473,7 @@ fn run_parallel_mutation_checks(
             modules: context.modules.clone(),
             selection,
             config: config.clone(),
+            timeout_seconds: timeout.seconds,
             root: root_utf8.clone(),
         });
     }
@@ -2596,6 +2643,7 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
         &job.modules,
         &selection.package_args,
         &job.config,
+        job.timeout_seconds,
     ) {
         Ok(commands) => {
             let status = classify_go_mutation_status(&commands);
@@ -2627,6 +2675,7 @@ fn execute_go_mutation(
     modules: &[GoModule],
     package_args: &[String],
     config: &GoPluginConfig,
+    timeout_seconds: u64,
 ) -> Result<Vec<CommandRecord>> {
     let path = root.join(&candidate.path);
     let original =
@@ -2648,7 +2697,7 @@ fn execute_go_mutation(
             &root.join(&module_root),
             "go",
             test_args,
-            mutation_timeout_seconds(config),
+            timeout_seconds,
         )?);
     }
     Ok(commands)
@@ -3078,7 +3127,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
     match status {
         MutationStatus::NotCovered => Some("no package tests cover this mutant".to_string()),
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }

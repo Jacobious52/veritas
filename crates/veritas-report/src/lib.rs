@@ -163,6 +163,31 @@ pub fn render_markdown(report: &VerificationReport) -> String {
                     report.quality.mutation.isolation_failures,
                 ));
             }
+            if report.quality.mutation.computed_timeout_seconds.is_some()
+                || report.quality.mutation.baseline_duration_ms.is_some()
+            {
+                out.push_str(&format!(
+                    "  - Mutation timeout: baseline `{}`, computed `{}`, source `{}`\n",
+                    report
+                        .quality
+                        .mutation
+                        .baseline_duration_ms
+                        .map(|duration| format!("{duration}ms"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    report
+                        .quality
+                        .mutation
+                        .computed_timeout_seconds
+                        .map(|timeout| format!("{timeout}s"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    report
+                        .quality
+                        .mutation
+                        .timeout_source
+                        .as_deref()
+                        .unwrap_or("n/a")
+                ));
+            }
             if !report.quality.mutation.by_domain.is_empty() {
                 out.push_str(&format!(
                     "  - Domains: `{}`\n",

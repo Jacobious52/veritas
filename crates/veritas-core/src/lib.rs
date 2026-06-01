@@ -4320,6 +4320,7 @@ fn mutation_trend_artifacts(
             .effective_workers
             .max(run.quality.mutation.effective_workers);
         quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
+        merge_mutation_timeout_metadata(&mut quality.mutation, &run.quality.mutation);
         quality
             .mutation
             .records
@@ -4858,6 +4859,7 @@ fn refresh_report_quality(report: &mut VerificationReport) {
             .effective_workers
             .max(run.quality.mutation.effective_workers);
         quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
+        merge_mutation_timeout_metadata(&mut quality.mutation, &run.quality.mutation);
         quality
             .mutation
             .records
@@ -5048,6 +5050,22 @@ fn merge_mutation_attribution(
         target.timed_out += source.timed_out;
         target.not_viable += source.not_viable;
         target.skipped += source.skipped;
+    }
+}
+
+fn merge_mutation_timeout_metadata(
+    target: &mut veritas_plugin_api::MutationMetrics,
+    source: &veritas_plugin_api::MutationMetrics,
+) {
+    if let Some(duration) = source.baseline_duration_ms {
+        target.baseline_duration_ms = Some(target.baseline_duration_ms.unwrap_or(0) + duration);
+    }
+    if let Some(timeout) = source.computed_timeout_seconds {
+        target.computed_timeout_seconds =
+            Some(target.computed_timeout_seconds.unwrap_or(0).max(timeout));
+    }
+    if target.timeout_source.is_none() {
+        target.timeout_source = source.timeout_source.clone();
     }
 }
 

@@ -1194,7 +1194,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
     match status {
         MutationStatus::NotCovered => Some("no selected tests cover this mutant".to_string()),
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }

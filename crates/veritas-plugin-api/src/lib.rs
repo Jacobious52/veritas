@@ -534,6 +534,12 @@ pub struct MutationMetrics {
     pub isolation_failures: usize,
     #[serde(default, skip_serializing_if = "is_zero_u128")]
     pub isolation_setup_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_duration_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computed_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]

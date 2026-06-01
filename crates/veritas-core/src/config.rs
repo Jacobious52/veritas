@@ -87,6 +87,7 @@ pub struct MutationConfig {
     pub dry_run: bool,
     pub max_mutants: Option<usize>,
     pub disable_test_selection: bool,
+    pub baseline_timing: bool,
     pub workers: usize,
     pub test_cpu: Option<usize>,
     pub timeout_coefficient: u64,
@@ -201,6 +202,7 @@ struct MutationConfigPartial {
     dry_run: Option<bool>,
     max_mutants: Option<usize>,
     disable_test_selection: Option<bool>,
+    baseline_timing: Option<bool>,
     workers: Option<usize>,
     test_cpu: Option<usize>,
     timeout_coefficient: Option<u64>,
@@ -461,6 +463,9 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
     if let Some(value) = partial.disable_test_selection {
         config.disable_test_selection = value;
     }
+    if let Some(value) = partial.baseline_timing {
+        config.baseline_timing = value;
+    }
     if let Some(value) = partial.workers {
         config.workers = value;
     }
@@ -526,6 +531,7 @@ exclude_paths = ["vendor/", "_generated.go$"]
 dry_run = true
 max_mutants = 17
 disable_test_selection = true
+baseline_timing = true
 workers = 4
 test_cpu = 2
 timeout_coefficient = 3
@@ -577,6 +583,7 @@ cpu_quota = "150%"
         assert!(config.plugins.rust.mutation.dry_run);
         assert_eq!(config.plugins.rust.mutation.max_mutants, Some(17));
         assert!(config.plugins.rust.mutation.disable_test_selection);
+        assert!(config.plugins.rust.mutation.baseline_timing);
         assert_eq!(config.plugins.rust.mutation.test_cpu, Some(2));
         assert_eq!(config.plugins.rust.mutation.timeout_coefficient, 3);
         assert_eq!(

@@ -301,6 +301,7 @@ impl LanguagePlugin for RustPlugin {
         let mut quality = VerificationQuality::default();
         let package_roots = test_package_roots(root, artifacts)?;
         let test_commands = run_cargo_tests(root, &package_roots, &self.config)?;
+        let baseline_duration_ms = mutation_baseline_duration(&test_commands, &self.config);
         let mut status = if test_commands
             .iter()
             .any(|command| command.status == RunStatus::Failed)
@@ -332,6 +333,7 @@ impl LanguagePlugin for RustPlugin {
                     start,
                     plan,
                     &package_roots,
+                    baseline_duration_ms,
                 )?;
                 if mutation.status == RunStatus::Failed {
                     status = RunStatus::Failed;
@@ -1585,6 +1587,7 @@ struct RustMutationJob {
     candidate: MutationCandidate,
     selection: RustMutationSelection,
     config: RustPluginConfig,
+    timeout_seconds: u64,
     root: Utf8PathBuf,
 }
 
@@ -1606,6 +1609,12 @@ struct RustMutationSelection {
     fallback: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct MutationTimeout {
+    seconds: u64,
+    source: String,
+}
+
 fn run_mutation_checks(
     root: &Path,
     artifacts: &[GeneratedArtifact],
@@ -1613,6 +1622,7 @@ fn run_mutation_checks(
     run_start: Instant,
     plan: &VerificationPlan,
     package_roots: &BTreeSet<Utf8PathBuf>,
+    baseline_duration_ms: Option<u128>,
 ) -> Result<TestRunResult> {
     let start = Instant::now();
     let functions = discover_functions(root)?;
@@ -1629,6 +1639,10 @@ fn run_mutation_checks(
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
     quality.mutation.effective_workers = 1;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     if config.mutation.workers > 1 && !config.mutation.dry_run {
         return run_parallel_mutation_checks(
@@ -1638,6 +1652,7 @@ fn run_mutation_checks(
             run_start,
             plan,
             package_roots,
+            baseline_duration_ms,
             start,
             candidates,
             generated,
@@ -1707,12 +1722,8 @@ fn run_mutation_checks(
             )
         })?;
 
-        let mutation_commands = run_cargo_tests_with_timeout(
-            root,
-            &selection.package_roots,
-            config,
-            mutation_timeout_seconds(config),
-        );
+        let mutation_commands =
+            run_cargo_tests_with_timeout(root, &selection.package_roots, config, timeout.seconds);
         fs::write(&path, original)
             .with_context(|| format!("failed to restore {}", path.display()))?;
         let mutation_commands = mutation_commands?;
@@ -1845,6 +1856,7 @@ fn run_parallel_mutation_checks(
     run_start: Instant,
     plan: &VerificationPlan,
     package_roots: &BTreeSet<Utf8PathBuf>,
+    baseline_duration_ms: Option<u128>,
     start: Instant,
     candidates: Vec<MutationCandidate>,
     generated: usize,
@@ -1855,6 +1867,10 @@ fn run_parallel_mutation_checks(
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = generated;
     quality.mutation.requested_workers = config.mutation.workers;
+    let timeout = mutation_timeout(config, baseline_duration_ms);
+    quality.mutation.baseline_duration_ms = baseline_duration_ms;
+    quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
+    quality.mutation.timeout_source = Some(timeout.source.clone());
 
     let mut jobs = Vec::new();
     let root_utf8 = utf8_path(root)?;
@@ -1896,6 +1912,7 @@ fn run_parallel_mutation_checks(
             candidate,
             selection,
             config: config.clone(),
+            timeout_seconds: timeout.seconds,
             root: root_utf8.clone(),
         });
     }
@@ -2070,6 +2087,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
         &candidate,
         &selection.package_roots,
         &job.config,
+        job.timeout_seconds,
     ) {
         Ok(commands) => {
             let status = classify_rust_mutation_status(&commands);
@@ -2100,6 +2118,7 @@ fn execute_rust_mutation(
     candidate: &MutationCandidate,
     package_roots: &BTreeSet<Utf8PathBuf>,
     config: &RustPluginConfig,
+    timeout_seconds: u64,
 ) -> Result<Vec<CommandRecord>> {
     let path = root.join(&candidate.path);
     let original =
@@ -2113,12 +2132,7 @@ fn execute_rust_mutation(
             path.display()
         )
     })?;
-    run_cargo_tests_with_timeout(
-        root,
-        package_roots,
-        config,
-        mutation_timeout_seconds(config),
-    )
+    run_cargo_tests_with_timeout(root, package_roots, config, timeout_seconds)
 }
 
 fn classify_rust_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
@@ -2449,7 +2463,10 @@ fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
             Some("no selected package tests cover this mutant".to_string())
         }
         MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
-        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::TimedOut => Some(
+            "mutation test command timed out; consider filtering this operator/mutant or adding deterministic test seams for recurring hangs"
+                .to_string(),
+        ),
         MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
         _ => None,
     }
@@ -2464,16 +2481,44 @@ fn mutation_not_viable(command: &CommandRecord) -> bool {
         || output.contains("not found in this scope")
 }
 
-fn mutation_timeout_seconds(config: &RustPluginConfig) -> u64 {
+fn mutation_baseline_duration(
+    commands: &[CommandRecord],
+    config: &RustPluginConfig,
+) -> Option<u128> {
+    config
+        .mutation
+        .baseline_timing
+        .then(|| commands.iter().map(|command| command.duration_ms).sum())
+}
+
+fn mutation_timeout(
+    config: &RustPluginConfig,
+    baseline_duration_ms: Option<u128>,
+) -> MutationTimeout {
     let coefficient = config.mutation.timeout_coefficient.max(1);
-    let mut timeout = config.command_timeout_seconds.saturating_mul(coefficient);
+    let (base_seconds, base_source) = baseline_duration_ms
+        .map(|duration| (((duration as u64).saturating_add(999)) / 1000).max(1))
+        .map(|seconds| (seconds, "baseline duration".to_string()))
+        .unwrap_or_else(|| {
+            (
+                config.command_timeout_seconds,
+                "configured command timeout".to_string(),
+            )
+        });
+    let mut timeout = base_seconds.saturating_mul(coefficient);
+    let mut source = format!("{base_source} {base_seconds}s * coefficient {coefficient}");
     if let Some(minimum) = config.mutation.timeout_min_seconds {
         timeout = timeout.max(minimum);
+        source.push_str(&format!(", min {minimum}s"));
     }
     if let Some(maximum) = config.mutation.timeout_max_seconds {
         timeout = timeout.min(maximum);
+        source.push_str(&format!(", max {maximum}s"));
     }
-    timeout
+    MutationTimeout {
+        seconds: timeout.max(1),
+        source,
+    }
 }
 
 fn mutation_max_mutants(config: &RustPluginConfig) -> usize {

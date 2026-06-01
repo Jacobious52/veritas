@@ -451,6 +451,43 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
 }
 
 #[test]
+fn go_timeout_fixture_records_adaptive_mutation_timeout_and_continues() {
+    if !go_available() {
+        return;
+    }
+
+    let fixture = copy_fixture("go-timeout");
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path())
+        .args(["verify", "--lang", "go", "--target", "."]);
+    cmd.assert().success();
+
+    let report = fs::read_to_string(fixture.path().join(".veritas/report.json"))
+        .expect("read timeout report");
+    let report: Value = serde_json::from_str(&report).expect("timeout report json");
+    let mutation = &report["quality"]["mutation"];
+    assert!(mutation["baseline_duration_ms"]
+        .as_u64()
+        .is_some_and(|duration| duration > 0));
+    assert_eq!(mutation["computed_timeout_seconds"], 1);
+    assert!(mutation["timeout_source"]
+        .as_str()
+        .is_some_and(|source| source.contains("baseline duration")));
+    assert_eq!(mutation["timed_out"], 1);
+    assert!(mutation["killed"]
+        .as_u64()
+        .is_some_and(|killed| killed >= 1));
+
+    let records = mutation["records"].as_array().expect("mutation records");
+    assert!(records.iter().any(|record| {
+        record["status"] == "timed_out"
+            && record["skip_reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("deterministic test seams"))
+    }));
+}
+
+#[test]
 fn review_ai_writes_changed_digest_and_agent_feedback() {
     if !git_available() {
         return;
