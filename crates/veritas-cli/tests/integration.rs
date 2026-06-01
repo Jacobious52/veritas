@@ -451,7 +451,107 @@ fn repair_prompt_summarizes_saved_report_for_agents() {
         .stdout(predicate::str::contains(
             "veritas verify --changed --profile ci",
         ))
+        .stdout(predicate::str::contains("veritas next --explain"))
         .stdout(predicate::str::contains("veritas evolve --dry-run"));
+}
+
+#[test]
+fn next_command_ranks_findings_and_evolution_candidates() {
+    let fixture = copy_fixture("sample-rust");
+    write_evolution_state(
+        fixture.path(),
+        "rust",
+        "rust:src/lib.rs:parse_invoice_total",
+        "src/lib.rs",
+        "parse_invoice_total",
+    );
+
+    let mut markdown = veritas();
+    markdown
+        .current_dir(fixture.path())
+        .args(["next", "--explain", "--count", "2"]);
+    markdown
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas next"))
+        .stdout(predicate::str::contains("Estimated confidence impact"))
+        .stdout(predicate::str::contains("evolve-mutant-rust"))
+        .stdout(predicate::str::contains("mutation_survivor"));
+
+    let mut json = veritas();
+    json.current_dir(fixture.path())
+        .args(["next", "--format", "json", "--count", "1"]);
+    json.assert()
+        .success()
+        .stdout(predicate::str::contains("\"returned\": 1"))
+        .stdout(predicate::str::contains("\"reason_codes\""));
+
+    let mut score_modes = veritas();
+    score_modes
+        .current_dir(fixture.path())
+        .args(["score", "--mode", "all", "--format", "json"]);
+    score_modes
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"mode\": \"current\""))
+        .stdout(predicate::str::contains("\"mode\": \"strict\""))
+        .stdout(predicate::str::contains("\"mode\": \"verified\""))
+        .stdout(predicate::str::contains("\"delta_from_current\""));
+}
+
+#[test]
+fn review_packet_and_agent_instructions_write_ai_artifacts() {
+    let fixture = copy_fixture("sample-rust");
+    write_evolution_state(
+        fixture.path(),
+        "rust",
+        "rust:src/lib.rs:parse_invoice_total",
+        "src/lib.rs",
+        "parse_invoice_total",
+    );
+
+    let mut packet = veritas();
+    packet
+        .current_dir(fixture.path())
+        .args(["review-packet", "--dimension", "testability"]);
+    packet
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas review-packet"))
+        .stdout(predicate::str::contains("testability"));
+    let query = fs::read_to_string(fixture.path().join(".veritas/review/query.json"))
+        .expect("read review query");
+    assert!(query.contains("\"dimensions\""));
+    assert!(query.contains("rust:src/lib.rs:parse_invoice_total"));
+    assert!(query.contains("mutation_survivors"));
+
+    let mut instructions = veritas();
+    instructions
+        .current_dir(fixture.path())
+        .args(["agent-instructions", "--agent", "codex"]);
+    instructions
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas agent-instructions"));
+    let contents = fs::read_to_string(
+        fixture
+            .path()
+            .join(".veritas/ai/veritas_agent_instructions.md"),
+    )
+    .expect("read agent instructions");
+    assert!(contents.contains("veritas next --explain"));
+    assert!(contents.contains("Anti-Gaming Rules"));
+
+    let mut badge = veritas();
+    badge.current_dir(fixture.path()).arg("badge");
+    badge
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# veritas badge"));
+    let badge_svg =
+        fs::read_to_string(fixture.path().join(".veritas/badge.svg")).expect("read badge svg");
+    assert!(badge_svg.contains("<svg"));
+    assert!(badge_svg.contains("veritas"));
 }
 
 #[test]

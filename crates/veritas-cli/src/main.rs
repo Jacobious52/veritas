@@ -73,11 +73,32 @@ enum Command {
         #[arg(long)]
         lang: Option<String>,
     },
+    ReviewPacket {
+        #[arg(long)]
+        dimension: Vec<String>,
+    },
     Report {
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
     },
     Score {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
+        format: OutputFormat,
+
+        #[arg(long, value_enum, default_value_t = ScoreMode::Current)]
+        mode: ScoreMode,
+    },
+    Badge {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    Next {
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+
+        #[arg(long)]
+        explain: bool,
+
         #[arg(long, value_enum, default_value_t = OutputFormat::Markdown)]
         format: OutputFormat,
     },
@@ -140,6 +161,13 @@ enum Command {
         #[arg(long)]
         github_step_summary: bool,
     },
+    AgentInstructions {
+        #[arg(long, value_enum, default_value_t = AgentKind::Generic)]
+        agent: AgentKind,
+
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     Bench {
         #[arg(long)]
         suite: Option<PathBuf>,
@@ -164,6 +192,23 @@ enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum VerifyProfile {
     Ci,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ScoreMode {
+    Current,
+    Strict,
+    Verified,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AgentKind {
+    Generic,
+    Codex,
+    Claude,
+    Copilot,
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,6 +372,95 @@ struct ConformancePluginReport {
     failures: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct NextQueue {
+    source: String,
+    total_candidates: usize,
+    returned: usize,
+    items: Vec<NextItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct NextItem {
+    rank: usize,
+    source: String,
+    id: String,
+    target_id: Option<String>,
+    tier: u8,
+    estimated_confidence_impact: i16,
+    reason_codes: Vec<String>,
+    title: String,
+    action: String,
+    proof_commands: Vec<String>,
+    done_when: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    explanation: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewPacketSummary {
+    query_path: PathBuf,
+    prompt_path: PathBuf,
+    dimensions: Vec<String>,
+    targets: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewPacket<'a> {
+    version: u8,
+    source_report: &'static str,
+    instructions: Vec<&'static str>,
+    dimensions: Vec<String>,
+    targets: Vec<ReviewTarget<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewTarget<'a> {
+    target_id: &'a str,
+    language: &'a str,
+    path: &'a str,
+    symbol: Option<&'a str>,
+    risk: &'a RiskLevel,
+    line_range: Option<&'a veritas_plugin_api::LineRange>,
+    mechanical_signals: ReviewSignals,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct ReviewSignals {
+    active_findings: usize,
+    mutation_survivors: usize,
+    generated_properties: usize,
+    replay_cases: usize,
+    corpus_entries: usize,
+    budget_risks: usize,
+    artifacts_to_read: Vec<String>,
+}
+
+#[derive(Debug)]
+struct AgentInstructionSummary {
+    path: PathBuf,
+    agent: AgentKind,
+}
+
+#[derive(Debug, Serialize)]
+struct ScoreModeReport {
+    source: String,
+    modes: Vec<ScoreModeView>,
+}
+
+#[derive(Debug, Serialize)]
+struct ScoreModeView {
+    mode: ScoreMode,
+    score: u8,
+    grade: String,
+    delta_from_current: i16,
+    summary: String,
+    adjustments: Vec<String>,
+    risks: Vec<String>,
+    positive_signals: Vec<String>,
+    recommended_next_steps: Vec<String>,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -419,13 +553,32 @@ fn main() -> Result<()> {
             engine.save_report(&root, &report)?;
             print_report(&report, OutputFormat::Markdown)?;
         }
+        Command::ReviewPacket { dimension } => {
+            let report = read_saved_report(&root)?;
+            let summary = write_review_packet(&root, &report, dimension)?;
+            print_review_packet_summary(&summary);
+        }
         Command::Report { format } => {
             let report = read_saved_report(&root)?;
             print_report(&report, format)?;
         }
-        Command::Score { format } => {
+        Command::Score { format, mode } => {
             let report = read_saved_report(&root)?;
-            print_score(&root, &report, format)?;
+            print_score(&root, &report, format, mode)?;
+        }
+        Command::Badge { output } => {
+            let report = read_saved_report(&root)?;
+            let path = write_score_badge(&root, &report, output.as_deref())?;
+            println!("# veritas badge\n\n- Path: `{}`", path.display());
+        }
+        Command::Next {
+            count,
+            explain,
+            format,
+        } => {
+            let report = read_saved_report(&root)?;
+            let queue = next_queue(&report, count, explain);
+            print_next_queue(&queue, format)?;
         }
         Command::ReplayCorpus {
             dry_run,
@@ -496,6 +649,10 @@ fn main() -> Result<()> {
                 writeln!(file, "{prompt}")?;
             }
             println!("{prompt}");
+        }
+        Command::AgentInstructions { agent, output } => {
+            let summary = write_agent_instructions(&root, agent, output.as_deref())?;
+            print_agent_instruction_summary(&summary);
         }
         Command::Bench { suite, format } => {
             let report = run_bench_suite(&root, suite.as_deref())?;
@@ -644,6 +801,7 @@ fn render_ai_repair_prompt(report: &VerificationReport) -> String {
     out.push_str("## Commands\n\n");
     out.push_str("```bash\n");
     out.push_str("veritas verify --changed --profile ci\n");
+    out.push_str("veritas next --explain\n");
     out.push_str("veritas score\n");
     out.push_str("veritas replay-corpus --dry-run\n");
     out.push_str("veritas evolve --dry-run\n");
@@ -818,6 +976,467 @@ fn selected_evolution_candidates(report: &VerificationReport) -> Vec<EvolutionCa
             .then_with(|| left.id.cmp(&right.id))
     });
     candidates
+}
+
+fn next_queue(report: &VerificationReport, count: usize, explain: bool) -> NextQueue {
+    let mut items = Vec::new();
+    for finding in &report.findings {
+        items.push(next_item_from_finding(report, finding, explain));
+    }
+    for candidate in selected_evolution_candidates(report) {
+        items.push(next_item_from_candidate(candidate, explain));
+    }
+
+    items.sort_by(|left, right| {
+        right
+            .tier
+            .cmp(&left.tier)
+            .then_with(|| {
+                right
+                    .estimated_confidence_impact
+                    .cmp(&left.estimated_confidence_impact)
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let total_candidates = items.len();
+    let take = count.max(1);
+    items.truncate(take);
+    for (index, item) in items.iter_mut().enumerate() {
+        item.rank = index + 1;
+    }
+    NextQueue {
+        source: ".veritas/report.json".to_string(),
+        total_candidates,
+        returned: items.len(),
+        items,
+    }
+}
+
+fn next_item_from_finding(
+    report: &VerificationReport,
+    finding: &veritas_plugin_api::Failure,
+    explain: bool,
+) -> NextItem {
+    let severity = severity_rank(&finding.severity);
+    let target_risk = finding_target_risk(report, finding);
+    let mut reason_codes = vec![format!("severity:{:?}", finding.severity).to_ascii_lowercase()];
+    let mut impact = 4 + i16::from(severity) * 3;
+    let message = finding.message.to_ascii_lowercase();
+    if message.contains("mutation survived") {
+        impact += 14;
+        reason_codes.push("mutation_survivor".to_string());
+    }
+    if message.contains("fuzz") || message.contains("minimal failing input") {
+        impact += 10;
+        reason_codes.push("replayable_input".to_string());
+    }
+    if message.contains("test failed") {
+        impact += 8;
+        reason_codes.push("generated_test_failure".to_string());
+    }
+    if target_risk == Some(&RiskLevel::High) {
+        impact += 6;
+        reason_codes.push("high_risk_target".to_string());
+    }
+    let tier = if finding.severity == FailureSeverity::Critical
+        || finding.severity == FailureSeverity::Error
+        || target_risk == Some(&RiskLevel::High)
+    {
+        4
+    } else if message.contains("mutation survived") || message.contains("fuzz") {
+        3
+    } else {
+        2
+    };
+    let proof_commands = finding_proof_commands(finding);
+    let done_when = vec![
+        "the finding no longer appears in `.veritas/report.json`".to_string(),
+        "the proof command passes against production code".to_string(),
+        "the next `veritas score` is stable or improved".to_string(),
+    ];
+    let mut explanation = Vec::new();
+    if explain {
+        explanation.push(format!(
+            "tier {tier} from severity {:?} and target risk {}",
+            finding.severity,
+            target_risk
+                .map(|risk| format!("{risk:?}"))
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+        explanation.push(format!(
+            "estimated confidence impact {impact:+} from {}",
+            reason_codes.join(", ")
+        ));
+    }
+    NextItem {
+        rank: 0,
+        source: "finding".to_string(),
+        id: finding
+            .id
+            .clone()
+            .unwrap_or_else(|| "unassigned-finding".to_string()),
+        target_id: finding.target_id.clone(),
+        tier,
+        estimated_confidence_impact: impact,
+        reason_codes,
+        title: finding.message.clone(),
+        action: finding_action(finding),
+        proof_commands,
+        done_when,
+        explanation,
+    }
+}
+
+fn next_item_from_candidate(candidate: EvolutionCandidateRecord, explain: bool) -> NextItem {
+    let impact = candidate.fitness.confidence_delta.max(0)
+        + (i16::from(candidate.fitness.score_percent) / 5)
+        + candidate.fitness.mutation_delta.max(0) * 3
+        + candidate.fitness.replay_delta.max(0) * 2
+        - candidate.fitness.finding_delta.max(0) * 2;
+    let tier = match candidate.kind {
+        veritas_plugin_api::EvolutionCandidateKind::Mutation => 4,
+        veritas_plugin_api::EvolutionCandidateKind::Regression => 4,
+        veritas_plugin_api::EvolutionCandidateKind::Fuzz => 3,
+        veritas_plugin_api::EvolutionCandidateKind::Replay => 3,
+        veritas_plugin_api::EvolutionCandidateKind::Property => 3,
+        veritas_plugin_api::EvolutionCandidateKind::Budget => 2,
+    };
+    let mut reason_codes = vec![
+        format!("candidate:{:?}", candidate.kind).to_ascii_lowercase(),
+        format!("fitness:{}%", candidate.fitness.score_percent),
+    ];
+    if candidate.fitness.mutation_delta > 0 {
+        reason_codes.push("mutation_delta".to_string());
+    }
+    if candidate.fitness.replay_delta > 0 {
+        reason_codes.push("replay_delta".to_string());
+    }
+    if candidate.fitness.confidence_delta > 0 {
+        reason_codes.push("confidence_delta".to_string());
+    }
+    let mut explanation = Vec::new();
+    if explain {
+        explanation.push(candidate.fitness.rationale.clone());
+        explanation.push(format!(
+            "estimated confidence impact {impact:+}; keep if {}",
+            candidate.keep_if
+        ));
+    }
+    NextItem {
+        rank: 0,
+        source: "evolution_candidate".to_string(),
+        id: candidate.id,
+        target_id: Some(candidate.target_id),
+        tier,
+        estimated_confidence_impact: impact,
+        reason_codes,
+        title: format!("{:?} candidate", candidate.kind),
+        action: candidate.proposed_action,
+        proof_commands: candidate.proof_commands,
+        done_when: if candidate.done_when.is_empty() {
+            vec![candidate.keep_if]
+        } else {
+            candidate.done_when
+        },
+        explanation,
+    }
+}
+
+fn severity_rank(severity: &FailureSeverity) -> u8 {
+    match severity {
+        FailureSeverity::Critical => 4,
+        FailureSeverity::Error => 3,
+        FailureSeverity::Warning => 2,
+        FailureSeverity::Info => 1,
+    }
+}
+
+fn finding_proof_commands(finding: &veritas_plugin_api::Failure) -> Vec<String> {
+    let mut commands = Vec::new();
+    if let Some(repro) = &finding.repro {
+        commands.push(repro.command.clone());
+    }
+    if !finding.command.trim().is_empty()
+        && !commands.iter().any(|command| command == &finding.command)
+    {
+        commands.push(finding.command.clone());
+    }
+    commands.push("veritas verify --changed --profile ci".to_string());
+    commands.push("veritas score".to_string());
+    commands
+}
+
+fn finding_action(finding: &veritas_plugin_api::Failure) -> String {
+    let message = finding.message.to_ascii_lowercase();
+    if message.contains("mutation survived") {
+        "Add the smallest owned assertion that fails under the mutant, then rerun the mutation campaign.".to_string()
+    } else if message.contains("fuzz") || message.contains("minimal failing input") {
+        "Persist the failing input as a corpus seed and add a named regression assertion."
+            .to_string()
+    } else if message.contains("test failed") {
+        "Promote the generated failing case into an owned regression test with explicit expected behavior.".to_string()
+    } else {
+        "Address this verification finding with the smallest behavior-preserving patch and proof command.".to_string()
+    }
+}
+
+fn write_review_packet(
+    root: &Path,
+    report: &VerificationReport,
+    dimensions: Vec<String>,
+) -> Result<ReviewPacketSummary> {
+    let dimensions = if dimensions.is_empty() {
+        default_review_dimensions()
+    } else {
+        dimensions
+    };
+    let packet = ReviewPacket {
+        version: 1,
+        source_report: ".veritas/report.json",
+        instructions: vec![
+            "Review from evidence only; do not anchor to current confidence score or desired score.",
+            "Return concrete findings with target IDs, dimensions, evidence, confidence, and suggested tests.",
+            "Prefer issues that improve verifiability, boundaries, error handling, and testability.",
+            "Do not request broad rewrites unless mechanical signals show high risk.",
+        ],
+        dimensions: dimensions.clone(),
+        targets: review_targets(report),
+    };
+    let review_dir = root.join(".veritas/review");
+    fs::create_dir_all(&review_dir)
+        .with_context(|| format!("failed to create {}", review_dir.display()))?;
+    let query_path = review_dir.join("query.json");
+    let prompt_path = review_dir.join("prompt.md");
+    fs::write(&query_path, serde_json::to_string_pretty(&packet)?)
+        .with_context(|| format!("failed to write {}", query_path.display()))?;
+    fs::write(&prompt_path, render_review_prompt(&packet))
+        .with_context(|| format!("failed to write {}", prompt_path.display()))?;
+    Ok(ReviewPacketSummary {
+        query_path,
+        prompt_path,
+        dimensions,
+        targets: packet.targets.len(),
+    })
+}
+
+fn default_review_dimensions() -> Vec<String> {
+    [
+        "naming",
+        "abstractions",
+        "boundaries",
+        "error_handling",
+        "testability",
+        "security",
+    ]
+    .into_iter()
+    .map(ToString::to_string)
+    .collect()
+}
+
+fn review_targets(report: &VerificationReport) -> Vec<ReviewTarget<'_>> {
+    report
+        .targets
+        .iter()
+        .filter(|target| target.kind != TargetKind::Project)
+        .map(|target| ReviewTarget {
+            target_id: &target.id,
+            language: &target.language,
+            path: target.path.as_str(),
+            symbol: target.symbol.as_deref(),
+            risk: &target.risk,
+            line_range: target.line_range.as_ref(),
+            mechanical_signals: review_signals_for_target(report, &target.id),
+        })
+        .collect()
+}
+
+fn review_signals_for_target(report: &VerificationReport, target_id: &str) -> ReviewSignals {
+    ReviewSignals {
+        active_findings: report
+            .findings
+            .iter()
+            .filter(|finding| finding.target_id.as_deref() == Some(target_id))
+            .count(),
+        mutation_survivors: report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.target_id.as_deref() == Some(target_id)
+                    && finding.message.contains("mutation survived")
+            })
+            .count(),
+        generated_properties: report
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.target_id == target_id && artifact.kind == ArtifactKind::PropertyTest
+            })
+            .count(),
+        corpus_entries: report
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.target_id == target_id && artifact.kind == ArtifactKind::CorpusEntry
+            })
+            .count(),
+        replay_cases: report
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.kind == ArtifactKind::DifferentialReplay
+                    || artifact.kind == ArtifactKind::ReplayResult
+            })
+            .count(),
+        budget_risks: report.quality.budget.skipped_commands
+            + report.quality.budget.timed_out_commands,
+        artifacts_to_read: report
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.target_id == target_id)
+            .take(8)
+            .map(|artifact| artifact.path.to_string())
+            .collect(),
+    }
+}
+
+fn render_review_prompt(packet: &ReviewPacket<'_>) -> String {
+    let mut out = String::from("# Veritas Review Packet\n\n");
+    out.push_str("Use `.veritas/review/query.json` as the source of truth. Review the code from evidence only; do not infer or optimize toward a hidden score.\n\n");
+    out.push_str("## Dimensions\n\n");
+    for dimension in &packet.dimensions {
+        out.push_str(&format!("- `{dimension}`\n"));
+    }
+    out.push_str("\n## Targets\n\n");
+    for target in packet.targets.iter().take(20) {
+        out.push_str(&format!(
+            "- `{}` `{}` risk `{:?}` findings `{}` survivors `{}`\n",
+            target.target_id,
+            target.path,
+            target.risk,
+            target.mechanical_signals.active_findings,
+            target.mechanical_signals.mutation_survivors
+        ));
+    }
+    out.push_str("\n## Required Output\n\nReturn JSON with `findings`, where each finding has `target_id`, `dimension`, `evidence`, `confidence`, `suggested_test`, and `why_it_improves_verifiability`.\n");
+    out
+}
+
+fn write_agent_instructions(
+    root: &Path,
+    agent: AgentKind,
+    output: Option<&Path>,
+) -> Result<AgentInstructionSummary> {
+    let relative = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".veritas/ai/veritas_agent_instructions.md"));
+    let path = if relative.is_absolute() {
+        relative
+    } else {
+        root.join(relative)
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, render_agent_instructions(agent))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(AgentInstructionSummary { path, agent })
+}
+
+fn render_agent_instructions(agent: AgentKind) -> String {
+    let agent_label = match agent {
+        AgentKind::Generic => "generic AI coding agent",
+        AgentKind::Codex => "Codex",
+        AgentKind::Claude => "Claude",
+        AgentKind::Copilot => "GitHub Copilot",
+    };
+    format!(
+        "# Veritas Agent Instructions\n\n\
+         You are using Veritas with a {agent_label}. Your job is to improve verifiability, not to hide findings.\n\n\
+         ## Loop\n\n\
+         1. Run `veritas verify --changed --profile ci` for changed work or `veritas verify --lang <lang> --target <target>` for focused work.\n\
+         2. Run `veritas next --explain` and do the first item unless it requires a broad rewrite without proof.\n\
+         3. Prefer adding the smallest owned regression, property, fuzz seed, or replay assertion before production edits.\n\
+         4. Run the listed proof commands, then `veritas score`.\n\
+         5. Keep changes only when the finding disappears, a mutant dies, replay/corpus improves, or confidence is stable/improved.\n\n\
+         ## Anti-Gaming Rules\n\n\
+         - Do not delete generated artifacts to improve output.\n\
+         - Do not accept baselines for unresolved behavior changes.\n\
+         - Do not widen scope or raise budgets before trying a smaller proof.\n\
+         - Treat skipped commands and surviving mutants as real risks.\n\n\
+         ## Useful Commands\n\n\
+         ```bash\n\
+         veritas next --explain\n\
+         veritas score\n\
+         veritas repair-prompt\n\
+         veritas replay-corpus --dry-run\n\
+         veritas evolve --dry-run\n\
+         veritas review-packet\n\
+         ```\n"
+    )
+}
+
+fn write_score_badge(
+    root: &Path,
+    report: &VerificationReport,
+    output: Option<&Path>,
+) -> Result<PathBuf> {
+    let relative = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".veritas/badge.svg"));
+    let path = if relative.is_absolute() {
+        relative
+    } else {
+        root.join(relative)
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&path, render_score_badge(report))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(path)
+}
+
+fn render_score_badge(report: &VerificationReport) -> String {
+    let score = veritas_core::confidence_score(report);
+    let mutation = report
+        .quality
+        .mutation
+        .score_percent
+        .map(|score| format!("{score}% mutation"))
+        .unwrap_or_else(|| "mutation n/a".to_string());
+    let label = format!("veritas {}", score.score);
+    let grade = format!("{:?}", score.grade).to_ascii_lowercase();
+    let color = match score.grade {
+        veritas_plugin_api::ConfidenceGrade::High => "#1f9d55",
+        veritas_plugin_api::ConfidenceGrade::Medium => "#b7791f",
+        veritas_plugin_api::ConfidenceGrade::Low => "#c53030",
+    };
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"420\" height=\"96\" role=\"img\" aria-label=\"{}\">\n\
+         <rect width=\"420\" height=\"96\" rx=\"8\" fill=\"#111827\"/>\n\
+         <rect x=\"0\" y=\"0\" width=\"132\" height=\"96\" rx=\"8\" fill=\"{}\"/>\n\
+         <text x=\"66\" y=\"40\" text-anchor=\"middle\" font-family=\"Verdana, sans-serif\" font-size=\"18\" fill=\"#fff\">{}</text>\n\
+         <text x=\"66\" y=\"66\" text-anchor=\"middle\" font-family=\"Verdana, sans-serif\" font-size=\"13\" fill=\"#ecfdf5\">{}</text>\n\
+         <text x=\"152\" y=\"38\" font-family=\"Verdana, sans-serif\" font-size=\"17\" fill=\"#f9fafb\">{}</text>\n\
+         <text x=\"152\" y=\"65\" font-family=\"Verdana, sans-serif\" font-size=\"13\" fill=\"#d1d5db\">{}</text>\n\
+         </svg>\n",
+        xml_escape(&format!("{label} {grade} {mutation}")),
+        color,
+        xml_escape(&score.score.to_string()),
+        xml_escape(&grade),
+        xml_escape(&label),
+        xml_escape(&mutation)
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn run_bench_case(
@@ -1660,8 +2279,17 @@ fn print_report(report: &VerificationReport, format: OutputFormat) -> Result<()>
     Ok(())
 }
 
-fn print_score(root: &Path, report: &VerificationReport, format: OutputFormat) -> Result<()> {
+fn print_score(
+    root: &Path,
+    report: &VerificationReport,
+    format: OutputFormat,
+    mode: ScoreMode,
+) -> Result<()> {
     let score = confidence_score_for_root(root, report);
+    if mode != ScoreMode::Current {
+        let mode_report = score_mode_report(root, report, &score, mode);
+        return print_score_mode_report(&mode_report, format);
+    }
     match format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&score)?),
         OutputFormat::Markdown => {
@@ -1707,6 +2335,201 @@ fn print_score(root: &Path, report: &VerificationReport, format: OutputFormat) -
         }
     }
     Ok(())
+}
+
+fn score_mode_report(
+    root: &Path,
+    report: &VerificationReport,
+    current: &veritas_plugin_api::ConfidenceScore,
+    mode: ScoreMode,
+) -> ScoreModeReport {
+    let accepted_count = accepted_finding_ids(root).map(|ids| ids.len()).unwrap_or(0);
+    let modes = match mode {
+        ScoreMode::Current => vec![ScoreMode::Current],
+        ScoreMode::Strict => vec![ScoreMode::Strict],
+        ScoreMode::Verified => vec![ScoreMode::Verified],
+        ScoreMode::All => vec![ScoreMode::Current, ScoreMode::Strict, ScoreMode::Verified],
+    }
+    .into_iter()
+    .map(|mode| score_mode_view(report, current, accepted_count, mode))
+    .collect();
+    ScoreModeReport {
+        source: ".veritas/report.json".to_string(),
+        modes,
+    }
+}
+
+fn score_mode_view(
+    report: &VerificationReport,
+    current: &veritas_plugin_api::ConfidenceScore,
+    accepted_count: usize,
+    mode: ScoreMode,
+) -> ScoreModeView {
+    let mut score = i16::from(current.score);
+    let mut adjustments = Vec::new();
+    if matches!(mode, ScoreMode::Strict | ScoreMode::Verified) {
+        if accepted_count > 0 {
+            let penalty = (accepted_count as i16 * 3).min(15);
+            score -= penalty;
+            adjustments.push(format!("accepted findings remain score debt: -{penalty}"));
+        }
+        if report.quality.budget.skipped_commands > 0 {
+            let penalty = (report.quality.budget.skipped_commands as i16 * 2).min(10);
+            score -= penalty;
+            adjustments.push(format!("skipped verification commands: -{penalty}"));
+        }
+    }
+    if mode == ScoreMode::Verified {
+        if report.quality.regression.promoted_scaffolds > 0 {
+            let penalty = (report.quality.regression.promoted_scaffolds as i16 * 2).min(12);
+            score -= penalty;
+            adjustments.push(format!(
+                "unreviewed generated regression scaffolds need proof: -{penalty}"
+            ));
+        }
+        if report.quality.regression.assertion_candidates > 0 {
+            let penalty = (report.quality.regression.assertion_candidates as i16).min(10);
+            score -= penalty;
+            adjustments.push(format!(
+                "assertion candidates are not owned tests yet: -{penalty}"
+            ));
+        }
+        if report.quality.mutation.survived > 0 {
+            let penalty = (report.quality.mutation.survived as i16 * 2).min(12);
+            score -= penalty;
+            adjustments.push(format!(
+                "surviving mutants remain verified debt: -{penalty}"
+            ));
+        }
+    }
+    if adjustments.is_empty() {
+        adjustments.push("no additional anti-gaming adjustment for this mode".to_string());
+    }
+    let score = score.clamp(0, 100) as u8;
+    ScoreModeView {
+        mode,
+        score,
+        grade: score_grade_label(score).to_string(),
+        delta_from_current: i16::from(score) - i16::from(current.score),
+        summary: score_mode_summary(mode).to_string(),
+        adjustments,
+        risks: current.risks.clone(),
+        positive_signals: current.positive_signals.clone(),
+        recommended_next_steps: current.recommended_next_steps.clone(),
+    }
+}
+
+fn score_grade_label(score: u8) -> &'static str {
+    if score >= 80 {
+        "high"
+    } else if score >= 55 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn score_mode_summary(mode: ScoreMode) -> &'static str {
+    match mode {
+        ScoreMode::Current => "current confidence from the latest report",
+        ScoreMode::Strict => "current confidence plus accepted-finding and skipped-command debt",
+        ScoreMode::Verified => {
+            "strict confidence plus unpromoted candidate and surviving-mutant proof debt"
+        }
+        ScoreMode::All => "all score modes",
+    }
+}
+
+fn print_score_mode_report(report: &ScoreModeReport, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(report)?),
+        OutputFormat::Markdown => {
+            println!("# veritas score modes\n");
+            println!("- Source: `{}`", report.source);
+            for mode in &report.modes {
+                println!("\n## {:?}\n", mode.mode);
+                println!("- Score: `{}`", mode.score);
+                println!("- Grade: `{}`", mode.grade);
+                println!("- Delta from current: `{:+}`", mode.delta_from_current);
+                println!("- Summary: {}", mode.summary);
+                println!("- Adjustments:");
+                for adjustment in &mode.adjustments {
+                    println!("  - {adjustment}");
+                }
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("score supports --format markdown or --format json")
+        }
+    }
+    Ok(())
+}
+
+fn print_next_queue(queue: &NextQueue, format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(queue)?),
+        OutputFormat::Markdown => {
+            println!("# veritas next\n");
+            println!("- Source: `{}`", queue.source);
+            println!("- Queue size: `{}`", queue.total_candidates);
+            println!("- Returned: `{}`", queue.returned);
+            if queue.items.is_empty() {
+                println!("\nNo active findings or selected evolution candidates. Run `veritas verify` or keep this report as the current baseline.");
+                return Ok(());
+            }
+            for item in &queue.items {
+                println!("\n## [{}] {}", item.rank, item.title);
+                println!("- Source: `{}`", item.source);
+                println!("- ID: `{}`", item.id);
+                if let Some(target_id) = &item.target_id {
+                    println!("- Target: `{target_id}`");
+                }
+                println!("- Tier: `T{}`", item.tier);
+                println!(
+                    "- Estimated confidence impact: `{:+}`",
+                    item.estimated_confidence_impact
+                );
+                println!("- Reason codes: `{}`", item.reason_codes.join(", "));
+                println!("- Action: {}", item.action);
+                if !item.proof_commands.is_empty() {
+                    println!("- Proof commands:");
+                    for command in &item.proof_commands {
+                        println!("  - `{command}`");
+                    }
+                }
+                if !item.done_when.is_empty() {
+                    println!("- Done when:");
+                    for criterion in &item.done_when {
+                        println!("  - {criterion}");
+                    }
+                }
+                if !item.explanation.is_empty() {
+                    println!("- Why this is next:");
+                    for line in &item.explanation {
+                        println!("  - {line}");
+                    }
+                }
+            }
+        }
+        OutputFormat::Sarif | OutputFormat::Junit => {
+            bail!("next supports --format markdown or --format json")
+        }
+    }
+    Ok(())
+}
+
+fn print_review_packet_summary(summary: &ReviewPacketSummary) {
+    println!("# veritas review-packet\n");
+    println!("- Query: `{}`", summary.query_path.display());
+    println!("- Prompt: `{}`", summary.prompt_path.display());
+    println!("- Targets: `{}`", summary.targets);
+    println!("- Dimensions: `{}`", summary.dimensions.join(", "));
+}
+
+fn print_agent_instruction_summary(summary: &AgentInstructionSummary) {
+    println!("# veritas agent-instructions\n");
+    println!("- Agent: `{:?}`", summary.agent);
+    println!("- Path: `{}`", summary.path.display());
 }
 
 fn print_corpus_replay_summary(summary: &CorpusReplaySummary, format: OutputFormat) -> Result<()> {

@@ -123,6 +123,7 @@ next agent step: promote assertion candidate, rerun, keep only if the mutant die
 ```bash
 veritas scan
 veritas review-ai
+veritas review-packet
 veritas verify --changed
 veritas verify --changed --profile ci
 veritas verify --lang rust --target path/to/file.rs
@@ -134,10 +135,14 @@ veritas run
 veritas report --format markdown
 veritas report --format sarif
 veritas report --format junit
+veritas next --explain
 veritas score
+veritas score --mode all
+veritas badge
 veritas accept-quality-baseline
 veritas replay-corpus
 veritas repair-prompt
+veritas agent-instructions --agent codex
 veritas explain <finding-id>
 veritas promote-repro
 veritas promote-repro --index 0

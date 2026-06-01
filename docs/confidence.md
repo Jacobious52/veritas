@@ -58,6 +58,10 @@ Benchmark JSON includes a suite summary for total targets, high-risk targets, co
 
 After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving mutants, skipped commands, and timeouts. Use `veritas accept-quality-baseline` only after a reviewed good state; later `veritas score` runs will show baseline deltas.
 
+Use `veritas score --mode all` for anti-gaming views. `current` is the normal report confidence, `strict` keeps accepted findings and skipped commands as score debt, and `verified` additionally treats unpromoted assertion/regression candidates and surviving mutants as proof debt. CI should gate on strict or verified when a repository wants confidence to improve only through real owned tests and passing proof commands.
+
+Use `veritas badge` to render a local `.veritas/badge.svg` from the saved report. The badge includes confidence score, grade, and mutation score when available, so README and Pages examples can show a tangible verification signal without network services.
+
 Use `veritas replay-corpus --dry-run` to inspect persisted repro metadata. Executable commands such as `go test` or `cargo test` can be replayed directly; mutation guidance entries are skipped until promoted into package-owned tests.
 
 The concrete evolution reference is `docs/evolution.md`. It uses `examples/go-evolution-loop` to show a real report moving from `58%` mutation score, `4` surviving mutants, and score `55` to `91%` mutation score, `0` surviving mutants, and score `98` after a selected candidate becomes owned assertions.

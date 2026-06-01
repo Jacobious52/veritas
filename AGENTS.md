@@ -130,6 +130,11 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `veritas score` reads `.veritas/report.json` and summarizes confidence from mutation score, findings, assertion candidates, corpus entries/replay, replay cases, baseline deltas, and budget health.
 - `veritas accept-quality-baseline` stores `.veritas/baselines/quality.json` after a reviewed good state.
 - `veritas conformance` checks the generic plugin contract for stable IDs, source-relative paths, function symbols, line ranges, and existing target files.
+- `veritas next --explain` ranks active findings and selected evolution candidates into one AI-ready next-action queue with estimated confidence impact.
+- `veritas score --mode all` prints current, strict, and verified anti-gaming confidence views.
+- `veritas review-packet` writes `.veritas/review/query.json` and `.veritas/review/prompt.md` for blind agent review across naming, abstractions, boundaries, error handling, testability, and security.
+- `veritas agent-instructions --agent codex` writes `.veritas/ai/veritas_agent_instructions.md` with the proof loop and anti-gaming rules.
+- `veritas badge` writes `.veritas/badge.svg` with confidence grade and mutation score for README/Pages use.
 - Observation artifacts now include structured `.veritas/cache/*_targets.json`, `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
 - Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, write `.veritas/evolution/*_evaluation_*.md`, and remove generated candidate files when the evaluated report regresses or cannot be evaluated.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
@@ -153,7 +158,10 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 `veritas` writes generated verification artifacts to the target project:
 
 - `.veritas/report.json`
+- `.veritas/badge.svg`
 - `.veritas/ai/*.md`
+- `.veritas/review/*.json`
+- `.veritas/review/*.md`
 - `.veritas/baselines/*.json`
 - `.veritas/cache/*.json`
 - `.veritas/assertions/*.json`
