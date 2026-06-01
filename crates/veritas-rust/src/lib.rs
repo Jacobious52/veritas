@@ -16,16 +16,16 @@ use serde::Serialize;
 use tree_sitter::{Node, Parser};
 use veritas_core::{
     config::{MutationConfig, RustPluginConfig},
-    isolated_mutation_root, persist_mutation_record_artifacts, run_parallel_jobs,
-    start_mutation_run,
+    isolated_mutation_root_for_config, persist_mutation_record_artifacts, run_parallel_jobs,
+    start_mutation_run, IsolationSetupError,
 };
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
     BehaviorReplayStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
-    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, SourceSpan,
-    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationIsolationRecord,
+    MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
+    SourceSpan, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
+    VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -1600,6 +1600,7 @@ struct RustMutationOutcome {
     status: MutationStatus,
     isolation_failed: bool,
     isolation_setup_ms: u128,
+    isolation: Option<MutationIsolationRecord>,
     error: Option<String>,
 }
 
@@ -1968,6 +1969,7 @@ fn run_parallel_mutation_checks(
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
         quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
+        merge_isolation_record(&mut quality.mutation, outcome.isolation.as_ref());
         let selection = outcome.selection.clone();
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
@@ -2123,9 +2125,23 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
     let candidate = job.candidate;
     let selection = job.selection;
     let isolation_start = Instant::now();
-    let isolated = match isolated_mutation_root(job.root.as_std_path(), "rust", job.index) {
+    let isolated = match isolated_mutation_root_for_config(
+        job.root.as_std_path(),
+        "rust",
+        job.index,
+        &job.config.mutation,
+    ) {
         Ok(isolated) => isolated,
         Err(error) => {
+            let isolation = error
+                .downcast_ref::<IsolationSetupError>()
+                .map(|error| error.diagnostics().clone())
+                .unwrap_or_else(|| MutationIsolationRecord {
+                    language: "rust".to_string(),
+                    worker_index: job.index,
+                    error: Some(error.to_string()),
+                    ..Default::default()
+                });
             return RustMutationOutcome {
                 candidate,
                 selection,
@@ -2133,11 +2149,13 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
                 isolation_setup_ms: isolation_start.elapsed().as_millis(),
+                isolation: Some(isolation),
                 error: Some(error.to_string()),
             };
         }
     };
     let isolation_setup_ms = isolation_start.elapsed().as_millis();
+    let isolation = isolated.diagnostics().clone();
     match execute_rust_mutation(
         isolated.path(),
         &candidate,
@@ -2154,6 +2172,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
                 status,
                 isolation_failed: false,
                 isolation_setup_ms,
+                isolation: Some(isolation),
                 error: None,
             }
         }
@@ -2164,9 +2183,35 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
             status: MutationStatus::NotViable,
             isolation_failed: false,
             isolation_setup_ms,
+            isolation: Some(isolation),
             error: Some(error.to_string()),
         },
     }
+}
+
+fn merge_isolation_record(
+    mutation: &mut veritas_plugin_api::MutationMetrics,
+    record: Option<&MutationIsolationRecord>,
+) {
+    let Some(record) = record else {
+        return;
+    };
+    mutation.isolation_copy_ms += record.copy_duration_ms;
+    mutation.isolation_excluded_path_count += record.excluded_path_count;
+    for pattern in &record.exclusion_patterns {
+        if !mutation.isolation_exclusion_patterns.contains(pattern) {
+            mutation.isolation_exclusion_patterns.push(pattern.clone());
+        }
+    }
+    for path in &record.excluded_path_samples {
+        if mutation.isolation_excluded_path_samples.len() >= 20 {
+            break;
+        }
+        if !mutation.isolation_excluded_path_samples.contains(path) {
+            mutation.isolation_excluded_path_samples.push(path.clone());
+        }
+    }
+    mutation.isolation_runs.push(record.clone());
 }
 
 fn execute_rust_mutation(

@@ -99,6 +99,7 @@ pub struct MutationConfig {
     pub shard_index: Option<usize>,
     pub shard_count: Option<usize>,
     pub output_statuses: Vec<String>,
+    pub isolation_exclude_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +218,7 @@ struct MutationConfigPartial {
     shard_index: Option<usize>,
     shard_count: Option<usize>,
     output_statuses: Option<Vec<String>>,
+    isolation_exclude_paths: Option<Vec<String>>,
 }
 
 impl Default for VeritasConfig {
@@ -504,6 +506,9 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
     }
     if let Some(value) = &partial.output_statuses {
         config.output_statuses = value.clone();
+    }
+    if let Some(value) = &partial.isolation_exclude_paths {
+        config.isolation_exclude_paths = value.clone();
     }
 }
 

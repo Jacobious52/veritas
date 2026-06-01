@@ -91,6 +91,7 @@ dry_run = false
 disable_test_selection = false
 baseline_timing = true
 workers = 2 # Rust and Go use isolated temp roots for parallel mutants when enabled
+isolation_exclude_paths = ["vendor", "third_party/cache", "glob:**/.generated-cache"]
 test_cpu = 1
 timeout_coefficient = 2
 timeout_min_seconds = 10
@@ -128,9 +129,11 @@ Set `baseline_timing = true` when you want cargo-mutants-style adaptive timeout 
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 
-Rust and Go mutation can run in parallel when `[mutation].workers > 1`. Each mutant is applied inside an isolated temporary project copy, package tests run there, and the temporary root is removed when the worker finishes. `workers = 1` preserves the conservative serial source-rewrite behavior, which is often faster for small local examples because isolated cold Cargo builds can be expensive. Reports include requested workers, effective workers, isolated-copy setup milliseconds, and isolation failure counts; treat isolation failures as infrastructure problems, not killed mutants.
+Rust and Go mutation can run in parallel when `[mutation].workers > 1`. Each mutant is applied inside an isolated temporary project copy, package tests run there, and the temporary root is removed when the worker finishes. Default copy exclusions cover VCS/build/cache directories such as `.git`, `.hg`, `.svn`, `.veritas`, `target`, `node_modules`, `.next`, `dist`, `build`, `.cache`, Python virtualenv/cache directories, `coverage`, and `tmp`; add repo-specific generated/cache paths with `isolation_exclude_paths`. Patterns match names, relative paths, simple `glob:` wildcards, or directory prefixes. Reports include requested workers, effective workers, setup milliseconds, copy milliseconds, excluded-path counts/samples, per-worker copy records, and scratch root paths on isolation failures; treat isolation failures as infrastructure problems, not killed mutants.
 
-`fixtures/go-multimodule` is the local confidence fixture for this path. It has two Go modules, a cross-module import, a selected billing package, and a gateway reverse dependency. It also keeps a handwritten fuzz target so the generated-fuzz path proves it does not emit duplicate fuzz names.
+`workers = 1` is the guarded in-place fallback for troubleshooting only. It preserves the conservative serial source-rewrite behavior and avoids isolated-copy overhead, but it mutates the checked-out source during each probe before restoring it. Prefer isolated workers for CI and large repos; use the serial fallback only when diagnosing copy/path issues or when a small local fixture is faster in-place.
+
+`fixtures/go-multimodule` is the local confidence fixture for this path. It has two Go modules, a relative `replace` dependency, a selected billing package, a gateway reverse dependency, isolated parallel mutation workers, and a configured cache exclusion. It also keeps a handwritten fuzz target so the generated-fuzz path proves it does not emit duplicate fuzz names.
 
 ## Rust Host Safety
 

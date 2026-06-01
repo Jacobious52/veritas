@@ -17,3 +17,7 @@ command_timeout_seconds = 90
 max_packages = 8
 max_mutants = 4
 build_tags = []
+
+[plugins.go.mutation]
+workers = 2
+isolation_exclude_paths = ["services/billing/.veritas-local-cache"]

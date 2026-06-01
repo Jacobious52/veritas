@@ -155,13 +155,57 @@ pub fn render_markdown(report: &VerificationReport) -> String {
             if report.quality.mutation.requested_workers > 0
                 || report.quality.mutation.effective_workers > 0
                 || report.quality.mutation.isolation_failures > 0
+                || report.quality.mutation.isolation_copy_ms > 0
             {
                 out.push_str(&format!(
-                    "  - Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`\n",
+                    "  - Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`, isolated copy `{}` ms\n",
                     report.quality.mutation.requested_workers,
                     report.quality.mutation.effective_workers,
                     report.quality.mutation.isolation_failures,
+                    report.quality.mutation.isolation_copy_ms,
                 ));
+                if report.quality.mutation.isolation_excluded_path_count > 0 {
+                    out.push_str(&format!(
+                        "  - Isolation excluded paths: `{}`",
+                        report.quality.mutation.isolation_excluded_path_count
+                    ));
+                    if !report
+                        .quality
+                        .mutation
+                        .isolation_excluded_path_samples
+                        .is_empty()
+                    {
+                        out.push_str(&format!(
+                            " (samples: `{}`)",
+                            report
+                                .quality
+                                .mutation
+                                .isolation_excluded_path_samples
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join("`, `")
+                        ));
+                    }
+                    out.push('\n');
+                }
+                for run in report
+                    .quality
+                    .mutation
+                    .isolation_runs
+                    .iter()
+                    .filter(|run| run.error.is_some())
+                {
+                    out.push_str(&format!(
+                        "  - Isolation failure worker `{}` scratch `{}`: {}\n",
+                        run.worker_index,
+                        run.scratch_root
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "n/a".to_string()),
+                        run.error.as_deref().unwrap_or("unknown error")
+                    ));
+                }
             }
             if report.quality.mutation.computed_timeout_seconds.is_some()
                 || report.quality.mutation.baseline_duration_ms.is_some()

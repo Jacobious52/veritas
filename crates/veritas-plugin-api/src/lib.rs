@@ -534,6 +534,16 @@ pub struct MutationMetrics {
     pub isolation_failures: usize,
     #[serde(default, skip_serializing_if = "is_zero_u128")]
     pub isolation_setup_ms: u128,
+    #[serde(default)]
+    pub isolation_copy_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub isolation_excluded_path_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub isolation_excluded_path_samples: Vec<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub isolation_exclusion_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub isolation_runs: Vec<MutationIsolationRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_duration_ms: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -552,6 +562,28 @@ pub struct MutationMetrics {
     pub by_operator: BTreeMap<String, MutationAttribution>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<MutationRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationIsolationRecord {
+    pub language: String,
+    pub worker_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch_root: Option<Utf8PathBuf>,
+    #[serde(default)]
+    pub copy_duration_ms: u128,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub excluded_path_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_path_samples: Vec<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusion_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
