@@ -19,12 +19,12 @@ use veritas_core::{
     persist_mutation_record_artifacts, start_mutation_run,
 };
 use veritas_plugin_api::{
-    mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
-    BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
-    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, SourceSpan,
-    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationStrategy,
-    VerificationTarget,
+    finalize_mutation_metrics, mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase,
+    BehaviorReplayObservation, BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport,
+    Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
+    MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
+    SourceSpan, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -965,22 +965,9 @@ fn run_python_mutations(
         quality.mutation.records.push(record);
         commands.push(command);
     }
-    quality.mutation.skipped = quality
-        .mutation
-        .generated
-        .saturating_sub(quality.mutation.executed);
-    quality.mutation.score_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.killed + quality.mutation.survived)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.mutant_coverage_percent =
-        ((quality.mutation.killed + quality.mutation.survived) * 100)
-            .checked_div(quality.mutation.killed + quality.mutation.survived)
-            .map(|score| score.try_into().unwrap_or(100));
     finalize_mutation_skips(&mut quality.mutation.by_domain);
     finalize_mutation_skips(&mut quality.mutation.by_operator);
+    finalize_mutation_metrics(&mut quality.mutation);
 
     Ok(TestRunResult {
         language: "python".to_string(),

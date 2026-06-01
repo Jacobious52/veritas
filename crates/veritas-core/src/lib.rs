@@ -3110,20 +3110,81 @@ fn feedback_artifacts(language: &str, report: &VerificationReport) -> Vec<Genera
         });
     }
 
-    let mutation_findings = report
-        .findings
+    let mutation_records = report
+        .quality
+        .mutation
+        .records
         .iter()
-        .filter(|failure| failure.message.contains("mutation survived"))
+        .chain(
+            report
+                .runs
+                .iter()
+                .flat_map(|run| run.quality.mutation.records.iter()),
+        )
         .collect::<Vec<_>>();
-    if !mutation_findings.is_empty() {
+    let correctness_survivors = mutation_records
+        .iter()
+        .copied()
+        .filter(|record| record.status == MutationStatus::Lived && !record.brittleness_probe)
+        .collect::<Vec<_>>();
+    let killed_brittleness = mutation_records
+        .iter()
+        .copied()
+        .filter(|record| record.status == MutationStatus::Killed && record.brittleness_probe)
+        .collect::<Vec<_>>();
+    let survived_brittleness = mutation_records
+        .iter()
+        .copied()
+        .filter(|record| record.status == MutationStatus::Lived && record.brittleness_probe)
+        .collect::<Vec<_>>();
+    if !correctness_survivors.is_empty()
+        || !killed_brittleness.is_empty()
+        || !survived_brittleness.is_empty()
+    {
         let mut contents = String::from("# Mutation Feedback\n\n");
-        for finding in mutation_findings {
-            contents.push_str(&format!("- {}\n", finding.message));
-            if let Some(repro) = &finding.repro {
-                contents.push_str(&format!("  - Repro: `{}`\n", repro.command));
+        if !correctness_survivors.is_empty() {
+            contents.push_str("## Correctness Survivors\n\n");
+            for record in correctness_survivors {
+                contents.push_str(&format!(
+                    "- `{}` in `{}` survived; add behavior assertions that distinguish `{}` from `{}`.\n",
+                    record.id,
+                    record.symbol,
+                    record.from.as_deref().unwrap_or("original"),
+                    record.to.as_deref().unwrap_or("mutant")
+                ));
+                if let Some(command) = &record.selected_test_command {
+                    contents.push_str(&format!("  - Proof command: `{command}`\n"));
+                }
+                if let Some(suggested) = &record.suggested_test {
+                    contents.push_str(&format!("  - Suggested test: {suggested}\n"));
+                }
             }
+            contents.push('\n');
         }
-        contents.push_str("\nSuggested generation focus: convert surviving mutants into stronger regression assertions.\n");
+        if !killed_brittleness.is_empty() {
+            contents.push_str("## Brittleness Probes Killed\n\n");
+            for record in killed_brittleness {
+                contents.push_str(&format!(
+                    "- `{}` in `{}` was killed even though it is behavior-preserving; loosen exact ordering, formatting, log, or implementation-detail assertions unless that detail is contractual.\n",
+                    record.id, record.symbol
+                ));
+                if let Some(command) = &record.selected_test_command {
+                    contents.push_str(&format!("  - Brittle proof command: `{command}`\n"));
+                }
+            }
+            contents.push('\n');
+        }
+        if !survived_brittleness.is_empty() {
+            contents.push_str("## Brittleness Probes Survived\n\n");
+            for record in survived_brittleness {
+                contents.push_str(&format!(
+                    "- `{}` in `{}` survived as expected; do not add a behavior assertion solely to kill this equivalent-style probe.\n",
+                    record.id, record.symbol
+                ));
+            }
+            contents.push('\n');
+        }
+        contents.push_str("Suggested generation focus: kill correctness survivors with behavior assertions, and handle killed brittleness probes by rewriting over-specific tests.\n");
         artifacts.push(GeneratedArtifact {
             id: format!("{language}-mutation-feedback"),
             language: language.to_string(),
@@ -5436,15 +5497,7 @@ fn merge_mutation_isolation_metadata(
 }
 
 fn finalize_mutation_percentages(mutation: &mut veritas_plugin_api::MutationMetrics) {
-    mutation.score_percent = (mutation.killed * 100)
-        .checked_div(mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
-    mutation.efficacy_percent = (mutation.killed * 100)
-        .checked_div(mutation.killed + mutation.survived)
-        .map(|score| score.try_into().unwrap_or(100));
-    mutation.mutant_coverage_percent = ((mutation.killed + mutation.survived) * 100)
-        .checked_div(mutation.killed + mutation.survived + mutation.not_covered)
-        .map(|score| score.try_into().unwrap_or(100));
+    veritas_plugin_api::finalize_mutation_metrics(mutation);
 }
 
 fn property_strength_score(property: &veritas_plugin_api::PropertyMetrics) -> Option<u8> {
@@ -5502,19 +5555,49 @@ fn confidence_score_with_baseline(
     let mut positive_signals = Vec::new();
     let mut risks = Vec::new();
 
-    if let Some(mutation_score) = report.quality.mutation.score_percent {
+    let correctness_score = report
+        .quality
+        .mutation
+        .correctness_score_percent
+        .or(report.quality.mutation.score_percent);
+    if let Some(mutation_score) = correctness_score {
         score += i16::from(mutation_score) / 3;
-        positive_signals.push(format!("mutation score is {mutation_score}%"));
+        positive_signals.push(format!("correctness mutation score is {mutation_score}%"));
     } else {
-        risks.push("mutation checks did not execute".to_string());
+        risks.push("correctness mutation checks did not execute".to_string());
     }
 
-    if report.quality.mutation.survived > 0 {
-        score -= (report.quality.mutation.survived as i16 * 6).min(24);
+    let correctness_survived = if report.quality.mutation.correctness_executed > 0
+        || report.quality.mutation.brittleness_executed > 0
+    {
+        report.quality.mutation.correctness_survived
+    } else {
+        report.quality.mutation.survived
+    };
+    if correctness_survived > 0 {
+        score -= (correctness_survived as i16 * 6).min(24);
         risks.push(format!(
-            "{} surviving mutant(s) still need assertions",
-            report.quality.mutation.survived
+            "{correctness_survived} surviving correctness mutant(s) still need behavior assertions"
         ));
+    }
+    if report.quality.mutation.brittleness_executed > 0 {
+        let survived = report.quality.mutation.brittleness_survived;
+        let executed = report.quality.mutation.brittleness_executed;
+        let survival = report
+            .quality
+            .mutation
+            .brittleness_survival_percent
+            .unwrap_or(0);
+        positive_signals.push(format!(
+            "brittleness probe survival is {survival}% ({survived}/{executed} behavior-preserving probes survived)"
+        ));
+        if report.quality.mutation.brittleness_killed > 0 {
+            let killed = report.quality.mutation.brittleness_killed;
+            score -= (killed as i16 * 4).min(16);
+            risks.push(format!(
+                "{killed} brittleness probe(s) were killed; loosen implementation-coupled assertions rather than adding behavior assertions"
+            ));
+        }
     }
     if report.quality.property.generated_artifacts > 0 {
         score += 8;
@@ -5621,6 +5704,10 @@ fn confidence_score_with_baseline(
         score,
         grade,
         summary,
+        correctness_mutation_score_percent: correctness_score,
+        brittleness_probe_survival_percent: report.quality.mutation.brittleness_survival_percent,
+        brittleness_probes_executed: report.quality.mutation.brittleness_executed,
+        brittleness_probes_killed: report.quality.mutation.brittleness_killed,
         positive_signals,
         risks,
         recommended_next_steps,
@@ -5725,8 +5812,21 @@ fn failed_evolution_evaluation(error: impl Into<String>) -> EvolveEvaluationSumm
 
 fn confidence_next_steps(report: &VerificationReport) -> Vec<String> {
     let mut steps = Vec::new();
-    if report.quality.mutation.survived > 0 {
-        steps.push("Promote assertion candidates for surviving mutants.".to_string());
+    let correctness_survived = if report.quality.mutation.correctness_executed > 0
+        || report.quality.mutation.brittleness_executed > 0
+    {
+        report.quality.mutation.correctness_survived
+    } else {
+        report.quality.mutation.survived
+    };
+    if correctness_survived > 0 {
+        steps.push("Promote assertion candidates for surviving correctness mutants.".to_string());
+    }
+    if report.quality.mutation.brittleness_killed > 0 {
+        steps.push(
+            "Rewrite killed brittleness probes by loosening implementation-coupled assertions."
+                .to_string(),
+        );
     }
     if report.quality.regression.corpus_entries > 0 {
         steps.push("Replay persisted corpus entries before accepting the AI change.".to_string());
@@ -5866,8 +5966,8 @@ mod tests {
     use camino::Utf8PathBuf;
     use veritas_plugin_api::{
         ArtifactKind, AssertionDomain, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact,
-        LineRange, MutationRecord, MutationStatus, ReproCase, RiskLevel, RunStatus, TestRunResult,
-        VerificationQuality, VerificationReport,
+        LineRange, MutationAttribution, MutationRecord, MutationStatus, ReproCase, RiskLevel,
+        RunStatus, TestRunResult, VerificationQuality, VerificationReport,
     };
 
     use super::{
@@ -6508,11 +6608,47 @@ index 3333333..4444444 100644
         assert!(score
             .risks
             .iter()
-            .any(|risk| risk.contains("surviving mutant")));
+            .any(|risk| risk.contains("surviving correctness mutant")));
         assert!(score
             .positive_signals
             .iter()
             .any(|signal| signal.contains("differential replay")));
+    }
+
+    #[test]
+    fn confidence_score_reports_brittleness_separately() {
+        let mut report = VerificationReport::empty();
+        report.quality.mutation.generated = 4;
+        report.quality.mutation.executed = 4;
+        report.quality.mutation.killed = 3;
+        report.quality.mutation.survived = 1;
+        report.quality.mutation.by_domain.insert(
+            "brittleness".to_string(),
+            MutationAttribution {
+                generated: 2,
+                runnable: 2,
+                executed: 2,
+                killed: 1,
+                survived: 1,
+                skipped: 0,
+                ..Default::default()
+            },
+        );
+        veritas_plugin_api::finalize_mutation_metrics(&mut report.quality.mutation);
+
+        let score = confidence_score(&report);
+
+        assert_eq!(score.correctness_mutation_score_percent, Some(100));
+        assert_eq!(score.brittleness_probe_survival_percent, Some(50));
+        assert_eq!(score.brittleness_probes_killed, 1);
+        assert!(score
+            .risks
+            .iter()
+            .any(|risk| risk.contains("brittleness probe")));
+        assert!(!score
+            .risks
+            .iter()
+            .any(|risk| risk.contains("surviving correctness mutant")));
     }
 
     #[test]

@@ -145,4 +145,4 @@ Report formats:
 
 SARIF prefers target file and line range locations when a finding maps to a discovered target. JUnit trims long failure bodies for CI log hygiene.
 
-`veritas score` reads `.veritas/report.json` and produces a compact confidence score from mutation score, findings, assertion candidates, replay cases, corpus entries/replay, and budget health. If `.veritas/baselines/quality.json` exists, the score includes mutation/confidence/survivor deltas. `veritas accept-quality-baseline` refreshes that baseline after a reviewed good state.
+`veritas score` reads `.veritas/report.json` and produces a compact confidence score from correctness mutation score, brittleness probe survival, findings, assertion candidates, replay cases, corpus entries/replay, and budget health. Brittleness probes are reported as behavior-preserving test-quality signal instead of being blended into correctness survivor debt. If `.veritas/baselines/quality.json` exists, the score includes mutation/confidence/survivor deltas. `veritas accept-quality-baseline` refreshes that baseline after a reviewed good state.

@@ -420,6 +420,14 @@ pub struct ConfidenceScore {
     pub score: u8,
     pub grade: ConfidenceGrade,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correctness_mutation_score_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brittleness_probe_survival_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brittleness_probes_executed: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brittleness_probes_killed: usize,
     pub positive_signals: Vec<String>,
     pub risks: Vec<String>,
     pub recommended_next_steps: Vec<String>,
@@ -552,6 +560,22 @@ pub struct MutationMetrics {
     pub timeout_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correctness_score_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub correctness_executed: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub correctness_killed: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub correctness_survived: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brittleness_executed: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brittleness_killed: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brittleness_survived: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brittleness_survival_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub efficacy_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -879,7 +903,7 @@ pub mod mutation_taxonomy {
                 "Testing seam mutation: this code may be brittle without injected time, randomness, IO, or schedulers."
             }
             ("brittleness", _) => {
-                "Brittleness probe: surviving equivalent-style mutants can point to over-specified tests or noisy assertions."
+                "Brittleness probe: killed behavior-preserving mutants point to tests coupled to ordering, logs, formatting, or implementation noise."
             }
             _ => "Mutation should be killed by behavior-focused tests over the affected symbol.",
         }
@@ -909,7 +933,7 @@ pub mod mutation_taxonomy {
                 "Introduce an injectable seam for time/randomness/IO and assert deterministic behavior through it."
             }
             ("brittleness", _) => {
-                "Prefer behavior assertions over exact ordering/log/noise expectations unless the order is contractual."
+                "If this probe was killed, loosen exact implementation assertions into behavior assertions unless the detail is contractual."
             }
             _ => "Add a regression assertion that distinguishes the original expression from this mutant.",
         }
@@ -922,6 +946,43 @@ fn is_zero(value: &usize) -> bool {
 
 fn is_zero_u128(value: &u128) -> bool {
     *value == 0
+}
+
+pub fn finalize_mutation_metrics(mutation: &mut MutationMetrics) {
+    mutation.skipped = mutation.generated.saturating_sub(mutation.executed);
+    mutation.score_percent = percent(mutation.killed, mutation.executed);
+    mutation.efficacy_percent = percent(mutation.killed, mutation.killed + mutation.survived);
+    mutation.mutant_coverage_percent = percent(
+        mutation.killed + mutation.survived,
+        mutation.killed + mutation.survived + mutation.not_covered,
+    );
+
+    let brittleness = mutation
+        .by_domain
+        .get("brittleness")
+        .cloned()
+        .unwrap_or_default();
+    mutation.brittleness_executed = brittleness.executed;
+    mutation.brittleness_killed = brittleness.killed;
+    mutation.brittleness_survived = brittleness.survived;
+    mutation.brittleness_survival_percent =
+        percent(mutation.brittleness_survived, mutation.brittleness_executed);
+
+    mutation.correctness_executed = mutation
+        .executed
+        .saturating_sub(mutation.brittleness_executed);
+    mutation.correctness_killed = mutation.killed.saturating_sub(mutation.brittleness_killed);
+    mutation.correctness_survived = mutation
+        .survived
+        .saturating_sub(mutation.brittleness_survived);
+    mutation.correctness_score_percent =
+        percent(mutation.correctness_killed, mutation.correctness_executed);
+}
+
+fn percent(numerator: usize, denominator: usize) -> Option<u8> {
+    (numerator * 100)
+        .checked_div(denominator)
+        .map(|score| score.try_into().unwrap_or(100))
 }
 
 fn is_false(value: &bool) -> bool {

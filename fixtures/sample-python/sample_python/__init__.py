@@ -1,3 +1,3 @@
-from .pricing import normalize_discount_code
+from .pricing import normalize_discount_code, normalized_discount_tags
 
-__all__ = ["normalize_discount_code"]
+__all__ = ["normalize_discount_code", "normalized_discount_tags"]

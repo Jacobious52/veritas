@@ -135,9 +135,31 @@ pub fn render_markdown(report: &VerificationReport) -> String {
             ));
             if report.quality.mutation.efficacy_percent.is_some()
                 || report.quality.mutation.mutant_coverage_percent.is_some()
+                || report.quality.mutation.correctness_score_percent.is_some()
+                || report
+                    .quality
+                    .mutation
+                    .brittleness_survival_percent
+                    .is_some()
             {
                 out.push_str(&format!(
-                    "  - Efficacy: `{}`, mutant coverage: `{}`\n",
+                    "  - Correctness score: `{}`, brittleness survival: `{}`, efficacy: `{}`, mutant coverage: `{}`\n",
+                    report
+                        .quality
+                        .mutation
+                        .correctness_score_percent
+                        .map(|score| format!("{score}%"))
+                        .unwrap_or_else(|| "n/a".to_string()),
+                    report
+                        .quality
+                        .mutation
+                        .brittleness_survival_percent
+                        .map(|score| format!(
+                            "{score}% ({}/{})",
+                            report.quality.mutation.brittleness_survived,
+                            report.quality.mutation.brittleness_executed
+                        ))
+                        .unwrap_or_else(|| "n/a".to_string()),
                     report
                         .quality
                         .mutation
