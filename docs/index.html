@@ -106,8 +106,8 @@
       inset: 0;
       z-index: 1;
       background:
-        linear-gradient(90deg, rgba(8, 10, 15, .95), rgba(8, 10, 15, .52) 52%, rgba(8, 10, 15, .76)),
-        linear-gradient(180deg, rgba(8, 10, 15, .24), rgba(8, 10, 15, .96)),
+        linear-gradient(90deg, rgba(8, 10, 15, .96), rgba(8, 10, 15, .72) 52%, rgba(8, 10, 15, .84)),
+        linear-gradient(180deg, rgba(8, 10, 15, .42), rgba(8, 10, 15, .96)),
         repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 84px),
         repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px);
       pointer-events: none;
@@ -127,7 +127,7 @@
       width: 100%;
       height: 100%;
       z-index: 0;
-      opacity: 1;
+      opacity: .36;
     }
     .hero-copy {
       position: relative;
@@ -177,6 +177,12 @@
     .hero-stack {
       display: grid;
       gap: 18px;
+      align-content: start;
+    }
+    .hero-side {
+      display: grid;
+      gap: 18px;
+      align-content: start;
     }
     .hero-grid > *,
     .example > *,
@@ -212,6 +218,45 @@
     }
     .proof-panel::before {
       background: linear-gradient(90deg, var(--warn), var(--bad), var(--violet));
+    }
+    .visual-panel {
+      min-height: 300px;
+      padding: 0;
+      background:
+        radial-gradient(circle at 72% 18%, rgba(122,168,255,.22), transparent 38%),
+        linear-gradient(180deg, rgba(29,35,54,.96), rgba(10,14,24,.98));
+    }
+    .visual-panel::before {
+      background: linear-gradient(90deg, var(--cyan), var(--violet), var(--warn), var(--accent));
+      height: 4px;
+    }
+    #hero-visual-canvas {
+      display: block;
+      width: 100%;
+      height: 300px;
+    }
+    .visual-caption {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #dce6f4;
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    .visual-caption span {
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(6, 9, 15, .58);
+      border-radius: 999px;
+      padding: 5px 9px;
+      box-shadow: 0 10px 24px rgba(0,0,0,.22);
     }
     .panel h2,
     .panel h3 {
@@ -261,6 +306,14 @@
       box-shadow: 0 1px 0 rgba(255,255,255,.06) inset;
     }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code .tok-command { color: var(--accent); font-weight: 850; }
+    code .tok-keyword { color: var(--cyan); font-weight: 800; }
+    code .tok-string { color: var(--amber); }
+    code .tok-number { color: var(--violet); }
+    code .tok-flag { color: var(--rose); }
+    code .tok-path { color: #9fe4ff; }
+    code .tok-comment { color: #748095; font-style: italic; }
+    code .tok-operator { color: var(--bad); font-weight: 800; }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -574,6 +627,7 @@
       .hero-grid,
       .example,
       .scenario,
+      .hero-side,
       .demo-loop,
       .grid,
       .split {
@@ -584,9 +638,11 @@
       .lede { font-size: 18px; }
       .actions { flex-direction: column; }
       .actions .button { width: 100%; }
+      .visual-panel { min-height: 260px; }
+      #hero-visual-canvas { height: 260px; }
     }
     @media (prefers-reduced-motion: reduce) {
-      #hero-canvas { opacity: .45; }
+      #hero-canvas { opacity: .22; }
     }
   </style>
 </head>
@@ -659,21 +715,32 @@ Use .veritas/ feedback, replay results, mutation survivors, and the evolution su
             </div>
           </div>
 
-          <div class="panel proof-panel">
-            <div class="proof-topline">
-              <span>Example report</span>
-              <span>changed branch</span>
+          <div class="hero-side">
+            <div class="panel visual-panel" aria-label="Veritas scanning and mutation animation">
+              <canvas id="hero-visual-canvas" aria-hidden="true"></canvas>
+              <div class="visual-caption">
+                <span>scan symbols</span>
+                <span>mutate paths</span>
+                <span>score confidence</span>
+              </div>
             </div>
-            <div class="proof-score">72<span>confidence: needs stronger tests</span></div>
-            <ul class="terminal-list">
-              <li><b>mutation survived</b> refund_cents &lt;= available_cents -> refund_cents &lt; available_cents</li>
-              <li><b>fuzz seed saved</b> " 12.34 " reproduced parser drift</li>
-              <li><b>replay drift</b> AuthorizeRefund("support", 500) changed from allowed to denied</li>
-              <li><b>agent next step</b> promote assertion candidate, rerun, keep only if the mutant dies</li>
-            </ul>
-            <pre><code>veritas verify --changed --profile ci
+
+            <div class="panel proof-panel">
+              <div class="proof-topline">
+                <span>Example report</span>
+                <span>changed branch</span>
+              </div>
+              <div class="proof-score">72<span>confidence: needs stronger tests</span></div>
+              <ul class="terminal-list">
+                <li><b>mutation survived</b> refund_cents &lt;= available_cents -> refund_cents &lt; available_cents</li>
+                <li><b>fuzz seed saved</b> " 12.34 " reproduced parser drift</li>
+                <li><b>replay drift</b> AuthorizeRefund("support", 500) changed from allowed to denied</li>
+                <li><b>agent next step</b> promote assertion candidate, rerun, keep only if the mutant dies</li>
+              </ul>
+              <pre><code>veritas verify --changed --profile ci
 veritas evolve --dry-run
 veritas repair-prompt</code></pre>
+            </div>
           </div>
         </div>
       </div>
@@ -931,13 +998,7 @@ Next: add assertions for:
 
   <script>
     (() => {
-      const canvas = document.getElementById("hero-canvas");
-      const context = canvas.getContext("2d");
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      let width = 0;
-      let height = 0;
-      let dpr = 1;
-      const syntaxNodes = [];
       const codeLines = [
         "pub fn authorize_refund(role, cents) {",
         "  if role == \"support\" && cents <= 500 {",
@@ -951,259 +1012,361 @@ Next: add assertions for:
       const operators = ["<=", "&&", "return", "Some", "Err", "match", "panic?", "seed"];
       const colors = ["#58e6b7", "#65d7ff", "#ffd166", "#ff6f91", "#c59cff"];
 
-      function resize() {
-        dpr = Math.min(window.devicePixelRatio || 1, 2);
-        width = canvas.clientWidth;
-        height = canvas.clientHeight;
-        canvas.width = Math.floor(width * dpr);
-        canvas.height = Math.floor(height * dpr);
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
-        seedSyntaxTree();
-      }
+      const scenes = [
+        createScene(document.getElementById("hero-canvas"), "ambient"),
+        createScene(document.getElementById("hero-visual-canvas"), "showcase")
+      ].filter(Boolean);
 
-      function seedSyntaxTree() {
-        syntaxNodes.length = 0;
-        const compact = width < 760;
-        const originX = compact ? width * .68 : width * .73;
-        const originY = compact ? height * .16 : height * .2;
-        const scale = compact ? .64 : 1;
-        const levels = [
-          [{ label: "source_file", x: 0, y: 0, color: colors[1] }],
-          [
-            { label: "fn", x: -120, y: 86, color: colors[0] },
-            { label: "block", x: 60, y: 86, color: colors[4] }
-          ],
-          [
-            { label: "if_expr", x: -150, y: 180, color: colors[2] },
-            { label: "return", x: 20, y: 180, color: colors[0] },
-            { label: "deny", x: 168, y: 180, color: colors[3] }
-          ],
-          [
-            { label: "role ==", x: -222, y: 270, color: colors[1] },
-            { label: "cents <=", x: -86, y: 270, color: colors[3] },
-            { label: "allow", x: 72, y: 270, color: colors[0] }
-          ]
-        ];
-        for (const level of levels) {
-          for (const node of level) {
-            syntaxNodes.push({
-              label: node.label,
-              x: originX + node.x * scale,
-              y: originY + node.y * scale,
-              color: node.color,
-              phase: Math.random() * Math.PI * 2
-            });
+      function createScene(canvas, mode) {
+        if (!canvas) return null;
+        const context = canvas.getContext("2d");
+        const syntaxNodes = [];
+        let width = 0;
+        let height = 0;
+        let dpr = 1;
+        const isAmbient = mode === "ambient";
+
+        function resize() {
+          dpr = Math.min(window.devicePixelRatio || 1, 2);
+          width = canvas.clientWidth;
+          height = canvas.clientHeight;
+          canvas.width = Math.floor(width * dpr);
+          canvas.height = Math.floor(height * dpr);
+          context.setTransform(dpr, 0, 0, dpr, 0, 0);
+          seedSyntaxTree();
+        }
+
+        function seedSyntaxTree() {
+          syntaxNodes.length = 0;
+          const compact = width < (isAmbient ? 760 : 520);
+          const originX = isAmbient
+            ? (compact ? width * .68 : width * .73)
+            : (compact ? width * .72 : width * .7);
+          const originY = isAmbient
+            ? (compact ? height * .16 : height * .2)
+            : (compact ? height * .16 : height * .18);
+          const scale = isAmbient ? (compact ? .64 : 1) : (compact ? .38 : .48);
+          const levels = [
+            [{ label: "source_file", x: 0, y: 0, color: colors[1] }],
+            [
+              { label: "fn", x: -120, y: 86, color: colors[0] },
+              { label: "block", x: 60, y: 86, color: colors[4] }
+            ],
+            [
+              { label: "if_expr", x: -150, y: 180, color: colors[2] },
+              { label: "return", x: 20, y: 180, color: colors[0] },
+              { label: "deny", x: 168, y: 180, color: colors[3] }
+            ],
+            [
+              { label: "role ==", x: -222, y: 270, color: colors[1] },
+              { label: "cents <=", x: -86, y: 270, color: colors[3] },
+              { label: "allow", x: 72, y: 270, color: colors[0] }
+            ]
+          ];
+          for (const level of levels) {
+            for (const node of level) {
+              syntaxNodes.push({
+                label: node.label,
+                x: originX + node.x * scale,
+                y: originY + node.y * scale,
+                color: node.color
+              });
+            }
           }
         }
-      }
 
-      function draw(time = 0) {
-        context.clearRect(0, 0, width, height);
-        context.fillStyle = "#080a0f";
-        context.fillRect(0, 0, width, height);
+        function draw(time = 0) {
+          context.clearRect(0, 0, width, height);
+          context.fillStyle = "#080a0f";
+          context.fillRect(0, 0, width, height);
 
-        const t = time * .001;
-        drawGrid(t);
-        drawCodeScanner(t);
-        drawSyntaxTree(t);
-        drawOperatorStream(t);
-        drawMutationDiff(t);
-        drawSignalRail(t);
-
-        if (!reduceMotion) requestAnimationFrame(draw);
-      }
-
-      function drawGrid(t) {
-        context.save();
-        context.globalAlpha = .4;
-        context.strokeStyle = "rgba(122,168,255,.14)";
-        context.lineWidth = 1;
-        for (let x = (t * 12) % 84; x < width; x += 84) {
-          context.beginPath();
-          context.moveTo(x, 0);
-          context.lineTo(x, height);
-          context.stroke();
-        }
-        for (let y = 0; y < height; y += 72) {
-          context.beginPath();
-          context.moveTo(0, y);
-          context.lineTo(width, y);
-          context.stroke();
-        }
-        context.restore();
-      }
-
-      function drawCodeScanner(t) {
-        const compact = width < 760;
-        const x = width * .07;
-        const y = compact ? height * .24 : height * .2;
-        const w = compact ? width * .58 : Math.min(520, width * .42);
-        const h = compact ? 230 : 306;
-        const lineH = compact ? 24 : 30;
-        const scan = reduceMotion ? 3 : Math.floor((t * 2.4) % codeLines.length);
-        panel(x, y, w, h, "rgba(14,19,32,.78)", "rgba(101,215,255,.22)");
-        label("TREE-SITTER SCAN", x + 20, y + 30, "#65d7ff");
-        const visibleLines = compact ? codeLines.slice(0, 6) : codeLines;
-        for (let i = 0; i < visibleLines.length; i += 1) {
-          const yy = y + 66 + i * lineH;
-          if (i === scan) {
-            context.fillStyle = "rgba(101,215,255,.13)";
-            context.fillRect(x + 14, yy - 18, w - 28, 24);
-            context.strokeStyle = "rgba(101,215,255,.56)";
-            context.strokeRect(x + 14, yy - 18, w - 28, 24);
+          const t = time * .001;
+          drawGrid(t);
+          if (isAmbient) {
+            context.save();
+            context.globalAlpha = .56;
+            drawSyntaxTree(t);
+            drawOperatorStream(t);
+            drawSignalRail(t);
+            context.restore();
+          } else {
+            drawCodeScanner(t);
+            drawSyntaxTree(t);
+            drawOperatorStream(t);
+            drawMutationDiff(t);
+            drawSignalRail(t);
           }
-          context.fillStyle = lineColor(visibleLines[i]);
-          context.font = `${compact ? 11 : 14}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          context.fillText(visibleLines[i], x + 24, yy);
         }
-        const beamX = x + 18 + ((reduceMotion ? .5 : (t * .18) % 1) * (w - 36));
-        const gradient = context.createLinearGradient(beamX - 40, y, beamX + 40, y);
-        gradient.addColorStop(0, "rgba(101,215,255,0)");
-        gradient.addColorStop(.5, "rgba(101,215,255,.3)");
-        gradient.addColorStop(1, "rgba(101,215,255,0)");
-        context.fillStyle = gradient;
-        context.fillRect(beamX - 40, y + 50, 80, h - 68);
-      }
 
-      function drawSyntaxTree(t) {
-        const compact = width < 760;
-        const active = reduceMotion ? 4 : Math.floor((t * 3) % syntaxNodes.length);
-        const edges = [[0,1],[0,2],[1,3],[2,4],[2,5],[3,6],[3,7],[4,8]];
-        for (const [a, b] of edges) {
-          const left = syntaxNodes[a];
-          const right = syntaxNodes[b];
-          if (!left || !right) continue;
-          context.strokeStyle = "rgba(197,156,255,.32)";
-          context.lineWidth = 1.5;
-          context.beginPath();
-          context.moveTo(left.x, left.y);
-          context.lineTo(right.x, right.y);
-          context.stroke();
+        function drawGrid(t) {
+          context.save();
+          context.globalAlpha = isAmbient ? .18 : .36;
+          context.strokeStyle = isAmbient ? "rgba(122,168,255,.1)" : "rgba(122,168,255,.2)";
+          context.lineWidth = 1;
+          const gapX = isAmbient ? 84 : 56;
+          const gapY = isAmbient ? 72 : 48;
+          for (let x = (t * (isAmbient ? 6 : 12)) % gapX; x < width; x += gapX) {
+            context.beginPath();
+            context.moveTo(x, 0);
+            context.lineTo(x, height);
+            context.stroke();
+          }
+          for (let y = 0; y < height; y += gapY) {
+            context.beginPath();
+            context.moveTo(0, y);
+            context.lineTo(width, y);
+            context.stroke();
+          }
+          context.restore();
         }
-        for (let i = 0; i < syntaxNodes.length; i += 1) {
-          const node = syntaxNodes[i];
-          const pulse = !reduceMotion && i === active ? Math.sin(t * 10) * 3 : 0;
-          context.fillStyle = i === active ? node.color : "rgba(15,21,34,.9)";
-          context.strokeStyle = node.color;
-          context.lineWidth = i === active ? 2 : 1;
-          const boxW = compact ? 82 : 108;
-          roundRect(node.x - boxW / 2, node.y - 16, boxW, 32, 7, true, true);
-          context.fillStyle = i === active ? "#071017" : "#e5ecf7";
-          context.font = `${compact ? 10 : 12}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          context.textAlign = "center";
-          context.fillText(node.label, node.x, node.y + 4 + pulse * .08);
+
+        function drawCodeScanner(t) {
+          const compact = width < 520;
+          const x = compact ? 14 : 18;
+          const y = compact ? 30 : 34;
+          const w = compact ? width - 28 : width * .57;
+          const h = compact ? 150 : 178;
+          const lineH = compact ? 20 : 22;
+          const scan = reduceMotion ? 2 : Math.floor((t * 2.7) % 6);
+          panel(x, y, w, h, "rgba(9,13,23,.9)", "rgba(101,215,255,.35)");
+          label("TREE-SITTER SCAN", x + 16, y + 25, "#65d7ff");
+          const visibleLines = codeLines.slice(0, compact ? 5 : 6);
+          for (let i = 0; i < visibleLines.length; i += 1) {
+            const yy = y + 56 + i * lineH;
+            if (i === scan) {
+              context.fillStyle = "rgba(101,215,255,.16)";
+              context.fillRect(x + 12, yy - 16, w - 24, 22);
+              context.strokeStyle = "rgba(101,215,255,.56)";
+              context.strokeRect(x + 12, yy - 16, w - 24, 22);
+            }
+            context.fillStyle = lineColor(visibleLines[i]);
+            context.font = `${compact ? 10 : 11}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            context.fillText(visibleLines[i], x + 18, yy);
+          }
+          const beamX = x + 14 + ((reduceMotion ? .5 : (t * .22) % 1) * (w - 28));
+          const gradient = context.createLinearGradient(beamX - 28, y, beamX + 28, y);
+          gradient.addColorStop(0, "rgba(101,215,255,0)");
+          gradient.addColorStop(.5, "rgba(101,215,255,.32)");
+          gradient.addColorStop(1, "rgba(101,215,255,0)");
+          context.fillStyle = gradient;
+          context.fillRect(beamX - 28, y + 40, 56, h - 54);
+        }
+
+        function drawSyntaxTree(t) {
+          const compact = width < (isAmbient ? 760 : 520);
+          const active = reduceMotion ? 4 : Math.floor((t * 3.2) % syntaxNodes.length);
+          const edges = [[0,1],[0,2],[1,3],[2,4],[2,5],[3,6],[3,7],[4,8]];
+          for (const [a, b] of edges) {
+            const left = syntaxNodes[a];
+            const right = syntaxNodes[b];
+            if (!left || !right) continue;
+            context.strokeStyle = isAmbient ? "rgba(197,156,255,.22)" : "rgba(197,156,255,.42)";
+            context.lineWidth = isAmbient ? 1.2 : 1.6;
+            context.beginPath();
+            context.moveTo(left.x, left.y);
+            context.lineTo(right.x, right.y);
+            context.stroke();
+          }
+          for (let i = 0; i < syntaxNodes.length; i += 1) {
+            const node = syntaxNodes[i];
+            const pulse = !reduceMotion && i === active ? Math.sin(t * 10) * 3 : 0;
+            context.fillStyle = i === active ? node.color : "rgba(15,21,34,.9)";
+            context.strokeStyle = node.color;
+            context.lineWidth = i === active ? 2 : 1;
+            const boxW = isAmbient ? (compact ? 82 : 108) : (compact ? 70 : 86);
+            roundRect(node.x - boxW / 2, node.y - 15, boxW, 30, 7, true, true);
+            context.fillStyle = i === active ? "#071017" : "#e5ecf7";
+            context.font = `${isAmbient ? (compact ? 10 : 12) : 10}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            context.textAlign = "center";
+            context.fillText(node.label, node.x, node.y + 4 + pulse * .08);
+            context.textAlign = "start";
+          }
+        }
+
+        function drawOperatorStream(t) {
+          const compact = width < (isAmbient ? 760 : 520);
+          const startX = isAmbient ? (compact ? width * .18 : width * .48) : width * .15;
+          const endX = isAmbient ? (compact ? width * .82 : width * .88) : width * .88;
+          const y = isAmbient ? (compact ? height * .5 : height * .46) : height * .52;
+          for (let i = 0; i < operators.length; i += 1) {
+            const progress = reduceMotion ? i / operators.length : ((t * (isAmbient ? .08 : .17) + i / operators.length) % 1);
+            const x = startX + (endX - startX) * progress;
+            const drift = Math.sin(t * 1.7 + i) * (isAmbient ? (compact ? 10 : 18) : 10);
+            const alpha = (isAmbient ? .12 : .24) + Math.sin(progress * Math.PI) * (isAmbient ? .42 : .58);
+            context.globalAlpha = alpha;
+            context.fillStyle = "rgba(8,12,20,.82)";
+            context.strokeStyle = colors[i % colors.length];
+            roundRect(x - 28, y + drift - 13, 56, 26, 13, true, true);
+            context.fillStyle = colors[i % colors.length];
+            context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+            context.textAlign = "center";
+            context.fillText(operators[i], x, y + drift + 4);
+          }
+          context.globalAlpha = 1;
           context.textAlign = "start";
         }
-      }
 
-      function drawOperatorStream(t) {
-        const compact = width < 760;
-        const startX = compact ? width * .18 : width * .48;
-        const endX = compact ? width * .82 : width * .88;
-        const y = compact ? height * .5 : height * .46;
-        for (let i = 0; i < operators.length; i += 1) {
-          const progress = reduceMotion ? i / operators.length : ((t * .13 + i / operators.length) % 1);
-          const x = startX + (endX - startX) * progress;
-          const drift = Math.sin(t * 1.7 + i) * (compact ? 10 : 18);
-          const alpha = .22 + Math.sin(progress * Math.PI) * .58;
-          context.globalAlpha = alpha;
-          context.fillStyle = "rgba(8,12,20,.82)";
-          context.strokeStyle = colors[i % colors.length];
-          roundRect(x - 30, y + drift - 14, 60, 28, 14, true, true);
-          context.fillStyle = colors[i % colors.length];
-          context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
-          context.textAlign = "center";
-          context.fillText(operators[i], x, y + drift + 4);
+        function drawMutationDiff(t) {
+          const compact = width < 520;
+          const x = compact ? width * .36 : width * .51;
+          const y = compact ? height * .58 : height * .6;
+          const w = compact ? width * .58 : width * .43;
+          const h = compact ? 106 : 118;
+          panel(x, y, w, h, "rgba(15,20,32,.9)", "rgba(255,209,102,.34)");
+          label("MUTATION CAMPAIGN", x + 14, y + 24, "#ffd166");
+          const blink = reduceMotion || Math.sin(t * 5) > -0.4;
+          diffLine("- cents <= 500", x + 16, y + 54, "#ff9fb3", blink);
+          diffLine("+ cents < 500", x + 16, y + 78, "#58e6b7", true);
+          context.fillStyle = "#aeb8c8";
+          context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+          context.fillText("survivor -> test", x + 16, y + 100);
         }
-        context.globalAlpha = 1;
-        context.textAlign = "start";
-      }
 
-      function drawMutationDiff(t) {
-        const compact = width < 760;
-        const x = compact ? width * .24 : width * .68;
-        const y = compact ? height * .58 : height * .62;
-        const w = compact ? width * .62 : Math.min(390, width * .32);
-        const h = compact ? 132 : 150;
-        panel(x, y, w, h, "rgba(15,20,32,.82)", "rgba(255,209,102,.22)");
-        label("MUTATION CAMPAIGN", x + 18, y + 28, "#ffd166");
-        const blink = reduceMotion || Math.sin(t * 5) > -0.4;
-        diffLine("- if cents <= 500", x + 22, y + 66, "#ff9fb3", blink);
-        diffLine("+ if cents < 500", x + 22, y + 94, "#58e6b7", true);
-        context.fillStyle = "#aeb8c8";
-        context.font = `${compact ? 10 : 12}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        context.fillText("survivor -> assertion candidate", x + 22, y + (compact ? 118 : 126));
-      }
-
-      function drawSignalRail(t) {
-        const compact = width < 760;
-        const startX = compact ? width * .18 : width * .09;
-        const y = compact ? height * .78 : height * .66;
-        const labels = ["symbols", "mutants", "seeds", "replay", "score"];
-        context.strokeStyle = "rgba(88,230,183,.32)";
-        context.lineWidth = 1;
-        context.beginPath();
-        context.moveTo(startX, y);
-        context.lineTo(startX + (compact ? 280 : 440), y);
-        context.stroke();
-        for (let i = 0; i < labels.length; i += 1) {
-          const x = startX + i * (compact ? 70 : 110);
-          const active = reduceMotion ? i === 2 : Math.floor((t * 1.8) % labels.length) === i;
-          context.fillStyle = active ? colors[i % colors.length] : "rgba(15,21,34,.95)";
-          context.strokeStyle = colors[i % colors.length];
-          const pillW = compact ? 58 : 76;
-          roundRect(x - pillW / 2, y - 18, pillW, 36, 18, true, true);
-          context.fillStyle = active ? "#071017" : "#e5ecf7";
-          context.font = `${compact ? 9 : 11}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          context.textAlign = "center";
-          context.fillText(labels[i], x, y + 4);
+        function drawSignalRail(t) {
+          const compact = width < (isAmbient ? 760 : 520);
+          const startX = isAmbient ? (compact ? width * .18 : width * .09) : width * .14;
+          const y = isAmbient ? (compact ? height * .78 : height * .66) : height * .86;
+          const labels = ["symbols", "mutants", "seeds", "replay", "score"];
+          const step = isAmbient ? (compact ? 70 : 110) : Math.min(78, (width - 80) / 4);
+          context.strokeStyle = "rgba(88,230,183,.32)";
+          context.lineWidth = 1;
+          context.beginPath();
+          context.moveTo(startX, y);
+          context.lineTo(startX + step * 4, y);
+          context.stroke();
+          for (let i = 0; i < labels.length; i += 1) {
+            const x = startX + i * step;
+            const active = reduceMotion ? i === 2 : Math.floor((t * 1.8) % labels.length) === i;
+            context.fillStyle = active ? colors[i % colors.length] : "rgba(15,21,34,.95)";
+            context.strokeStyle = colors[i % colors.length];
+            const pillW = isAmbient ? (compact ? 58 : 76) : (compact ? 54 : 64);
+            roundRect(x - pillW / 2, y - 17, pillW, 34, 17, true, true);
+            context.fillStyle = active ? "#071017" : "#e5ecf7";
+            context.font = `${isAmbient ? (compact ? 9 : 11) : 9}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            context.textAlign = "center";
+            context.fillText(labels[i], x, y + 4);
+          }
+          context.textAlign = "start";
         }
-        context.textAlign = "start";
+
+        function panel(x, y, w, h, fill, stroke) {
+          context.fillStyle = fill;
+          context.strokeStyle = stroke;
+          context.lineWidth = 1;
+          roundRect(x, y, w, h, 10, true, true);
+        }
+
+        function label(text, x, y, color) {
+          context.fillStyle = color;
+          context.font = "700 11px ui-monospace, SFMono-Regular, Menlo, monospace";
+          context.fillText(text, x, y);
+        }
+
+        function diffLine(text, x, y, color, visible) {
+          if (!visible) return;
+          context.fillStyle = color;
+          context.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+          context.fillText(text, x, y);
+        }
+
+        function lineColor(line) {
+          if (line.startsWith("mutant")) return "#ffd166";
+          if (line.startsWith("replay")) return "#c59cff";
+          if (line.includes("return")) return "#58e6b7";
+          if (line.includes("if")) return "#65d7ff";
+          return "#e5ecf7";
+        }
+
+        function roundRect(x, y, w, h, r, fill, stroke) {
+          context.beginPath();
+          context.moveTo(x + r, y);
+          context.arcTo(x + w, y, x + w, y + h, r);
+          context.arcTo(x + w, y + h, x, y + h, r);
+          context.arcTo(x, y + h, x, y, r);
+          context.arcTo(x, y, x + w, y, r);
+          context.closePath();
+          if (fill) context.fill();
+          if (stroke) context.stroke();
+        }
+
+        resize();
+        return { resize, draw };
       }
 
-      function panel(x, y, w, h, fill, stroke) {
-        context.fillStyle = fill;
-        context.strokeStyle = stroke;
-        context.lineWidth = 1;
-        roundRect(x, y, w, h, 10, true, true);
+      function drawAll(time = 0) {
+        for (const scene of scenes) scene.draw(time);
+        if (!reduceMotion) requestAnimationFrame(drawAll);
       }
 
-      function label(text, x, y, color) {
-        context.fillStyle = color;
-        context.font = "700 12px ui-monospace, SFMono-Regular, Menlo, monospace";
-        context.fillText(text, x, y);
+      window.addEventListener("resize", () => {
+        for (const scene of scenes) scene.resize();
+      });
+      drawAll();
+    })();
+
+    (() => {
+      const keywordPattern = /\b(pub|fn|func|if|else|return|match|let|mut|const|var|defer|select|case|default|package|import|true|false|nil|Some|Err|Ok|Decision|assert|expected|seed|value|status|fitness|strategy|target_id|inputs|assertion|name)\b/g;
+      const commandPattern = /(^|\s)(cargo|veritas|go)(?=\s|$)/gm;
+      const flagPattern = /(^|\s)(--?[a-zA-Z][\w-]*)/g;
+      const pathPattern = /(\.?\.?\/?[\w.-]+(?:\/[\w.*-]+)+|\.[\w.-]+\/[\w.*\/-]+)/g;
+      const numberPattern = /\b\d+(?:\.\d+)?%?\b/g;
+      const operatorPattern = /(&lt;=|&gt;=|=&gt;|-&gt;|:=|==|!=|&amp;&amp;|\|\|)/g;
+
+      document.querySelectorAll("pre code").forEach((block) => {
+        if (block.dataset.highlighted === "true") return;
+        block.innerHTML = highlight(block.textContent);
+        block.dataset.highlighted = "true";
+      });
+
+      function highlight(source) {
+        const tokens = [];
+        let text = escapeHtml(source);
+        text = stashTokens(text, tokens, /(["'`])(?:\\[\s\S]|(?!\1)[\s\S])*?\1/g, "tok-string");
+        text = stashTokens(text, tokens, /(^|\n)(\s*(?:#|\/\/).*)/g, "tok-comment");
+        text = text
+          .replace(pathPattern, '<span class="tok-path">$1</span>')
+          .replace(flagPattern, '$1<span class="tok-flag">$2</span>')
+          .replace(commandPattern, '$1<span class="tok-command">$2</span>')
+          .replace(keywordPattern, '<span class="tok-keyword">$1</span>')
+          .replace(numberPattern, '<span class="tok-number">$&</span>')
+          .replace(operatorPattern, '<span class="tok-operator">$1</span>');
+        return restoreTokens(text, tokens);
       }
 
-      function diffLine(text, x, y, color, visible) {
-        if (!visible) return;
-        context.fillStyle = color;
-        context.font = "14px ui-monospace, SFMono-Regular, Menlo, monospace";
-        context.fillText(text, x, y);
+      function stashTokens(text, tokens, pattern, className) {
+        return text.replace(pattern, (match, prefix = "") => {
+          const value = match.startsWith("\n") ? match.slice(1) : match;
+          const leading = match.startsWith("\n") ? "\n" : "";
+          const key = placeholder(tokens.length);
+          tokens.push(`<span class="${className}">${value}</span>`);
+          return `${leading}${key}`;
+        });
       }
 
-      function lineColor(line) {
-        if (line.startsWith("mutant")) return "#ffd166";
-        if (line.startsWith("replay")) return "#c59cff";
-        if (line.includes("return")) return "#58e6b7";
-        if (line.includes("if")) return "#65d7ff";
-        return "#e5ecf7";
+      function restoreTokens(text, tokens) {
+        return tokens.reduce(
+          (current, token, index) => current.replaceAll(placeholder(index), token),
+          text
+        );
       }
 
-      function roundRect(x, y, w, h, r, fill, stroke) {
-        context.beginPath();
-        context.moveTo(x + r, y);
-        context.arcTo(x + w, y, x + w, y + h, r);
-        context.arcTo(x + w, y + h, x, y + h, r);
-        context.arcTo(x, y + h, x, y, r);
-        context.arcTo(x, y, x + w, y, r);
-        context.closePath();
-        if (fill) context.fill();
-        if (stroke) context.stroke();
+      function placeholder(index) {
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let value = "";
+        let current = index;
+        do {
+          value = alphabet[current % alphabet.length] + value;
+          current = Math.floor(current / alphabet.length) - 1;
+        } while (current >= 0);
+        return `VERITASPLACEHOLDER${value}X`;
       }
 
-      window.addEventListener("resize", resize);
-      resize();
-      draw();
+      function escapeHtml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
     })();
 
     document.querySelectorAll("[data-copy]").forEach((button) => {
