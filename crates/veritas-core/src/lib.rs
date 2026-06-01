@@ -326,6 +326,16 @@ fn excluded_isolation_entry(name: &str) -> bool {
             | "dist"
             | "build"
             | ".cache"
+            | ".direnv"
+            | ".mypy_cache"
+            | ".pytest_cache"
+            | ".ruff_cache"
+            | ".tox"
+            | ".venv"
+            | "__pycache__"
+            | "coverage"
+            | "tmp"
+            | "venv"
     )
 }
 
@@ -3357,23 +3367,24 @@ fn replay_result_artifacts(
                 .cloned()
                 .unwrap_or_default();
             cases += replay_cases.len();
+            let replay_cases = replay_cases
+                .iter()
+                .map(behavior_replay_case)
+                .collect::<Vec<_>>();
+            let plugin_observations = plugin
+                .and_then(|plugin| plugin.replay_behaviors(root, target, &replay_cases).ok())
+                .unwrap_or_default();
             for replay_case in replay_cases {
-                let case_name = replay_case["name"].as_str().unwrap_or("case");
+                let case_name = replay_case.name.as_str();
                 let observation_id = format!("{target_id}::{case_name}");
-                let replay_case = behavior_replay_case(&replay_case);
-                let plugin_observation = plugin.and_then(|plugin| {
-                    plugin
-                        .replay_behavior(root, target, &replay_case)
-                        .ok()
-                        .flatten()
-                });
+                let plugin_observation = plugin_observations.get(case_name);
                 let observation = behavior_observation(
                     root,
                     language,
                     target,
                     &replay_case,
                     &observation_id,
-                    plugin_observation.as_ref(),
+                    plugin_observation,
                 );
                 let previous_observation = previous.get(&observation_id).cloned();
                 let outcome = match previous_observation.as_ref().and_then(|value| {

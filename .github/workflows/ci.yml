@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "fixtures/**"
+      - "scripts/**"
+      - "docs/**"
+      - "README.md"
+      - "AGENTS.md"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "fixtures/**"
+      - "scripts/**"
+      - "docs/**"
+      - "README.md"
+      - "AGENTS.md"
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          rustup default stable
+
+      - name: Check Go
+        run: go version
+
+      - name: Check Python
+        run: python3 --version
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Fixture smoke checks
+        run: |
+          cargo run -p veritas-cli --locked -- scan --root fixtures/sample-rust
+          cargo run -p veritas-cli --locked -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
+          cargo run -p veritas-cli --locked -- scan --root fixtures/sample-go
+          cargo run -p veritas-cli --locked -- verify --root fixtures/sample-go --lang go --target .
+          cargo run -p veritas-cli --locked -- scan --root fixtures/sample-python
+          cargo run -p veritas-cli --locked -- verify --root fixtures/sample-python --lang python --target invoice.py

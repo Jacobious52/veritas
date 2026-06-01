@@ -96,7 +96,7 @@ Returned plans are clamped to the provided target, allowed strategy list, genera
 
 Core exposes a small ordered parallel-job scheduler for language plugins. Plugins use it when jobs are independent and safe to run concurrently; Go fuzz targets use it through `plugins.go.fuzz_concurrency`.
 
-Core also exposes a plugin-generic isolated mutation root helper. A language plugin can copy the target project into a temporary root, apply one mutant there, run the owning test command, and let cleanup happen on drop. Go and Rust mutation use this path when `[mutation].workers > 1`; `workers = 1` keeps the serial source-rewrite path for smaller local runs. Mutation metrics record requested workers, effective workers, timed-out mutants, skipped mutants, and isolation failures so CI can separate performance behavior from mutation quality.
+Core also exposes a plugin-generic isolated mutation root helper. A language plugin can copy the target project into a temporary root, apply one mutant there, run the owning test command, and let cleanup happen on drop. Go and Rust mutation use this path when `[mutation].workers > 1`; `workers = 1` keeps the serial source-rewrite path for smaller local runs. Mutation metrics record requested workers, effective workers, isolated-copy setup milliseconds, timed-out mutants, skipped mutants, and isolation failures so CI can separate performance behavior from mutation quality.
 
 ## Benchmark Suites
 

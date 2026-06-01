@@ -126,15 +126,18 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Observation artifacts now include structured `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
 - Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, and summarize quality deltas. Keep candidates only when the next verification run improves.
 - Mutation probes cover comparisons, equality/nil branches, boolean connectors, arithmetic operators, default values, and domain-labeled auth/money/parser/error surfaces.
-- Rust and Go mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Shared mutation config supports operator allow/deny lists, path exclusions, dry-run discovery, timeout coefficients, campaign status filtering, and worker counts. Go uses isolated temporary project roots when `workers > 1`; `workers = 1` preserves source-rewrite serial behavior, and Rust remains conservative until equivalent isolation is added.
+- Rust and Go mutations emit generic campaign records with `runnable`, `not_covered`, `killed`, `lived`, `timed_out`, and `not_viable` statuses for downstream AI repair loops. Shared mutation config supports operator allow/deny lists, path exclusions, dry-run discovery, timeout coefficients, campaign status filtering, and worker counts. Rust and Go use isolated temporary project roots when `workers > 1`; `workers = 1` preserves source-rewrite serial behavior. Reports include requested/effective workers, isolation failures, and isolated-copy setup milliseconds.
 - Differential mode writes both API signature baselines and `.veritas/differential/*_replay.json` behavior replay manifests.
+- Differential behavior replay is batched through the plugin contract with `replay_behaviors`; `replay_behavior` is the compatibility fallback for future plugins.
 - Surviving mutants, minimized fuzz/proptest inputs, and generated-harness failures produce `.veritas/regressions/*.md` assertion guidance.
 - `promote-regression` asks language plugins to create package-owned regression test scaffolds. Rust writes ignored `tests/veritas_regression_*.rs` tests; Go writes skipped `veritas_regression_*_test.go` tests.
 - Generated Go fuzz harnesses skip function names already covered by handwritten fuzz targets in the same package.
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
-- Pinned external canaries run through `./scripts/run-canaries.sh smoke` or `./scripts/run-canaries.sh verify`.
-- GitHub Actions runs weekly smoke canaries and supports manual smoke/verify canary runs.
+- Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, mutation manifests, and batched single-argument free-function replay.
+- Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
+- GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
+- Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
 - GitHub Actions release workflow exists. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
@@ -176,6 +179,7 @@ Use `veritas cleanup` after fixture, example, and dogfood runs unless the genera
 
 - `README.md`: user-facing overview and quick start
 - `docs/ai-agents.md`: copy-paste AI agent workflow
+- `docs/ai-verification-loops.md`: concrete Rust, Go, Python, and AI repair-loop examples
 - `docs/production.md`: large-repo and CI operating guide
 - `docs/architecture.md`: plugin contract and artifact model
 - `docs/confidence.md`: fixture tiers, seeded examples, and external canaries

@@ -604,6 +604,23 @@ impl LanguagePlugin for GoPlugin {
         };
         replay_go_function(root, &context, function, case, &self.config).map(Some)
     }
+
+    fn replay_behaviors(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        cases: &[BehaviorReplayCase],
+    ) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+        let context = GoVerificationContext::discover(root, &self.config)?;
+        let Some(function) = context
+            .functions
+            .iter()
+            .find(|function| go_target_matches_function(&target.id, function))
+        else {
+            return Ok(BTreeMap::new());
+        };
+        replay_go_function_batch(root, &context, function, cases, &self.config)
+    }
 }
 
 fn replay_go_function(
@@ -692,6 +709,112 @@ fn replay_go_function(
     })
 }
 
+fn replay_go_function_batch(
+    root: &Path,
+    context: &GoVerificationContext,
+    function: &GoFunction,
+    cases: &[BehaviorReplayCase],
+    config: &GoPluginConfig,
+) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+    let mut observations = BTreeMap::new();
+    if cases.is_empty() {
+        return Ok(observations);
+    }
+    if function.receiver.is_some() {
+        insert_unsupported_go_replay(
+            &mut observations,
+            cases,
+            "method replay requires receiver construction",
+        );
+        return Ok(observations);
+    }
+    if function.params.len() != 1 {
+        insert_unsupported_go_replay(
+            &mut observations,
+            cases,
+            "executable replay currently supports single-argument functions",
+        );
+        return Ok(observations);
+    }
+
+    let Some(param) = function.params.first() else {
+        return Ok(observations);
+    };
+    let runnable = cases
+        .iter()
+        .filter(|case| {
+            let can_render = !case.inputs.is_empty()
+                && case
+                    .inputs
+                    .iter()
+                    .all(|input| go_replay_arg(param, input).is_some());
+            if !can_render {
+                observations.insert(
+                    case.name.clone(),
+                    unsupported_go_replay(
+                        "no executable replay renderer for this target signature and seed inputs",
+                    ),
+                );
+            }
+            can_render
+        })
+        .collect::<Vec<_>>();
+    if runnable.is_empty() {
+        return Ok(observations);
+    }
+
+    let module = module_for_go_path(&context.modules, &function.path)
+        .ok_or_else(|| anyhow!("no Go module owns {}", function.path))?;
+    let package_dir = package_dir_relative_to_module(module, &function.path);
+    let package_root = root.join(&module.root).join(&package_dir);
+    fs::create_dir_all(&package_root)
+        .with_context(|| format!("failed to create {}", package_root.display()))?;
+    let test_name = format!(
+        "veritas_replay_{}_{}_batch",
+        std::process::id(),
+        safe_ident(&function.symbol)
+    );
+    let test_path = package_root.join(format!("{test_name}_test.go"));
+    fs::write(&test_path, render_go_replay_batch_test(function, &runnable))
+        .with_context(|| format!("failed to write {}", test_path.display()))?;
+
+    let package_arg = if package_dir.as_str() == "." {
+        ".".to_string()
+    } else {
+        format!("./{}", package_dir)
+    };
+    let args = vec![
+        "test".to_string(),
+        package_arg,
+        "-run".to_string(),
+        "^TestVeritasBehaviorReplay".to_string(),
+        "-count=1".to_string(),
+        "-v".to_string(),
+    ];
+    let command = run_command(
+        &root.join(&module.root),
+        "go",
+        args,
+        config.command_timeout_seconds.min(30),
+    );
+    let cleanup = fs::remove_file(&test_path)
+        .with_context(|| format!("failed to remove {}", test_path.display()));
+    let command = command?;
+    cleanup?;
+
+    let mut by_case = parse_replay_case_marker_output(&command.stdout);
+    for case in runnable {
+        observations.insert(
+            case.name.clone(),
+            replay_observation_from_command(
+                &command,
+                by_case.remove(&case.name).unwrap_or_default(),
+            ),
+        );
+    }
+    Ok(observations)
+}
+
 fn render_go_replay_test(function: &GoFunction, case: &BehaviorReplayCase) -> Option<String> {
     if case.inputs.is_empty() {
         return None;
@@ -712,6 +835,39 @@ fn render_go_replay_test(function: &GoFunction, case: &BehaviorReplayCase) -> Op
         "package {}\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n)\n\nfunc TestVeritasBehaviorReplay{test_name}(t *testing.T) {{\n\tobserve := func(input string, call func() string) {{\n\t\tstatus := \"observed\"\n\t\toutput := \"\"\n\t\tfunc() {{\n\t\t\tdefer func() {{\n\t\t\t\tif recovered := recover(); recovered != nil {{\n\t\t\t\t\tstatus = \"panic\"\n\t\t\t\t\toutput = fmt.Sprint(recovered)\n\t\t\t\t}}\n\t\t\t}}()\n\t\t\toutput = call()\n\t\t}}()\n\t\tfmt.Printf(\"__VERITAS_REPLAY__%s\\t%s\\t%s\\n\", input, status, output)\n\t}}\n{observations}}}\n",
         function.package_name
     ))
+}
+
+fn render_go_replay_batch_test(function: &GoFunction, cases: &[&BehaviorReplayCase]) -> String {
+    let mut tests = String::new();
+    for (index, case) in cases.iter().enumerate() {
+        let test_name = safe_ident(&format!("{}_{}", index, case.name));
+        let mut observations = String::new();
+        for input in &case.inputs {
+            let label = replay_input_label(input);
+            let arg = go_replay_arg(
+                function
+                    .params
+                    .first()
+                    .expect("batch replay requires one parameter"),
+                input,
+            )
+            .expect("batch replay only renders supported inputs");
+            observations.push_str(&format!(
+                "\tobserve({}, {}, func() string {{ return fmt.Sprint({}({arg})) }})\n",
+                go_string_literal(&case.name),
+                go_string_literal(&label),
+                function.name
+            ));
+        }
+        tests.push_str(&format!(
+            "func TestVeritasBehaviorReplay{test_name}(t *testing.T) {{\n\tobserve := func(caseName string, input string, call func() string) {{\n\t\tstatus := \"observed\"\n\t\toutput := \"\"\n\t\tfunc() {{\n\t\t\tdefer func() {{\n\t\t\t\tif recovered := recover(); recovered != nil {{\n\t\t\t\t\tstatus = \"panic\"\n\t\t\t\t\toutput = fmt.Sprint(recovered)\n\t\t\t\t}}\n\t\t\t}}()\n\t\t\toutput = call()\n\t\t}}()\n\t\tfmt.Printf(\"__VERITAS_REPLAY_CASE__%s\\t%s\\t%s\\t%s\\n\", caseName, input, status, output)\n\t}}\n{observations}}}\n\n"
+        ));
+    }
+
+    format!(
+        "package {}\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n)\n\n{tests}",
+        function.package_name
+    )
 }
 
 fn go_replay_arg(param: &GoParam, input: &serde_json::Value) -> Option<String> {
@@ -737,6 +893,44 @@ fn unsupported_go_replay(reason: &str) -> BehaviorReplayObservation {
         stdout_excerpt: None,
         stderr_excerpt: None,
         duration_ms: None,
+    }
+}
+
+fn insert_unsupported_go_replay(
+    observations: &mut BTreeMap<String, BehaviorReplayObservation>,
+    cases: &[BehaviorReplayCase],
+    reason: &str,
+) {
+    for case in cases {
+        observations.insert(case.name.clone(), unsupported_go_replay(reason));
+    }
+}
+
+fn replay_observation_from_command(
+    command: &CommandRecord,
+    outputs: Vec<serde_json::Value>,
+) -> BehaviorReplayObservation {
+    let has_outputs = !outputs.is_empty();
+    let output = if outputs.is_empty() {
+        serde_json::json!({
+            "observations": [],
+            "stderr": excerpt(&command.stderr),
+        })
+    } else {
+        serde_json::json!({ "observations": outputs })
+    };
+    let status = if command.status == RunStatus::Passed && has_outputs {
+        BehaviorReplayStatus::Observed
+    } else {
+        BehaviorReplayStatus::Failed
+    };
+    BehaviorReplayObservation {
+        status,
+        output,
+        command: Some(command_line(&command.program, &command.args)),
+        stdout_excerpt: Some(excerpt(&command.stdout)),
+        stderr_excerpt: Some(excerpt(&command.stderr)),
+        duration_ms: Some(command.duration_ms),
     }
 }
 
@@ -786,6 +980,36 @@ fn parse_replay_marker_output(stdout: &str) -> Vec<serde_json::Value> {
             }))
         })
         .collect()
+}
+
+fn parse_replay_case_marker_output(stdout: &str) -> BTreeMap<String, Vec<serde_json::Value>> {
+    let mut by_case: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for line in stdout.lines() {
+        let Some(marker) = line.find("__VERITAS_REPLAY_CASE__") else {
+            continue;
+        };
+        let payload = &line[marker + "__VERITAS_REPLAY_CASE__".len()..];
+        let mut parts = payload.splitn(4, '\t');
+        let Some(case) = parts.next() else {
+            continue;
+        };
+        let Some(input) = parts.next() else {
+            continue;
+        };
+        let Some(status) = parts.next() else {
+            continue;
+        };
+        let output = parts.next().unwrap_or_default();
+        by_case
+            .entry(case.to_string())
+            .or_default()
+            .push(serde_json::json!({
+                "input": input,
+                "status": status,
+                "output": output,
+            }));
+    }
+    by_case
 }
 
 fn parse_go_module(root: &Path, module_root: Utf8PathBuf) -> Result<GoModule> {
@@ -1874,6 +2098,7 @@ struct GoMutationOutcome {
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
+    isolation_setup_ms: u128,
     error: Option<String>,
 }
 
@@ -2174,6 +2399,7 @@ fn run_parallel_mutation_checks(
     let (outcomes, summary) = run_parallel_jobs(jobs, config.mutation.workers, run_go_mutation_job);
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
+        quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -2306,6 +2532,7 @@ fn run_parallel_mutation_checks(
 
 fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
     let candidate = job.candidate;
+    let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "go", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
@@ -2314,10 +2541,12 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
+                isolation_setup_ms: isolation_start.elapsed().as_millis(),
                 error: Some(error.to_string()),
             };
         }
     };
+    let isolation_setup_ms = isolation_start.elapsed().as_millis();
     match execute_go_mutation(
         isolated.path(),
         &candidate,
@@ -2332,6 +2561,7 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
                 commands,
                 status,
                 isolation_failed: false,
+                isolation_setup_ms,
                 error: None,
             }
         }
@@ -2340,6 +2570,7 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
+            isolation_setup_ms,
             error: Some(error.to_string()),
         },
     }

@@ -1,3 +1,6 @@
 [project]
 name = "sample-python"
 version = "0.1.0"
+
+[tool.pytest.ini_options]
+testpaths = ["test_invoice.py", "tests"]

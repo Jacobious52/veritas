@@ -414,6 +414,22 @@ impl LanguagePlugin for RustPlugin {
         };
         replay_rust_function(root, function, case, &self.config).map(Some)
     }
+
+    fn replay_behaviors(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        cases: &[BehaviorReplayCase],
+    ) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+        let functions = discover_functions(root)?;
+        let Some(function) = functions
+            .iter()
+            .find(|function| rust_target_matches_function(&target.id, function))
+        else {
+            return Ok(BTreeMap::new());
+        };
+        replay_rust_function_batch(root, function, cases, &self.config)
+    }
 }
 
 fn replay_rust_function(
@@ -499,6 +515,113 @@ fn replay_rust_function(
     })
 }
 
+fn replay_rust_function_batch(
+    root: &Path,
+    function: &RustFunction,
+    cases: &[BehaviorReplayCase],
+    config: &RustPluginConfig,
+) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+    let mut observations = BTreeMap::new();
+    if cases.is_empty() {
+        return Ok(observations);
+    }
+    if function.owner.is_some() {
+        insert_unsupported_rust_replay(
+            &mut observations,
+            cases,
+            "method replay requires receiver construction",
+        );
+        return Ok(observations);
+    }
+    if !rust_replay_is_worth_compiling(function) {
+        insert_unsupported_rust_replay(
+            &mut observations,
+            cases,
+            "Rust executable replay is limited to parser and money-style free functions",
+        );
+        return Ok(observations);
+    }
+    if function.params.len() != 1 {
+        insert_unsupported_rust_replay(
+            &mut observations,
+            cases,
+            "executable replay currently supports single-argument functions",
+        );
+        return Ok(observations);
+    }
+
+    let Some(param) = function.params.first() else {
+        return Ok(observations);
+    };
+    let runnable = cases
+        .iter()
+        .filter(|case| {
+            let can_render = !case.inputs.is_empty()
+                && case
+                    .inputs
+                    .iter()
+                    .all(|input| rust_replay_arg(param, input).is_some());
+            if !can_render {
+                observations.insert(
+                    case.name.clone(),
+                    unsupported_rust_replay(
+                        "no executable replay renderer for this target signature and seed inputs",
+                    ),
+                );
+            }
+            can_render
+        })
+        .collect::<Vec<_>>();
+    if runnable.is_empty() {
+        return Ok(observations);
+    }
+
+    let contents = render_rust_replay_batch_test(function, &runnable);
+    let test_name = format!(
+        "veritas_replay_{}_{}_batch",
+        std::process::id(),
+        safe_ident(&function.symbol)
+    );
+    let package_root = root.join(&function.package_root);
+    let test_dir = package_root.join("tests");
+    fs::create_dir_all(&test_dir)
+        .with_context(|| format!("failed to create {}", test_dir.display()))?;
+    let test_path = test_dir.join(format!("{test_name}.rs"));
+    fs::write(&test_path, contents)
+        .with_context(|| format!("failed to write {}", test_path.display()))?;
+
+    let args = vec![
+        "test".to_string(),
+        "--test".to_string(),
+        test_name.clone(),
+        "--".to_string(),
+        "--nocapture".to_string(),
+    ];
+    let command = run_command(
+        &package_root,
+        "cargo",
+        &args,
+        config,
+        config.command_timeout_seconds.min(30),
+    );
+    let cleanup = fs::remove_file(&test_path)
+        .with_context(|| format!("failed to remove {}", test_path.display()));
+    let command = command?;
+    cleanup?;
+
+    let mut by_case = parse_replay_case_marker_output(&command.stdout);
+    for case in runnable {
+        observations.insert(
+            case.name.clone(),
+            replay_observation_from_command(
+                &command,
+                by_case.remove(&case.name).unwrap_or_default(),
+            ),
+        );
+    }
+    Ok(observations)
+}
+
 fn rust_replay_is_worth_compiling(function: &RustFunction) -> bool {
     let lowered = function.symbol.to_ascii_lowercase();
     lowered.contains("parse")
@@ -528,6 +651,39 @@ fn render_rust_replay_test(function: &RustFunction, case: &BehaviorReplayCase) -
     Some(format!(
         "#[test]\nfn veritas_behavior_replay_{test_name}() {{\n    fn emit(input: &str, observed: std::thread::Result<String>) {{\n        match observed {{\n            Ok(output) => println!(\"__VERITAS_REPLAY__{{}}\\tobserved\\t{{}}\", input.escape_debug(), output.escape_debug()),\n            Err(_) => println!(\"__VERITAS_REPLAY__{{}}\\tpanic\\tpanic\", input.escape_debug()),\n        }}\n    }}\n{observations}}}\n"
     ))
+}
+
+fn render_rust_replay_batch_test(function: &RustFunction, cases: &[&BehaviorReplayCase]) -> String {
+    let mut tests = String::new();
+    for (index, case) in cases.iter().enumerate() {
+        let test_name = safe_ident(&format!("{}_{}_{}", function.symbol, index, case.name));
+        let mut observations = String::new();
+        for input in &case.inputs {
+            let label = replay_input_label(input);
+            let arg = rust_replay_arg(
+                function
+                    .params
+                    .first()
+                    .expect("batch replay requires one parameter"),
+                input,
+            )
+            .expect("batch replay only renders supported inputs");
+            observations.push_str(&format!(
+                "    emit({}, {}, std::panic::catch_unwind(|| format!(\"{{:?}}\", {}::{}({arg}))));\n",
+                rust_string_literal(&case.name),
+                rust_string_literal(&label),
+                function.crate_name,
+                function.name
+            ));
+        }
+        tests.push_str(&format!(
+            "#[test]\nfn veritas_behavior_replay_{test_name}() {{\n{observations}}}\n\n"
+        ));
+    }
+
+    format!(
+        "fn emit(case: &str, input: &str, observed: std::thread::Result<String>) {{\n    match observed {{\n        Ok(output) => println!(\"__VERITAS_REPLAY_CASE__{{}}\\t{{}}\\tobserved\\t{{}}\", case, input.escape_debug(), output.escape_debug()),\n        Err(_) => println!(\"__VERITAS_REPLAY_CASE__{{}}\\t{{}}\\tpanic\\tpanic\", case, input.escape_debug()),\n    }}\n}}\n\n{tests}"
+    )
 }
 
 fn rust_replay_arg(param: &RustParam, input: &serde_json::Value) -> Option<String> {
@@ -560,6 +716,44 @@ fn unsupported_rust_replay(reason: &str) -> BehaviorReplayObservation {
     }
 }
 
+fn insert_unsupported_rust_replay(
+    observations: &mut BTreeMap<String, BehaviorReplayObservation>,
+    cases: &[BehaviorReplayCase],
+    reason: &str,
+) {
+    for case in cases {
+        observations.insert(case.name.clone(), unsupported_rust_replay(reason));
+    }
+}
+
+fn replay_observation_from_command(
+    command: &CommandRecord,
+    outputs: Vec<serde_json::Value>,
+) -> BehaviorReplayObservation {
+    let has_outputs = !outputs.is_empty();
+    let output = if outputs.is_empty() {
+        serde_json::json!({
+            "observations": [],
+            "stderr": excerpt(&command.stderr),
+        })
+    } else {
+        serde_json::json!({ "observations": outputs })
+    };
+    let status = if command.status == RunStatus::Passed && has_outputs {
+        BehaviorReplayStatus::Observed
+    } else {
+        BehaviorReplayStatus::Failed
+    };
+    BehaviorReplayObservation {
+        status,
+        output,
+        command: Some(command_line(&command.program, &command.args)),
+        stdout_excerpt: Some(excerpt(&command.stdout)),
+        stderr_excerpt: Some(excerpt(&command.stderr)),
+        duration_ms: Some(command.duration_ms),
+    }
+}
+
 fn replay_input_label(input: &serde_json::Value) -> String {
     input
         .as_str()
@@ -588,6 +782,36 @@ fn parse_replay_marker_output(stdout: &str) -> Vec<serde_json::Value> {
             }))
         })
         .collect()
+}
+
+fn parse_replay_case_marker_output(stdout: &str) -> BTreeMap<String, Vec<serde_json::Value>> {
+    let mut by_case: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for line in stdout.lines() {
+        let Some(marker) = line.find("__VERITAS_REPLAY_CASE__") else {
+            continue;
+        };
+        let payload = &line[marker + "__VERITAS_REPLAY_CASE__".len()..];
+        let mut parts = payload.splitn(4, '\t');
+        let Some(case) = parts.next() else {
+            continue;
+        };
+        let Some(input) = parts.next() else {
+            continue;
+        };
+        let Some(status) = parts.next() else {
+            continue;
+        };
+        let output = parts.next().unwrap_or_default();
+        by_case
+            .entry(case.to_string())
+            .or_default()
+            .push(serde_json::json!({
+                "input": input,
+                "status": status,
+                "output": output,
+            }));
+    }
+    by_case
 }
 
 fn package_supports_proptest(root: &Path, package_root: &Utf8PathBuf) -> Result<bool> {
@@ -1350,6 +1574,7 @@ struct RustMutationOutcome {
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
+    isolation_setup_ms: u128,
     error: Option<String>,
 }
 
@@ -1639,6 +1864,7 @@ fn run_parallel_mutation_checks(
         run_parallel_jobs(jobs, config.mutation.workers, run_rust_mutation_job);
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
+        quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -1776,6 +2002,7 @@ fn run_parallel_mutation_checks(
 
 fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
     let candidate = job.candidate;
+    let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "rust", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
@@ -1784,10 +2011,12 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
+                isolation_setup_ms: isolation_start.elapsed().as_millis(),
                 error: Some(error.to_string()),
             };
         }
     };
+    let isolation_setup_ms = isolation_start.elapsed().as_millis();
     match execute_rust_mutation(isolated.path(), &candidate, &job.package_roots, &job.config) {
         Ok(commands) => {
             let status = classify_rust_mutation_status(&commands);
@@ -1796,6 +2025,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
                 commands,
                 status,
                 isolation_failed: false,
+                isolation_setup_ms,
                 error: None,
             }
         }
@@ -1804,6 +2034,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
+            isolation_setup_ms,
             error: Some(error.to_string()),
         },
     }

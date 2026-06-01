@@ -5,7 +5,7 @@
 ## Local Test Layers
 
 1. Unit tests in each crate cover parser helpers, report rendering, changed-target selection, cleanup, package scoping, mutation candidates, and artifact rendering.
-2. Tiny fixtures in `fixtures/sample-rust` and `fixtures/sample-go` keep the CLI smoke path fast.
+2. Tiny fixtures in `fixtures/sample-rust`, `fixtures/sample-go`, and `fixtures/sample-python` keep the CLI smoke path fast across the plugin contract.
 3. Medium fixtures exercise production shapes:
    - `fixtures/rust-workspace`: virtual Cargo workspace, multiple packages, public free functions, public methods, package-local generated proptests, and mutation feedback.
    - `fixtures/go-multimodule`: two Go modules, cross-module imports, reverse dependency scoping, handwritten fuzz discovery, generated fuzz suppression for duplicate names, package graph artifacts, and symbol graphs.
@@ -68,10 +68,11 @@ External canaries clone pinned public repositories into `target/external-fixture
 
 ```bash
 ./scripts/run-canaries.sh smoke
+./scripts/run-canaries.sh verify-fast
 ./scripts/run-canaries.sh verify
 ```
 
-Smoke mode scans each repository and writes JSON scan summaries. Verify mode runs `veritas verify --target .`, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
+Smoke mode scans each repository and writes JSON scan summaries. Verify-fast mode scans every canary and verifies the fast subset (`rust-itoa` and `go-uuid`). Verify mode runs `veritas verify --target .` for every canary, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
 
 Both modes write a dashboard:
 
@@ -81,9 +82,9 @@ target/external-fixtures/reports/canary-summary.json
 target/external-fixtures/reports/canary-history.jsonl
 ```
 
-The dashboard assigns a real-repo tier per canary. `scan` means target discovery completed. Verify-mode `high`, `medium`, and `low` tiers come from the saved confidence score and finding count. If local history exists, the dashboard includes confidence, mutation, and finding deltas against the previous run for the same canary.
+The dashboard assigns a real-repo tier per canary. `scan` means target discovery completed. Verify-mode `high`, `medium`, and `low` tiers come from the saved confidence score and finding count. If local history exists, the dashboard includes confidence, mutation, and finding deltas against the previous run for the same canary. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` to make the dashboard command exit nonzero when a configured threshold is missed.
 
-GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`, uploads the dashboard and per-canary reports as artifacts, and can be started manually with `mode=verify` when validating a larger release or a plugin behavior change.
+GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`, uploads the dashboard and per-canary reports as artifacts, and can be started manually with `mode=verify-fast` or `mode=verify` when validating a larger release or a plugin behavior change.
 
 Current pinned canaries:
 

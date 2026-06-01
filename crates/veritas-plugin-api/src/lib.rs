@@ -47,6 +47,21 @@ pub trait LanguagePlugin: Send + Sync {
         Ok(None)
     }
 
+    fn replay_behaviors(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        cases: &[BehaviorReplayCase],
+    ) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+        let mut observations = BTreeMap::new();
+        for case in cases {
+            if let Some(observation) = self.replay_behavior(root, target, case)? {
+                observations.insert(case.name.clone(), observation);
+            }
+        }
+        Ok(observations)
+    }
+
     fn promote_regression(
         &self,
         _root: &Path,
@@ -510,6 +525,8 @@ pub struct MutationMetrics {
     pub effective_workers: usize,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub isolation_failures: usize,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub isolation_setup_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_percent: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -559,6 +576,10 @@ pub struct MutationRecord {
 }
 
 fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+fn is_zero_u128(value: &u128) -> bool {
     *value == 0
 }
 

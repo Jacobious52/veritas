@@ -79,6 +79,7 @@ veritas cleanup
 ## Documentation
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
+- [AI Verification Loops](docs/ai-verification-loops.md): tangible Rust, Go, Python, and agent-loop examples.
 - [Project Site](docs/index.html): GitHub Pages landing page and public overview.
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
@@ -169,6 +170,7 @@ Reports and artifacts:
 
 CI behavior:
 
+- `.github/workflows/ci.yml` runs format, workspace tests, clippy, and Rust/Go/Python fixture scan/verify smoke checks on pull requests and pushes to `main`
 - `veritas verify --profile ci` implies `--changed`
 - CI profile disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure on error severity by default
 - policy filters can select severity, language, artifact kind, and target risk
@@ -310,6 +312,8 @@ Run external canary smoke checks when you want confidence against real pinned re
 
 ```bash
 ./scripts/run-canaries.sh smoke
+./scripts/run-canaries.sh verify-fast
+./scripts/run-canaries.sh verify
 ```
 
-The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas.
+The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` when a canary dashboard should fail CI on a missed threshold.

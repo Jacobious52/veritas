@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -78,7 +79,7 @@ def report_summary(path):
 
 
 def tier(summary):
-    if summary.get("mode") == "smoke":
+    if summary.get("confidence") is None:
         return "scan"
     confidence = summary.get("confidence")
     findings = summary.get("findings", 0)
@@ -111,6 +112,63 @@ def delta(current, previous, key):
     return f"{change:+}"
 
 
+def threshold_failures(summaries):
+    failures = []
+    min_tier = os.environ.get("VERITAS_CANARY_MIN_TIER")
+    min_confidence = int_threshold("VERITAS_CANARY_MIN_CONFIDENCE")
+    max_findings = int_threshold("VERITAS_CANARY_MAX_FINDINGS")
+
+    if min_tier:
+        order = {"scan": 0, "low": 1, "medium": 2, "high": 3}
+        wanted = order.get(min_tier)
+        if wanted is None:
+            failures.append(f"invalid VERITAS_CANARY_MIN_TIER={min_tier!r}")
+        else:
+            for item in summaries:
+                if order.get(item.get("tier"), -1) < wanted:
+                    failures.append(
+                        f"{item['name']} tier {item.get('tier')} is below required {min_tier}"
+                    )
+
+    if min_confidence is not None:
+        if isinstance(min_confidence, str):
+            failures.append(
+                f"invalid VERITAS_CANARY_MIN_CONFIDENCE={min_confidence!r}"
+            )
+        else:
+            for item in summaries:
+                confidence = item.get("confidence")
+                if confidence is None:
+                    failures.append(f"{item['name']} has no confidence score")
+                elif confidence < min_confidence:
+                    failures.append(
+                        f"{item['name']} confidence {confidence} is below required {min_confidence}"
+                    )
+
+    if max_findings is not None:
+        if isinstance(max_findings, str):
+            failures.append(f"invalid VERITAS_CANARY_MAX_FINDINGS={max_findings!r}")
+        else:
+            for item in summaries:
+                findings = item.get("findings")
+                if findings is not None and findings > max_findings:
+                    failures.append(
+                        f"{item['name']} findings {findings} exceeds allowed {max_findings}"
+                    )
+
+    return failures
+
+
+def int_threshold(name):
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def main():
     if len(sys.argv) != 3:
         print("usage: canary-dashboard.py <report-dir> <mode>", file=sys.stderr)
@@ -134,7 +192,7 @@ def main():
             "mode": mode,
         }
         item.update(scan_summary(report_dir / f"{name}-scan.json"))
-        if mode == "verify":
+        if (report_dir / f"{name}-report.json").exists():
             item.update(report_summary(report_dir / f"{name}-report.json"))
         item["tier"] = tier(item)
         summaries.append(item)
@@ -152,14 +210,22 @@ def main():
         for item in summaries:
             handle.write(json.dumps(item, sort_keys=True) + "\n")
 
+    failures = threshold_failures(summaries)
     summary_path = report_dir / "canary-summary.json"
-    summary_path.write_text(json.dumps({"run_id": run_id, "canaries": summaries}, indent=2) + "\n")
+    summary_path.write_text(
+        json.dumps(
+            {"run_id": run_id, "canaries": summaries, "threshold_failures": failures},
+            indent=2,
+        )
+        + "\n"
+    )
 
     lines = [
         "# Veritas External Canary Dashboard",
         "",
         f"- Mode: `{mode}`",
         f"- Run ID: `{run_id}`",
+        f"- Threshold status: `{'passed' if not failures else 'failed'}`",
         "",
         "| Canary | Lang | Tier | Targets | Findings | Confidence | Mutation | Replay | Trend |",
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -200,8 +266,12 @@ def main():
         "- Trend values compare against the previous local history entry for the same canary when available.",
         "",
     ])
+    if failures:
+        lines.extend(["## Threshold Failures", ""])
+        lines.extend(f"- {failure}" for failure in failures)
+        lines.append("")
     (report_dir / "canary-dashboard.md").write_text("\n".join(lines))
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

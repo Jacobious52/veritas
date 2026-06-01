@@ -15,7 +15,7 @@ Every plugin implements `LanguagePlugin` from `veritas-plugin-api`:
 
 Optional hooks make plugins more powerful without forcing every language to implement everything at once:
 
-- `replay_behavior` executes seeded differential replay cases and returns structured observations.
+- `replay_behaviors` executes seeded differential replay cases in a target-level batch and returns structured observations keyed by case name. `replay_behavior` remains as the compatibility fallback.
 - `promote_regression` turns findings or evolution candidates into owned language tests.
 
 ## Stable Target IDs
@@ -54,7 +54,8 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 - Python project detection from `pyproject.toml`, `setup.py`, or `.py` files
 - Tree-sitter function and method discovery
 - symbol graph artifacts
-- `python3 -m unittest discover`
-- executable differential replay for single-argument free functions
+- pytest detection with fallback to `python3 -m unittest discover`
+- mutation target/operator manifests
+- batched executable differential replay for single-argument free functions
 
 This gives future plugins a concrete path without requiring Rust/Go-specific assumptions in core.

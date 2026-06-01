@@ -137,6 +137,91 @@ fn scans_go_fixture() {
 }
 
 #[test]
+fn plugin_sdk_scan_contract_is_stable_across_language_fixtures() {
+    let rust = scan_fixture_json("sample-rust");
+    assert_eq!(rust["project"]["language"], "rust");
+    assert_target_contract(
+        &rust,
+        "rust:src/lib.rs:parse_invoice_total",
+        "src/lib.rs",
+        "parse_invoice_total",
+    );
+
+    let go = scan_fixture_json("sample-go");
+    assert_eq!(go["project"]["language"], "go");
+    assert_target_contract(
+        &go,
+        "go:invoice.go:ParseInvoiceTotal",
+        "invoice.go",
+        "ParseInvoiceTotal",
+    );
+
+    let python = scan_fixture_json("sample-python");
+    assert_eq!(python["project"]["language"], "python");
+    assert_target_contract(
+        &python,
+        "python:invoice.py:parse_invoice_total",
+        "invoice.py",
+        "parse_invoice_total",
+    );
+    assert_target_contract(
+        &python,
+        "python:sample_python/pricing.py:normalize_discount_code",
+        "sample_python/pricing.py",
+        "normalize_discount_code",
+    );
+    assert!(!python["targets"]
+        .as_array()
+        .expect("targets array")
+        .iter()
+        .any(|target| target["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("test_invoice") || id.contains("PricingTests"))));
+}
+
+#[test]
+fn verifies_python_fixture_and_writes_sdk_artifacts() {
+    let fixture = copy_fixture("sample-python");
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path())
+        .args(["verify", "--lang", "python", "--target", "invoice.py"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Generated Artifacts"))
+        .stdout(predicate::str::contains("SymbolGraph"))
+        .stdout(predicate::str::contains("MutationCheck"));
+
+    let report = read_report(fixture.path());
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| artifact["kind"] == "mutation_check"));
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| artifact["kind"] == "symbol_graph"));
+    let python_command = report["runs"]
+        .as_array()
+        .expect("runs array")
+        .iter()
+        .flat_map(|run| run["commands"].as_array().into_iter().flatten())
+        .find(|command| command["program"] == "python3")
+        .expect("python command");
+    let args = python_command["args"]
+        .as_array()
+        .expect("python command args")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        args.contains(&"unittest") || args.contains(&"pytest"),
+        "Python plugin should run a known test runner, got {args:?}"
+    );
+}
+
+#[test]
 fn verifies_go_fixture_and_writes_fuzz_test() {
     if !go_available() {
         return;
@@ -610,6 +695,35 @@ fn copy_project(source: &Path) -> TempDir {
 fn read_report(root: &Path) -> Value {
     let report = fs::read_to_string(root.join(".veritas/report.json")).expect("read report");
     serde_json::from_str(&report).expect("parse report json")
+}
+
+fn scan_fixture_json(name: &str) -> Value {
+    let fixture = copy_fixture(name);
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path())
+        .args(["scan", "--format", "json"]);
+    let output = cmd.assert().success().get_output().stdout.clone();
+    serde_json::from_slice(&output).expect("parse scan json")
+}
+
+fn assert_target_contract(scan: &Value, id: &str, path: &str, symbol: &str) {
+    let target = scan["targets"]
+        .as_array()
+        .expect("targets array")
+        .iter()
+        .find(|target| target["id"] == id)
+        .unwrap_or_else(|| panic!("missing target {id}"));
+    assert_eq!(target["path"], path);
+    assert_eq!(target["symbol"], symbol);
+    assert!(target["signature"]
+        .as_str()
+        .is_some_and(|signature| signature.contains(symbol)));
+    let line_range = &target["line_range"];
+    assert!(line_range["start"].as_u64().unwrap_or_default() > 0);
+    assert!(
+        line_range["end"].as_u64().unwrap_or_default()
+            >= line_range["start"].as_u64().unwrap_or_default()
+    );
 }
 
 fn first_finding_id_containing(report: &Value, needle: &str) -> String {

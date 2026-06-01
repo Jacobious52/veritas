@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ffi::OsStr,
     fs,
     path::Path,
@@ -17,7 +18,7 @@ use veritas_plugin_api::{
     BehaviorReplayStatus, CommandRecord, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, PluginCapability, ProjectInfo, ReproCase,
     RiskLevel, RunStatus, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
-    VerificationTarget,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -78,6 +79,7 @@ impl LanguagePlugin for PythonPlugin {
             PluginCapability::SymbolGraph,
             PluginCapability::GeneratedTests,
             PluginCapability::ExistingTests,
+            PluginCapability::MutationChecks,
             PluginCapability::DifferentialReplay,
             PluginCapability::RegressionPromotion,
             PluginCapability::ResourceBudgets,
@@ -146,16 +148,27 @@ impl LanguagePlugin for PythonPlugin {
     fn generate_tests(
         &self,
         target: &VerificationTarget,
-        _plan: &VerificationPlan,
+        plan: &VerificationPlan,
     ) -> Result<Vec<GeneratedArtifact>> {
         let root = std::env::current_dir()?;
         let functions = discover_functions(&root).unwrap_or_default();
-        Ok(vec![symbol_graph_artifact(
+        let mut artifacts = vec![symbol_graph_artifact(
             &target.id,
             &target.path,
             target.symbol.as_deref(),
             &functions,
-        )?])
+        )?];
+        if plan
+            .strategies
+            .contains(&VerificationStrategy::MutationChecks)
+        {
+            artifacts.push(python_mutation_manifest_artifact(
+                target,
+                target.symbol.as_deref(),
+                &functions,
+            )?);
+        }
+        Ok(artifacts)
     }
 
     fn run_tests(
@@ -165,17 +178,18 @@ impl LanguagePlugin for PythonPlugin {
         _plan: &VerificationPlan,
     ) -> Result<TestRunResult> {
         let start = Instant::now();
+        let (runner_name, args) = python_test_args(root);
         let command = run_command(
             root,
             "python3",
-            ["-m", "unittest", "discover"],
+            args.iter().map(String::as_str),
             self.config.command_timeout_seconds,
         )?;
         let status = command.status.clone();
         let failures = if command.status == RunStatus::Failed {
             vec![Failure {
                 id: None,
-                message: "python unittest failed".to_string(),
+                message: format!("python {runner_name} failed"),
                 severity: FailureSeverity::Error,
                 target_id: artifacts.first().map(|artifact| artifact.target_id.clone()),
                 artifact_id: artifacts.first().map(|artifact| artifact.id.clone()),
@@ -229,6 +243,22 @@ impl LanguagePlugin for PythonPlugin {
             return Ok(None);
         };
         replay_python_function(root, function, case, &self.config).map(Some)
+    }
+
+    fn replay_behaviors(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+        cases: &[BehaviorReplayCase],
+    ) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+        let functions = discover_functions(root)?;
+        let Some(function) = functions
+            .iter()
+            .find(|function| python_target_matches_function(&target.id, function))
+        else {
+            return Ok(BTreeMap::new());
+        };
+        replay_python_function_batch(root, function, cases, &self.config)
     }
 }
 
@@ -418,6 +448,62 @@ fn symbol_graph_artifact(
     })
 }
 
+fn python_mutation_manifest_artifact(
+    target: &VerificationTarget,
+    target_symbol: Option<&str>,
+    functions: &[PythonFunction],
+) -> Result<GeneratedArtifact> {
+    let selected = functions
+        .iter()
+        .filter(|function| {
+            if let Some(symbol) = target_symbol {
+                function.symbol == symbol && function.path == target.path
+            } else {
+                target.path.as_str() == "." || function.path == target.path
+            }
+        })
+        .map(|function| {
+            serde_json::json!({
+                "id": format!("python:{}:{}", function.path, function.symbol),
+                "path": &function.path,
+                "symbol": &function.symbol,
+                "signature": &function.signature,
+                "line_range": &function.line_range,
+                "risk": infer_risk(&function.symbol),
+                "operators": [
+                    "comparison_boundary",
+                    "boolean_guard",
+                    "string_normalization",
+                    "exception_path",
+                    "numeric_limit"
+                ],
+            })
+        })
+        .collect::<Vec<_>>();
+    let contents = serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "language": "python",
+        "mode": "mutation_manifest",
+        "target_id": target.id,
+        "status": "planned",
+        "targets": selected,
+        "next_step": "Python mutation execution is intentionally plugin-owned. Use this manifest as the stable target/operator contract for generated tests, AI repair loops, and future executable mutants.",
+    }))?;
+    Ok(GeneratedArtifact {
+        id: format!("python-mutation-{}", safe_ident(&target.id)),
+        language: "python".to_string(),
+        kind: ArtifactKind::MutationCheck,
+        target_id: target.id.clone(),
+        path: Utf8PathBuf::from(format!(
+            ".veritas/mutations/python_{}.json",
+            safe_ident(&target.id)
+        )),
+        contents,
+        description: "Tree-sitter Python mutation target/operator manifest".to_string(),
+        status: ArtifactStatus::Planned,
+    })
+}
+
 fn replay_python_function(
     root: &Path,
     function: &PythonFunction,
@@ -478,6 +564,89 @@ fn replay_python_function(
     })
 }
 
+fn replay_python_function_batch(
+    root: &Path,
+    function: &PythonFunction,
+    cases: &[BehaviorReplayCase],
+    config: &PythonPluginConfig,
+) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
+    let mut observations = BTreeMap::new();
+    if cases.is_empty() {
+        return Ok(observations);
+    }
+    if function.owner.is_some() {
+        insert_unsupported_python_replay(
+            &mut observations,
+            cases,
+            "method replay requires receiver construction",
+        );
+        return Ok(observations);
+    }
+    if function.params.len() != 1 {
+        insert_unsupported_python_replay(
+            &mut observations,
+            cases,
+            "executable replay currently supports single-argument functions",
+        );
+        return Ok(observations);
+    }
+
+    let runnable = cases
+        .iter()
+        .filter(|case| {
+            if case.inputs.is_empty() {
+                observations.insert(
+                    case.name.clone(),
+                    unsupported_python_replay(
+                        "executable replay requires at least one seeded input",
+                    ),
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+    if runnable.is_empty() {
+        return Ok(observations);
+    }
+
+    let script = render_python_replay_batch_script(function, &runnable)?;
+    let script_path = root.join(".veritas").join(format!(
+        "tmp_python_replay_{}_{}.py",
+        std::process::id(),
+        safe_ident(&function.symbol)
+    ));
+    if let Some(parent) = script_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(&script_path, script)
+        .with_context(|| format!("failed to write {}", script_path.display()))?;
+    let command = run_command(
+        root,
+        "python3",
+        [script_path.to_string_lossy().as_ref()],
+        config.command_timeout_seconds.min(30),
+    );
+    let cleanup = fs::remove_file(&script_path)
+        .with_context(|| format!("failed to remove {}", script_path.display()));
+    let command = command?;
+    cleanup?;
+
+    let mut by_case = parse_replay_case_marker_output(&command.stdout);
+    for case in runnable {
+        observations.insert(
+            case.name.clone(),
+            replay_observation_from_command(
+                &command,
+                by_case.remove(&case.name).unwrap_or_default(),
+            ),
+        );
+    }
+    Ok(observations)
+}
+
 fn render_python_replay_script(
     function: &PythonFunction,
     case: &BehaviorReplayCase,
@@ -510,6 +679,47 @@ for value in json.loads({inputs:?}):
     ))
 }
 
+fn render_python_replay_batch_script(
+    function: &PythonFunction,
+    cases: &[&BehaviorReplayCase],
+) -> Result<String> {
+    let cases = cases
+        .iter()
+        .map(|case| {
+            serde_json::json!({
+                "name": &case.name,
+                "inputs": &case.inputs,
+            })
+        })
+        .collect::<Vec<_>>();
+    let cases = serde_json::to_string(&cases)?;
+    Ok(format!(
+        r#"import importlib.util
+import json
+import pathlib
+
+module_path = pathlib.Path({path:?})
+spec = importlib.util.spec_from_file_location("veritas_replay_target", module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+target = getattr(module, {name:?})
+
+for case in json.loads({cases:?}):
+    for value in case["inputs"]:
+        try:
+            output = repr(target(value))
+            status = "observed"
+        except BaseException as exc:
+            output = repr(exc)
+            status = "exception"
+        print("__VERITAS_REPLAY_CASE__{{}}\t{{}}\t{{}}\t{{}}".format(case["name"], repr(value), status, output))
+"#,
+        path = function.path.as_str(),
+        name = function.name,
+        cases = cases
+    ))
+}
+
 fn unsupported_python_replay(reason: &str) -> BehaviorReplayObservation {
     BehaviorReplayObservation {
         status: BehaviorReplayStatus::Unsupported,
@@ -518,6 +728,44 @@ fn unsupported_python_replay(reason: &str) -> BehaviorReplayObservation {
         stdout_excerpt: None,
         stderr_excerpt: None,
         duration_ms: None,
+    }
+}
+
+fn insert_unsupported_python_replay(
+    observations: &mut BTreeMap<String, BehaviorReplayObservation>,
+    cases: &[BehaviorReplayCase],
+    reason: &str,
+) {
+    for case in cases {
+        observations.insert(case.name.clone(), unsupported_python_replay(reason));
+    }
+}
+
+fn replay_observation_from_command(
+    command: &CommandRecord,
+    outputs: Vec<serde_json::Value>,
+) -> BehaviorReplayObservation {
+    let has_outputs = !outputs.is_empty();
+    let output = if outputs.is_empty() {
+        serde_json::json!({
+            "observations": [],
+            "stderr": excerpt(&command.stderr),
+        })
+    } else {
+        serde_json::json!({ "observations": outputs })
+    };
+    let status = if command.status == RunStatus::Passed && has_outputs {
+        BehaviorReplayStatus::Observed
+    } else {
+        BehaviorReplayStatus::Failed
+    };
+    BehaviorReplayObservation {
+        status,
+        output,
+        command: Some(command_line(&command.program, &command.args)),
+        stdout_excerpt: Some(excerpt(&command.stdout)),
+        stderr_excerpt: Some(excerpt(&command.stderr)),
+        duration_ms: Some(command.duration_ms),
     }
 }
 
@@ -579,6 +827,65 @@ fn is_python_test_file(path: &Path) -> bool {
         || path
             .components()
             .any(|component| component.as_os_str() == OsStr::new("tests"))
+}
+
+fn python_test_args(root: &Path) -> (&'static str, Vec<String>) {
+    if prefers_pytest(root) && python_module_available(root, "pytest") {
+        (
+            "pytest",
+            vec!["-m".to_string(), "pytest".to_string(), "-q".to_string()],
+        )
+    } else {
+        (
+            "unittest",
+            vec![
+                "-m".to_string(),
+                "unittest".to_string(),
+                "discover".to_string(),
+            ],
+        )
+    }
+}
+
+fn prefers_pytest(root: &Path) -> bool {
+    root.join("pytest.ini").exists()
+        || root.join(".pytest.ini").exists()
+        || config_contains(root.join("pyproject.toml"), "[tool.pytest")
+        || config_contains(root.join("setup.cfg"), "[tool:pytest]")
+        || config_contains(root.join("tox.ini"), "[pytest]")
+        || tests_import_pytest(root)
+}
+
+fn tests_import_pytest(root: &Path) -> bool {
+    WalkDir::new(root)
+        .max_depth(4)
+        .into_iter()
+        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry.path().extension() == Some(OsStr::new("py"))
+                && is_python_test_file(entry.path())
+        })
+        .any(|entry| {
+            fs::read_to_string(entry.path()).is_ok_and(|contents| {
+                contents.contains("import pytest") || contents.contains("from pytest")
+            })
+        })
+}
+
+fn config_contains(path: impl AsRef<Path>, needle: &str) -> bool {
+    fs::read_to_string(path).is_ok_and(|contents| contents.contains(needle))
+}
+
+fn python_module_available(root: &Path, module: &str) -> bool {
+    Command::new("python3")
+        .args(["-m", module, "--version"])
+        .current_dir(root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn infer_risk(name: &str) -> RiskLevel {
@@ -710,6 +1017,36 @@ fn parse_replay_marker_output(stdout: &str) -> Vec<serde_json::Value> {
             }))
         })
         .collect()
+}
+
+fn parse_replay_case_marker_output(stdout: &str) -> BTreeMap<String, Vec<serde_json::Value>> {
+    let mut by_case: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for line in stdout.lines() {
+        let Some(marker) = line.find("__VERITAS_REPLAY_CASE__") else {
+            continue;
+        };
+        let payload = &line[marker + "__VERITAS_REPLAY_CASE__".len()..];
+        let mut parts = payload.splitn(4, '\t');
+        let Some(case) = parts.next() else {
+            continue;
+        };
+        let Some(input) = parts.next() else {
+            continue;
+        };
+        let Some(status) = parts.next() else {
+            continue;
+        };
+        let output = parts.next().unwrap_or_default();
+        by_case
+            .entry(case.to_string())
+            .or_default()
+            .push(serde_json::json!({
+                "input": input,
+                "status": status,
+                "output": output,
+            }));
+    }
+    by_case
 }
 
 fn safe_ident(value: &str) -> String {

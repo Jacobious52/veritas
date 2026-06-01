@@ -3,9 +3,9 @@ set -euo pipefail
 
 mode="${1:-smoke}"
 case "$mode" in
-  smoke | verify) ;;
+  smoke | verify | verify-fast) ;;
   *)
-    echo "usage: $0 [smoke|verify]" >&2
+    echo "usage: $0 [smoke|verify|verify-fast]" >&2
     exit 2
     ;;
 esac
@@ -47,12 +47,26 @@ run_smoke() {
   run_veritas scan --root "${path}" --format json >"${report_dir}/${name}-scan.json"
   run_veritas scan --root "${path}" >/tmp/veritas-canary-${name}-scan.md
 
-  if [[ "$mode" == "verify" ]]; then
+  if should_verify_canary "${name}"; then
     echo "==> verifying ${name}"
     run_veritas verify --root "${path}" --lang "${lang}" --target . >"${report_dir}/${name}-verify.md"
     cp "${path}/.veritas/report.json" "${report_dir}/${name}-report.json"
     run_veritas cleanup --root "${path}"
   fi
+}
+
+should_verify_canary() {
+  local name="$1"
+  if [[ "$mode" == "verify" ]]; then
+    return 0
+  fi
+  if [[ "$mode" == "verify-fast" ]]; then
+    case "$name" in
+      rust-itoa | go-uuid) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  return 1
 }
 
 cd "${repo_root}"
