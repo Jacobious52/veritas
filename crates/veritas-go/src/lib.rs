@@ -1,7 +1,9 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs,
+    hash::{Hash, Hasher},
     path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -13,14 +15,17 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
-use veritas_core::{config::GoPluginConfig, isolated_mutation_root, run_parallel_jobs};
+use veritas_core::{
+    config::{GoPluginConfig, MutationConfig},
+    isolated_mutation_root, run_parallel_jobs,
+};
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
+    mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
     BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
-    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind,
-    TestRunResult, VerificationPlan, VerificationQuality, VerificationReport, VerificationStrategy,
-    VerificationTarget,
+    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, SourceSpan,
+    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationReport,
+    VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -1603,13 +1608,15 @@ fn go_test_args(config: &GoPluginConfig, package_args: &[String]) -> Vec<String>
 }
 
 fn mutation_timeout_seconds(config: &GoPluginConfig) -> u64 {
-    if config.mutation.timeout_coefficient == 0 {
-        config.command_timeout_seconds
-    } else {
-        config
-            .command_timeout_seconds
-            .saturating_mul(config.mutation.timeout_coefficient.max(1))
+    let coefficient = config.mutation.timeout_coefficient.max(1);
+    let mut timeout = config.command_timeout_seconds.saturating_mul(coefficient);
+    if let Some(minimum) = config.mutation.timeout_min_seconds {
+        timeout = timeout.max(minimum);
     }
+    if let Some(maximum) = config.mutation.timeout_max_seconds {
+        timeout = timeout.min(maximum);
+    }
+    timeout
 }
 
 fn go_tags_arg(config: &GoPluginConfig) -> Option<String> {
@@ -2126,6 +2133,7 @@ fn run_mutation_checks(
     let candidates = go_mutation_candidates(&context.functions, root, artifacts)?
         .into_iter()
         .filter(|candidate| mutation_candidate_allowed(candidate, config))
+        .filter(|candidate| mutation_candidate_in_shard(candidate, &config.mutation))
         .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
@@ -2746,43 +2754,11 @@ fn go_mutation_candidates(
 }
 
 fn mutation_domain_from_label(label: &str) -> String {
-    for domain in [
-        "auth/permission",
-        "money",
-        "parsing/normalization",
-        "serialization",
-        "error handling",
-        "boundary",
-    ] {
-        if label.contains(domain) {
-            return domain.to_string();
-        }
-    }
-    "general".to_string()
+    mutation_taxonomy::normalize_domain(label).to_string()
 }
 
 fn mutation_operator_from_label(label: &str) -> String {
-    for operator in [
-        "comparison",
-        "equality",
-        "boolean",
-        "arithmetic",
-        "bitwise",
-        "assignment",
-        "increment",
-        "loop",
-        "literal",
-        "negation",
-        "default",
-        "nil",
-        "error",
-        "boundary",
-    ] {
-        if label.contains(operator) {
-            return operator.to_string();
-        }
-    }
-    "general".to_string()
+    mutation_taxonomy::normalize_operator(label).to_string()
 }
 
 fn record_mutation_generated(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {
@@ -2824,11 +2800,73 @@ fn finalize_mutation_skips(metrics: &mut BTreeMap<String, MutationAttribution>) 
 }
 
 fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginConfig) -> bool {
+    if !config.mutation.include_paths.is_empty()
+        && !config
+            .mutation
+            .include_paths
+            .iter()
+            .any(|pattern| text_matches(candidate.path.as_str(), pattern))
+    {
+        return false;
+    }
     if config
         .mutation
         .exclude_paths
         .iter()
-        .any(|pattern| candidate.path.as_str().contains(pattern))
+        .any(|pattern| text_matches(candidate.path.as_str(), pattern))
+    {
+        return false;
+    }
+    if !config.mutation.include_symbols.is_empty()
+        && !config
+            .mutation
+            .include_symbols
+            .iter()
+            .any(|pattern| text_matches(&candidate.function, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_symbols
+        .iter()
+        .any(|pattern| text_matches(&candidate.function, pattern))
+    {
+        return false;
+    }
+    let id = mutation_candidate_id(candidate);
+    if !config.mutation.include_mutant_ids.is_empty()
+        && !config
+            .mutation
+            .include_mutant_ids
+            .iter()
+            .any(|configured| configured == &id)
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_mutant_ids
+        .iter()
+        .any(|configured| configured == &id)
+    {
+        return false;
+    }
+    let domain = mutation_domain_from_label(&candidate.label);
+    if !config.mutation.enabled_domains.is_empty()
+        && !config
+            .mutation
+            .enabled_domains
+            .iter()
+            .any(|enabled| taxonomy_matches(&domain, enabled))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .disabled_domains
+        .iter()
+        .any(|disabled| taxonomy_matches(&domain, disabled))
     {
         return false;
     }
@@ -2838,7 +2876,7 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
             .mutation
             .enabled_operators
             .iter()
-            .any(|enabled| operator_matches(&operator, enabled))
+            .any(|enabled| taxonomy_matches(&operator, enabled))
     {
         return false;
     }
@@ -2846,7 +2884,23 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
         .mutation
         .disabled_operators
         .iter()
-        .any(|disabled| operator_matches(&operator, disabled))
+        .any(|disabled| taxonomy_matches(&operator, disabled))
+}
+
+fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationConfig) -> bool {
+    let Some(shard_count) = config.shard_count else {
+        return true;
+    };
+    let shard_index = config.shard_index.unwrap_or(0);
+    if shard_index >= shard_count {
+        return false;
+    }
+    let mut hasher = DefaultHasher::new();
+    candidate.path.hash(&mut hasher);
+    candidate.function.hash(&mut hasher);
+    candidate.start_byte.hash(&mut hasher);
+    candidate.end_byte.hash(&mut hasher);
+    (hasher.finish() as usize % shard_count) == shard_index
 }
 
 fn candidate_has_package_tests(
@@ -2860,9 +2914,28 @@ fn candidate_has_package_tests(
     })
 }
 
-fn operator_matches(operator: &str, configured: &str) -> bool {
-    let configured = configured.replace(['_', '-'], " ").to_ascii_lowercase();
+fn taxonomy_matches(operator: &str, configured: &str) -> bool {
+    let configured = configured.replace('-', "_").to_ascii_lowercase();
     operator.contains(configured.trim())
+}
+
+fn text_matches(text: &str, pattern: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_suffix('$') {
+        return text.ends_with(suffix);
+    }
+    if pattern.contains('*') {
+        let mut rest = text.as_str();
+        for part in pattern.split('*').filter(|part| !part.is_empty()) {
+            let Some(offset) = rest.find(part) else {
+                return false;
+            };
+            rest = &rest[offset + part.len()..];
+        }
+        return true;
+    }
+    text.contains(&pattern)
 }
 
 fn mutation_record(
@@ -2874,19 +2947,57 @@ fn mutation_record(
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
-        id: format!(
-            "go:{}:{}:{}:{}",
-            candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
-        ),
+        id: mutation_candidate_id(candidate),
         language: "go".to_string(),
         path: candidate.path.clone(),
         symbol: candidate.function.clone(),
         operator: operator.to_string(),
         domain: domain.to_string(),
         status,
+        from: Some(candidate.from.clone()),
+        to: Some(candidate.to.clone()),
         line_range: None,
+        source_span: Some(SourceSpan {
+            start_byte: candidate.start_byte,
+            end_byte: candidate.end_byte,
+        }),
+        diff: Some(mutation_diff(candidate)),
+        risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
+        suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
+        skip_reason: mutation_skip_reason(status),
+        selected_test_command: command.map(ToString::to_string),
+        brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
+    }
+}
+
+fn mutation_candidate_id(candidate: &MutationCandidate) -> String {
+    format!(
+        "go:{}:{}:{}:{}",
+        candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
+    )
+}
+
+fn mutation_diff(candidate: &MutationCandidate) -> String {
+    format!(
+        "--- {}\n+++ {}\n@@ bytes {}..{} @@\n-{}\n+{}",
+        candidate.path,
+        candidate.path,
+        candidate.start_byte,
+        candidate.end_byte,
+        candidate.from,
+        candidate.to
+    )
+}
+
+fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
+    match status {
+        MutationStatus::NotCovered => Some("no package tests cover this mutant".to_string()),
+        MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
+        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
+        _ => None,
     }
 }
 
@@ -2952,6 +3063,36 @@ fn collect_go_mutation_nodes(
                 if let Some(candidate) = mutation_candidate_from_literal(node, source, function)? {
                     candidates.push(candidate);
                 }
+            }
+            "go_statement" => {
+                if let Some(candidate) =
+                    mutation_candidate_from_go_statement(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "defer_statement" => {
+                if let Some(candidate) =
+                    mutation_candidate_from_defer_statement(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "selector_expression" | "identifier" => {
+                if let Some(candidate) = mutation_candidate_from_identifier(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "call_expression" => {
+                if let Some(candidate) =
+                    mutation_candidate_from_context_call(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "interpreted_string_literal" | "raw_string_literal" => {
+                push_go_string_mutation_candidates(node, source, function, candidates)?;
             }
             _ => {}
         }
@@ -3193,6 +3334,160 @@ fn mutation_candidate_from_literal(
     }))
 }
 
+fn mutation_candidate_from_go_statement(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let statement = node_text(node, source)?;
+    let trimmed = statement.trim_start();
+    let Some(call) = trimmed.strip_prefix("go ") else {
+        return Ok(None);
+    };
+    let leading_ws = statement.len().saturating_sub(trimmed.len());
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "concurrency_lifecycle task_spawn mutation"),
+        from: trimmed.to_string(),
+        to: call.to_string(),
+        start_byte: node.start_byte() + leading_ws,
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_defer_statement(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let statement = node_text(node, source)?;
+    if !statement.contains(".Unlock(") && !statement.contains(".RUnlock(") {
+        return Ok(None);
+    }
+    let trimmed = statement.trim_start();
+    let Some(call) = trimmed.strip_prefix("defer ") else {
+        return Ok(None);
+    };
+    let leading_ws = statement.len().saturating_sub(trimmed.len());
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "synchronization unlock_guard mutation"),
+        from: trimmed.to_string(),
+        to: call.to_string(),
+        start_byte: node.start_byte() + leading_ws,
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_identifier(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?.trim().to_string();
+    let Some((label, to)) = (match text.as_str() {
+        "Lock" => Some(("synchronization lock_mode mutation", "RLock")),
+        "RLock" => Some(("synchronization lock_mode mutation", "Lock")),
+        "Store" => Some(("synchronization atomic_ordering mutation", "Swap")),
+        "Load" => Some(("synchronization atomic_ordering mutation", "CompareAndSwap")),
+        "Commit" => Some(("database rollback_commit mutation", "Rollback")),
+        "Rollback" => Some(("database rollback_commit mutation", "Commit")),
+        "Begin" | "BeginTx" => Some(("database transaction_boundary mutation", "Rollback")),
+        "RowsAffected" => Some(("database affected_rows mutation", "Err")),
+        "Retry" | "Do" if function.symbol.to_ascii_lowercase().contains("retry") => {
+            Some(("retry_resilience retry_attempt mutation", "Once"))
+        }
+        "Sleep" => Some(("retry_resilience backoff_cap mutation", "Gosched")),
+        "Now" => Some(("testability injected_clock mutation", "Unix")),
+        "Intn" | "Float64" => Some(("testability injected_randomness mutation", "Seed")),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, label),
+        from: text,
+        to: to.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_context_call(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?.trim().to_string();
+    if text != "context.Background()" && text != "context.TODO()" {
+        return Ok(None);
+    }
+    let replacement = if function.signature.contains("ctx context.Context")
+        || function.signature.contains("ctx ")
+    {
+        "ctx"
+    } else if text == "context.Background()" {
+        "context.TODO()"
+    } else {
+        "context.Background()"
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "concurrency_lifecycle context_timeout mutation"),
+        from: text,
+        to: replacement.to_string(),
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
+    }))
+}
+
+fn push_go_string_mutation_candidates(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+    candidates: &mut Vec<MutationCandidate>,
+) -> Result<()> {
+    let text = node_text(node, source)?;
+    for (needle, replacement, label) in [
+        ("FOR UPDATE", "", "database isolation_lock mutation"),
+        ("tenant_id", "1", "database tenant_filter mutation"),
+        (
+            "idempotency_key",
+            "request_id",
+            "database idempotency mutation",
+        ),
+        (
+            "retry-after",
+            "",
+            "retry_resilience retry_classifier mutation",
+        ),
+        (
+            "timeout",
+            "deadline",
+            "retry_resilience backoff_cap mutation",
+        ),
+    ] {
+        if let Some(offset) = text.find(needle) {
+            let start_byte = node.start_byte() + offset;
+            candidates.push(MutationCandidate {
+                path: function.path.clone(),
+                function: function.symbol.clone(),
+                label: domain_mutation_label(function, label),
+                from: needle.to_string(),
+                to: replacement.to_string(),
+                start_byte,
+                end_byte: start_byte + needle.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn binary_operator_node(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
     let operator = node.children(&mut cursor).find(|child| {
@@ -3312,7 +3607,7 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("permission")
         || lowered.contains("token")
     {
-        Some("auth/permission")
+        Some("auth_permission")
     } else if lowered.contains("money")
         || lowered.contains("price")
         || lowered.contains("invoice")
@@ -3323,7 +3618,7 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("format")
         || lowered.contains("normalize")
     {
-        Some("parsing/normalization")
+        Some("parsing_normalization")
     } else if lowered.contains("marshal")
         || lowered.contains("unmarshal")
         || lowered.contains("serial")
@@ -3335,7 +3630,7 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("result")
         || lowered.contains("valid")
     {
-        Some("error handling")
+        Some("error_handling")
     } else if lowered.contains("limit")
         || lowered.contains("threshold")
         || lowered.contains("min")

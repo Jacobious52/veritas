@@ -135,6 +135,10 @@ veritas run
 veritas report --format markdown
 veritas report --format sarif
 veritas report --format junit
+veritas mutants list --lang rust --target src/lib.rs --diffs
+veritas mutants list --lang go --target . --format json --domain database
+veritas mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
+veritas mutants merge .veritas/mutations/shard-*/rust_campaign.json --output .veritas/mutations/rust_merged.json
 veritas next --explain
 veritas score
 veritas score --mode all
@@ -184,7 +188,7 @@ Rust verification:
 - discovers public free functions and public methods with Tree-sitter
 - writes package-local `proptest` integration harnesses for supported public free functions, including no-panic and deterministic-output properties where signatures allow them
 - runs `cargo test --all-targets` with configurable jobs, test threads, command timeouts, and optional systemd scope limits
-- runs AST-scoped mutation probes and reports surviving mutants
+- runs AST-scoped mutation probes, including comparison, boundary, async/task, synchronization, database, retry, testability, and brittleness domains, then reports surviving mutants
 - collects `cargo llvm-cov --summary-only` when enabled
 - writes Rust symbol graph artifacts under `.veritas/symbol_graph/`
 
@@ -198,7 +202,7 @@ Go verification:
 - writes `testing.F` fuzz harnesses for exported free functions with supported Go fuzz parameter types and edge-case seed rows
 - runs relevant `go test -run=^$ -fuzz=...` targets through a bounded scheduler within caps and timeouts
 - applies build tags to Go list, test, fuzz, coverage, and mutation commands
-- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic and bitwise operators, assignment operators, increment/decrement statements, unary negation, loop control, literal flips, self-assignments, and domain-labeled risk surfaces
+- runs AST-scoped mutation probes for comparisons, nil/error branches, return defaults, boolean connectors, arithmetic and bitwise operators, assignment operators, increment/decrement statements, unary negation, loop control, literal flips, self-assignments, goroutine/defer/context lifecycle, locks, transactions, tenant/idempotency strings, retry/backoff seams, and domain-labeled risk surfaces
 - writes package graph, package-awareness, and symbol graph artifacts
 
 Python verification:
@@ -208,13 +212,14 @@ Python verification:
 - runs `python3 -m pytest -q` when the project prefers pytest and it is installed, otherwise falls back to `python3 -m unittest discover`
 - writes reviewable Hypothesis property candidates and executes them when both `hypothesis` and `pytest` are installed, otherwise records a skipped command
 - collects coverage through `coverage.py` when enabled
-- runs executable source-range mutation checks for supported comparisons, boolean connectors, and default returns
+- runs executable source-range mutation checks for supported comparisons, boolean connectors, default returns, database strings, async/testability seams, and brittleness probes
 - supports replay cases for primitive single-argument and multi-argument public functions
 
 Reports and artifacts:
 
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
 - saves the latest report to `.veritas/report.json`
+- lists and previews candidate mutants without executing tests through `veritas mutants list`, including JSON output, byte-range spans, diff previews, shard/filter controls, risk notes, and suggested tests
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
 - reports mutation score attribution/trends, per-mutant campaign records, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
 - summarizes current confidence and baseline deltas with `veritas score`
@@ -295,11 +300,22 @@ min_mutant_coverage = 80
 # campaign/report model.
 enabled_operators = []
 disabled_operators = []
+enabled_domains = []
+disabled_domains = []
+include_paths = []
 exclude_paths = []
+include_symbols = []
+exclude_symbols = []
+include_mutant_ids = []
+exclude_mutant_ids = []
 dry_run = false
 workers = 1 # Rust/Go use isolated temp roots when workers > 1; keep small repos serial by default
 test_cpu = 1
-timeout_coefficient = 0
+timeout_coefficient = 1
+timeout_min_seconds = 10
+timeout_max_seconds = 120
+shard_index = 0
+shard_count = 1
 output_statuses = [] # e.g. ["lived", "not_covered", "timed_out"]
 
 [plugins.rust]

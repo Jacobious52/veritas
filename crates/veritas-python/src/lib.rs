@@ -1,7 +1,9 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     collections::BTreeMap,
     ffi::OsStr,
     fs,
+    hash::{Hash, Hasher},
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -12,13 +14,14 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 use tree_sitter::{Node, Parser};
-use veritas_core::config::PythonPluginConfig;
+use veritas_core::config::{MutationConfig, PythonPluginConfig};
 use veritas_plugin_api::{
-    ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
+    mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
     BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
     GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationRecord,
-    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, TargetKind,
-    TestRunResult, VerificationPlan, VerificationQuality, VerificationStrategy, VerificationTarget,
+    MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus, SourceSpan,
+    TargetKind, TestRunResult, VerificationPlan, VerificationQuality, VerificationStrategy,
+    VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -844,7 +847,11 @@ fn run_python_mutations(
 ) -> Result<TestRunResult> {
     let start = Instant::now();
     let functions = discover_functions(root)?;
-    let candidates = python_mutation_candidates(root, &functions, artifacts)?;
+    let candidates = python_mutation_candidates(root, &functions, artifacts)?
+        .into_iter()
+        .filter(|candidate| python_mutation_candidate_allowed(candidate, config))
+        .filter(|candidate| python_mutation_candidate_in_shard(candidate, &config.mutation))
+        .collect::<Vec<_>>();
     let mut quality = VerificationQuality::default();
     quality.mutation.generated = candidates.len();
     quality.mutation.effective_workers = 1;
@@ -857,6 +864,20 @@ fn run_python_mutations(
         let operator = python_mutation_operator(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if config.mutation.dry_run {
+            quality.mutation.runnable += 1;
+            record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
+            record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
+            quality.mutation.records.push(python_mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Runnable,
+                None,
+                0,
+            ));
+            continue;
+        }
         quality.mutation.runnable += 1;
         quality.mutation.executed += 1;
         record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
@@ -992,6 +1013,39 @@ fn python_mutation_candidates(
             "default tuple mutation",
             &mut candidates,
         );
+        for (from, to, label) in [
+            ("FOR UPDATE", "", "database isolation_lock mutation"),
+            ("tenant_id", "1", "database tenant_filter mutation"),
+            (
+                "idempotency_key",
+                "request_id",
+                "database idempotency mutation",
+            ),
+            (
+                "asyncio.create_task",
+                "await",
+                "concurrency_lifecycle task_spawn mutation",
+            ),
+            (
+                ".acquire()",
+                ".locked()",
+                "synchronization lock_mode mutation",
+            ),
+            ("retry(", "once(", "retry_resilience retry_attempt mutation"),
+            ("time.time()", "0", "testability injected_clock mutation"),
+            (
+                "random.",
+                "deterministic_random.",
+                "testability injected_randomness mutation",
+            ),
+            (
+                "sorted(",
+                "list(",
+                "brittleness equivalent_ordering mutation",
+            ),
+        ] {
+            push_python_mutation(&contents, function, from, to, label, &mut candidates);
+        }
     }
     candidates.sort_by(|left, right| {
         left.path
@@ -1090,46 +1144,201 @@ fn python_mutation_record(
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
-        id: format!(
-            "python:{}:{}:{}:{}",
-            candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
-        ),
+        id: python_mutation_candidate_id(candidate),
         language: "python".to_string(),
         path: candidate.path.clone(),
         symbol: candidate.function.clone(),
         operator: operator.to_string(),
         domain: domain.to_string(),
         status,
+        from: Some(candidate.from.clone()),
+        to: Some(candidate.to.clone()),
         line_range: Some(candidate.line_range.clone()),
+        source_span: Some(SourceSpan {
+            start_byte: candidate.start_byte,
+            end_byte: candidate.end_byte,
+        }),
+        diff: Some(python_mutation_diff(candidate)),
+        risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
+        suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
+        skip_reason: mutation_skip_reason(status),
+        selected_test_command: command.map(ToString::to_string),
+        brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
     }
 }
 
-fn python_mutation_domain(candidate: &PythonMutationCandidate) -> String {
-    let value = format!("{} {}", candidate.function, candidate.label).to_ascii_lowercase();
-    if value.contains("auth") || value.contains("permission") || value.contains("refund") {
-        "auth_permission".to_string()
-    } else if value.contains("invoice") || value.contains("money") || value.contains("cents") {
-        "money".to_string()
-    } else if value.contains("parse") {
-        "parsing".to_string()
-    } else {
-        "general".to_string()
+fn python_mutation_candidate_id(candidate: &PythonMutationCandidate) -> String {
+    format!(
+        "python:{}:{}:{}:{}",
+        candidate.path, candidate.function, candidate.start_byte, candidate.end_byte
+    )
+}
+
+fn python_mutation_diff(candidate: &PythonMutationCandidate) -> String {
+    format!(
+        "--- {}\n+++ {}\n@@ bytes {}..{} @@\n-{}\n+{}",
+        candidate.path,
+        candidate.path,
+        candidate.start_byte,
+        candidate.end_byte,
+        candidate.from,
+        candidate.to
+    )
+}
+
+fn mutation_skip_reason(status: MutationStatus) -> Option<String> {
+    match status {
+        MutationStatus::NotCovered => Some("no selected tests cover this mutant".to_string()),
+        MutationStatus::Skipped => Some("mutation was skipped before execution".to_string()),
+        MutationStatus::TimedOut => Some("mutation test command timed out".to_string()),
+        MutationStatus::NotViable => Some("mutation did not compile or could not run".to_string()),
+        _ => None,
     }
 }
 
+fn python_mutation_domain(candidate: &PythonMutationCandidate) -> String {
+    let value = format!("{} {}", candidate.function, candidate.label).to_ascii_lowercase();
+    mutation_taxonomy::normalize_domain(&value).to_string()
+}
+
 fn python_mutation_operator(label: &str) -> String {
-    let label = label.to_ascii_lowercase();
-    if label.contains("comparison") {
-        "comparison".to_string()
-    } else if label.contains("boolean") {
-        "boolean".to_string()
-    } else if label.contains("default") {
-        "default".to_string()
-    } else {
-        "general".to_string()
+    mutation_taxonomy::normalize_operator(label).to_string()
+}
+
+fn python_mutation_candidate_allowed(
+    candidate: &PythonMutationCandidate,
+    config: &PythonPluginConfig,
+) -> bool {
+    if !config.mutation.include_paths.is_empty()
+        && !config
+            .mutation
+            .include_paths
+            .iter()
+            .any(|pattern| text_matches(candidate.path.as_str(), pattern))
+    {
+        return false;
     }
+    if config
+        .mutation
+        .exclude_paths
+        .iter()
+        .any(|pattern| text_matches(candidate.path.as_str(), pattern))
+    {
+        return false;
+    }
+    if !config.mutation.include_symbols.is_empty()
+        && !config
+            .mutation
+            .include_symbols
+            .iter()
+            .any(|pattern| text_matches(&candidate.function, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_symbols
+        .iter()
+        .any(|pattern| text_matches(&candidate.function, pattern))
+    {
+        return false;
+    }
+    let id = python_mutation_candidate_id(candidate);
+    if !config.mutation.include_mutant_ids.is_empty()
+        && !config
+            .mutation
+            .include_mutant_ids
+            .iter()
+            .any(|configured| configured == &id)
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_mutant_ids
+        .iter()
+        .any(|configured| configured == &id)
+    {
+        return false;
+    }
+    let domain = python_mutation_domain(candidate);
+    if !config.mutation.enabled_domains.is_empty()
+        && !config
+            .mutation
+            .enabled_domains
+            .iter()
+            .any(|enabled| taxonomy_matches(&domain, enabled))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .disabled_domains
+        .iter()
+        .any(|disabled| taxonomy_matches(&domain, disabled))
+    {
+        return false;
+    }
+    let operator = python_mutation_operator(&candidate.label);
+    if !config.mutation.enabled_operators.is_empty()
+        && !config
+            .mutation
+            .enabled_operators
+            .iter()
+            .any(|enabled| taxonomy_matches(&operator, enabled))
+    {
+        return false;
+    }
+    !config
+        .mutation
+        .disabled_operators
+        .iter()
+        .any(|disabled| taxonomy_matches(&operator, disabled))
+}
+
+fn python_mutation_candidate_in_shard(
+    candidate: &PythonMutationCandidate,
+    config: &MutationConfig,
+) -> bool {
+    let Some(shard_count) = config.shard_count else {
+        return true;
+    };
+    let shard_index = config.shard_index.unwrap_or(0);
+    if shard_index >= shard_count {
+        return false;
+    }
+    let mut hasher = DefaultHasher::new();
+    candidate.path.hash(&mut hasher);
+    candidate.function.hash(&mut hasher);
+    candidate.start_byte.hash(&mut hasher);
+    candidate.end_byte.hash(&mut hasher);
+    (hasher.finish() as usize % shard_count) == shard_index
+}
+
+fn taxonomy_matches(operator: &str, configured: &str) -> bool {
+    let configured = configured.replace('-', "_").to_ascii_lowercase();
+    operator.contains(configured.trim())
+}
+
+fn text_matches(text: &str, pattern: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
+    if let Some(suffix) = pattern.strip_suffix('$') {
+        return text.ends_with(suffix);
+    }
+    if pattern.contains('*') {
+        let mut rest = text.as_str();
+        for part in pattern.split('*').filter(|part| !part.is_empty()) {
+            let Some(offset) = rest.find(part) else {
+                return false;
+            };
+            rest = &rest[offset + part.len()..];
+        }
+        return true;
+    }
+    text.contains(&pattern)
 }
 
 fn record_mutation_generated(metrics: &mut BTreeMap<String, MutationAttribution>, key: &str) {

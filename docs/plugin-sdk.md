@@ -29,6 +29,8 @@ A production plugin should make these fields stable before it is advertised as a
 - native commands honor plugin time budgets and produce `CommandRecord` entries with duration and status
 - coverage reports either include files/uncovered ranges or an explicit disabled/unavailable summary
 - mutation campaigns report generated, runnable, executed, killed, survived, skipped, and domain/operator attribution
+- mutation records include stable IDs, source-relative paths, symbols, byte spans, optional line ranges, from/to replacements, diff previews, selected test commands, skip reasons, risk notes, and suggested tests
+- mutation domains/operators map into the shared taxonomy (`database`, `synchronization`, `concurrency_lifecycle`, `retry_resilience`, `testability`, `brittleness`, and the base comparison/boundary/error domains) so filters, sharding, reporting, and AI repair prompts stay language-neutral
 - replay hooks batch target-level cases when possible and fall back cleanly when a signature is unsupported
 - evolution candidates include proposed action, keep criteria, proof commands, and done-when criteria
 - cleanup leaves handwritten tests alone and removes only Veritas-owned generated artifacts
@@ -43,6 +45,19 @@ veritas conformance --format json
 ```
 
 The conformance command is intentionally language-neutral. It scans detected plugins and fails when target IDs are duplicated, function targets lack symbols or line ranges, paths are not source-relative, or target files do not exist.
+
+Preview a plugin's mutation inventory without running native tests:
+
+```bash
+veritas mutants list --lang rust --target src/lib.rs --diffs
+veritas mutants list --lang go --target . --format json --domain database
+veritas mutants list --lang python --target invoice.py --operator boolean
+veritas mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
+veritas mutants merge .veritas/mutations/shard-*/rust_campaign.json --format markdown
+```
+
+`mutants list` forces mutation dry-run mode and honors shared filters such as `--domain`, `--operator`, `--include-path`, `--exclude-path`, `--include-symbol`, `--exclude-symbol`, `--shard-index`, and `--shard-count`.
+`mutants run` reuses stable mutant IDs from a prior campaign artifact for survivor-focused reruns, while `mutants merge` combines shard campaign records into one deterministic JSON payload.
 
 ## Stable Target IDs
 

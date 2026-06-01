@@ -1,0 +1,14 @@
+[veritas]
+budget_seconds = 60
+fail_on_findings = false
+
+[plugins.go]
+fuzz_seconds = 1
+fuzz_concurrency = 1
+max_mutants = 16
+
+[plugins.go.mutation]
+workers = 2
+timeout_coefficient = 1
+timeout_max_seconds = 30
+enabled_domains = ["database", "synchronization", "retry_resilience", "concurrency_lifecycle"]
