@@ -1628,8 +1628,10 @@ fn run_mutation_checks(
     let functions = discover_functions(root)?;
     let candidates = rust_mutation_candidates(&functions, root, artifacts)?
         .into_iter()
-        .filter(|candidate| mutation_candidate_allowed(candidate, config))
         .filter(|candidate| mutation_candidate_in_shard(candidate, &config.mutation))
+        .filter(|candidate| {
+            config.mutation.report_filtered || mutation_candidate_allowed(candidate, config)
+        })
         .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
@@ -1665,6 +1667,20 @@ fn run_mutation_checks(
         let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            quality.mutation.records.push(record);
+            continue;
+        }
         if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
@@ -1884,6 +1900,20 @@ fn run_parallel_mutation_checks(
         let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            quality.mutation.records.push(record);
+            continue;
+        }
         if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
@@ -2307,13 +2337,31 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
     {
         return false;
     }
+    let target_id = mutation_candidate_target_id(candidate);
+    if !config.mutation.include_target_ids.is_empty()
+        && !config
+            .mutation
+            .include_target_ids
+            .iter()
+            .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_target_ids
+        .iter()
+        .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
     let id = mutation_candidate_id(candidate);
     if !config.mutation.include_mutant_ids.is_empty()
         && !config
             .mutation
             .include_mutant_ids
             .iter()
-            .any(|configured| configured == &id)
+            .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2321,7 +2369,7 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
         .mutation
         .exclude_mutant_ids
         .iter()
-        .any(|configured| configured == &id)
+        .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2360,6 +2408,10 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &RustPlugin
         .any(|disabled| taxonomy_matches(&operator, disabled))
 }
 
+fn mutation_candidate_target_id(candidate: &MutationCandidate) -> String {
+    format!("rust:{}:{}", candidate.path, candidate.function)
+}
+
 fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationConfig) -> bool {
     let Some(shard_count) = config.shard_count else {
         return true;
@@ -2378,10 +2430,20 @@ fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationC
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
     let configured = configured.replace('-', "_").to_ascii_lowercase();
-    operator.contains(configured.trim())
+    text_matches(operator, configured.trim())
 }
 
 fn text_matches(text: &str, pattern: &str) -> bool {
+    if let Some(exact) = pattern.strip_prefix("exact:") {
+        return text.eq_ignore_ascii_case(exact);
+    }
+    if let Some(regex) = pattern.strip_prefix("regex:") {
+        return regex::RegexBuilder::new(regex)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(text));
+    }
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
     let text = text.to_ascii_lowercase();
     let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_suffix('$') {
@@ -2679,11 +2741,24 @@ fn rust_mutation_candidates(
             .parse(&contents, None)
             .ok_or_else(|| anyhow!("failed to parse Rust source {}", path))?;
         for function in path_functions {
+            if function_has_mutation_skip_annotation(
+                &contents,
+                function.start_byte,
+                function.end_byte,
+            ) {
+                continue;
+            }
             collect_rust_mutation_nodes(tree.root_node(), &contents, function, &mut candidates)?;
         }
     }
 
     Ok(candidates)
+}
+
+fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
+    source
+        .get(start_byte..end_byte)
+        .is_some_and(|body| body.contains("veritas:skip-mutation"))
 }
 
 fn collect_rust_mutation_nodes(
@@ -3531,6 +3606,22 @@ mod tests {
             Some("rust-property-example")
         );
         assert_eq!(failures[0].target_id.as_deref(), Some("rust:project"));
+    }
+
+    #[test]
+    fn rust_mutation_skip_annotation_is_function_local() {
+        let source = "fn kept() -> i32 { 1 }\nfn skipped() -> i32 { // veritas:skip-mutation\n2\n}";
+        let kept_start = source.find("fn kept").unwrap();
+        let kept_end = source.find("fn skipped").unwrap();
+        let skipped_start = kept_end;
+        assert!(!function_has_mutation_skip_annotation(
+            source, kept_start, kept_end
+        ));
+        assert!(function_has_mutation_skip_annotation(
+            source,
+            skipped_start,
+            source.len()
+        ));
     }
 
     fn write_file(root: &Path, relative: &str, contents: &str) {

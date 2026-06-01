@@ -2177,8 +2177,10 @@ fn run_mutation_checks(
     let start = Instant::now();
     let candidates = go_mutation_candidates(&context.functions, root, artifacts)?
         .into_iter()
-        .filter(|candidate| mutation_candidate_allowed(candidate, config))
         .filter(|candidate| mutation_candidate_in_shard(candidate, &config.mutation))
+        .filter(|candidate| {
+            config.mutation.report_filtered || mutation_candidate_allowed(candidate, config)
+        })
         .collect::<Vec<_>>();
     let generated = candidates.len();
     let mut commands = Vec::new();
@@ -2215,6 +2217,20 @@ fn run_mutation_checks(
         let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            quality.mutation.records.push(record);
+            continue;
+        }
         if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
@@ -2444,6 +2460,20 @@ fn run_parallel_mutation_checks(
         let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
+        if !mutation_candidate_allowed(&candidate, config) {
+            let mut record = mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                Some((&selection.hint, selection.fallback.as_deref())),
+                0,
+            );
+            record.skip_reason = Some("filtered by mutation config".to_string());
+            quality.mutation.records.push(record);
+            continue;
+        }
         if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
@@ -2823,11 +2853,24 @@ fn go_mutation_candidates(
             .parse(&contents, None)
             .ok_or_else(|| anyhow!("failed to parse Go source {}", path))?;
         for function in path_functions {
+            if function_has_mutation_skip_annotation(
+                &contents,
+                function.start_byte,
+                function.end_byte,
+            ) {
+                continue;
+            }
             collect_go_mutation_nodes(tree.root_node(), &contents, function, &mut candidates)?;
         }
     }
 
     Ok(candidates)
+}
+
+fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
+    source
+        .get(start_byte..end_byte)
+        .is_some_and(|body| body.contains("veritas:skip-mutation"))
 }
 
 fn mutation_domain_from_label(label: &str) -> String {
@@ -2911,13 +2954,31 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
     {
         return false;
     }
+    let target_id = mutation_candidate_target_id(candidate);
+    if !config.mutation.include_target_ids.is_empty()
+        && !config
+            .mutation
+            .include_target_ids
+            .iter()
+            .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
+    if config
+        .mutation
+        .exclude_target_ids
+        .iter()
+        .any(|pattern| text_matches(&target_id, pattern))
+    {
+        return false;
+    }
     let id = mutation_candidate_id(candidate);
     if !config.mutation.include_mutant_ids.is_empty()
         && !config
             .mutation
             .include_mutant_ids
             .iter()
-            .any(|configured| configured == &id)
+            .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2925,7 +2986,7 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
         .mutation
         .exclude_mutant_ids
         .iter()
-        .any(|configured| configured == &id)
+        .any(|configured| text_matches(&id, configured))
     {
         return false;
     }
@@ -2962,6 +3023,10 @@ fn mutation_candidate_allowed(candidate: &MutationCandidate, config: &GoPluginCo
         .disabled_operators
         .iter()
         .any(|disabled| taxonomy_matches(&operator, disabled))
+}
+
+fn mutation_candidate_target_id(candidate: &MutationCandidate) -> String {
+    format!("go:{}:{}", candidate.path, candidate.function)
 }
 
 fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationConfig) -> bool {
@@ -3044,10 +3109,20 @@ fn select_go_mutation_tests(
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
     let configured = configured.replace('-', "_").to_ascii_lowercase();
-    operator.contains(configured.trim())
+    text_matches(operator, configured.trim())
 }
 
 fn text_matches(text: &str, pattern: &str) -> bool {
+    if let Some(exact) = pattern.strip_prefix("exact:") {
+        return text.eq_ignore_ascii_case(exact);
+    }
+    if let Some(regex) = pattern.strip_prefix("regex:") {
+        return regex::RegexBuilder::new(regex)
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|regex| regex.is_match(text));
+    }
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
     let text = text.to_ascii_lowercase();
     let pattern = pattern.to_ascii_lowercase();
     if let Some(suffix) = pattern.strip_suffix('$') {
@@ -5076,6 +5151,45 @@ mod tests {
             grouped.get(&Utf8PathBuf::from("services/api")),
             Some(&vec!["./pkg/http".to_string()])
         );
+    }
+
+    #[test]
+    fn mutation_filters_support_regex_target_and_taxonomy_patterns() {
+        let candidate = MutationCandidate {
+            path: Utf8PathBuf::from("pkg/invoice/invoice.go"),
+            function: "ApplyDiscountCents".to_string(),
+            label: "money arithmetic direction mutation".to_string(),
+            from: "+".to_string(),
+            to: "-".to_string(),
+            start_byte: 10,
+            end_byte: 11,
+        };
+        let mut config = test_go_config();
+        config.mutation.include_paths = vec!["regex:^pkg/invoice/".to_string()];
+        config.mutation.include_symbols = vec!["exact:ApplyDiscountCents".to_string()];
+        config.mutation.include_target_ids = vec!["glob:go:pkg/*:ApplyDiscountCents".to_string()];
+        config.mutation.enabled_domains = vec!["exact:money".to_string()];
+        config.mutation.enabled_operators = vec!["exact:arithmetic".to_string()];
+        assert!(mutation_candidate_allowed(&candidate, &config));
+
+        config.mutation.exclude_target_ids = vec!["regex:ApplyDiscount".to_string()];
+        assert!(!mutation_candidate_allowed(&candidate, &config));
+    }
+
+    #[test]
+    fn go_mutation_skip_annotation_is_function_local() {
+        let source = "func kept() int { return 1 }\nfunc skipped() int { // veritas:skip-mutation\nreturn 2\n}";
+        let kept_start = source.find("func kept").unwrap();
+        let kept_end = source.find("func skipped").unwrap();
+        let skipped_start = kept_end;
+        assert!(!function_has_mutation_skip_annotation(
+            source, kept_start, kept_end
+        ));
+        assert!(function_has_mutation_skip_annotation(
+            source,
+            skipped_start,
+            source.len()
+        ));
     }
 
     fn test_go_config() -> GoPluginConfig {

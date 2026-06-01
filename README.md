@@ -306,8 +306,11 @@ include_paths = []
 exclude_paths = []
 include_symbols = []
 exclude_symbols = []
+include_target_ids = []
+exclude_target_ids = []
 include_mutant_ids = []
 exclude_mutant_ids = []
+report_filtered = false
 dry_run = false
 max_mutants = 8
 disable_test_selection = false # set true to run the broader verification package set for every mutant
@@ -346,6 +349,8 @@ build_tags = []
 ```
 
 By default mutation runs select the narrowest package-level test commands the plugin can justify. Rust uses symbol/package ownership; Go uses the package graph plus reverse dependencies. Set `disable_test_selection = true` when a repo has global integration fixtures, hidden build tags, or cross-package side effects that make broad mutation commands safer than local selection.
+
+Mutation filters are evaluated as include filters first, then exclude filters. Patterns accept `exact:...`, `glob:...` or `*` wildcards, and `regex:...`; legacy unprefixed patterns keep substring matching. Use `include_target_ids` / `exclude_target_ids` for `lang:path:symbol` targets and `include_mutant_ids` / `exclude_mutant_ids` for stable per-mutant IDs. Add `veritas:skip-mutation` inside a Rust, Go, or Python function to suppress local mutants, and set `report_filtered = true` when filtered candidates should appear as skipped records.
 
 For shared machines, keep Rust coverage disabled unless needed and enable systemd scope limits:
 
