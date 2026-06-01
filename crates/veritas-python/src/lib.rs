@@ -14,7 +14,10 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use serde::Serialize;
 use tree_sitter::{Node, Parser};
-use veritas_core::config::{MutationConfig, PythonPluginConfig};
+use veritas_core::{
+    config::{MutationConfig, PythonPluginConfig},
+    persist_mutation_record_artifacts, start_mutation_run,
+};
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
     BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
@@ -860,6 +863,7 @@ fn run_python_mutations(
     let mut commands = Vec::new();
     let mut failures = Vec::new();
     let mut status = RunStatus::Passed;
+    let run_dir = start_mutation_run(root, "python")?;
 
     for candidate in candidates.into_iter().take(8) {
         let domain = python_mutation_domain(&candidate);
@@ -876,6 +880,7 @@ fn run_python_mutations(
                 0,
             );
             record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
             quality.mutation.records.push(record);
             continue;
         }
@@ -883,14 +888,16 @@ fn run_python_mutations(
             quality.mutation.runnable += 1;
             record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
             record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(python_mutation_record(
+            let mut record = python_mutation_record(
                 &candidate,
                 &domain,
                 &operator,
                 MutationStatus::Runnable,
                 None,
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         quality.mutation.runnable += 1;
@@ -946,14 +953,16 @@ fn run_python_mutations(
             record_mutation_killed(&mut quality.mutation.by_operator, &operator);
             MutationStatus::Killed
         };
-        quality.mutation.records.push(python_mutation_record(
+        let mut record = python_mutation_record(
             &candidate,
             &domain,
             &operator,
             mutation_status,
             Some(&command_text),
             command.duration_ms,
-        ));
+        );
+        persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+        quality.mutation.records.push(record);
         commands.push(command);
     }
     quality.mutation.skipped = quality
@@ -1184,6 +1193,11 @@ fn python_mutation_record(
             end_byte: candidate.end_byte,
         }),
         diff: Some(python_mutation_diff(candidate)),
+        diff_path: None,
+        outcome_path: None,
+        command_log_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
         risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),

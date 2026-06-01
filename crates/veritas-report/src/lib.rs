@@ -1,6 +1,6 @@
 use veritas_plugin_api::{
-    ArtifactKind, Failure, FailureSeverity, GeneratedArtifact, RiskLevel, VerificationReport,
-    VerificationTarget,
+    ArtifactKind, Failure, FailureSeverity, GeneratedArtifact, MutationRecord, MutationStatus,
+    RiskLevel, VerificationReport, VerificationTarget,
 };
 
 pub fn render_markdown(report: &VerificationReport) -> String {
@@ -304,6 +304,9 @@ pub fn render_markdown(report: &VerificationReport) -> String {
             if let Some(repro) = &failure.repro {
                 out.push_str(&format!("  - Repro: `{}`\n", repro.command));
             }
+            if let Some(summary) = mutation_artifact_summary(report, failure) {
+                out.push_str(&format!("  - Mutation artifacts: {summary}\n"));
+            }
         }
         out.push('\n');
     }
@@ -337,10 +340,11 @@ pub fn render_junit(report: &VerificationReport) -> String {
         out.push_str("  <testcase classname=\"veritas\" name=\"verification\" />\n");
     } else {
         for (index, finding) in report.findings.iter().enumerate() {
+            let body = junit_failure_body(report, finding);
             out.push_str(&format!(
                 "  <testcase classname=\"veritas\" name=\"finding-{index}\">\n    <failure message=\"{}\">{}</failure>\n  </testcase>\n",
                 xml_escape(&finding.message),
-                xml_escape(&trim_junit_body(finding))
+                xml_escape(&trim_junit_body(&body))
             ));
         }
     }
@@ -354,6 +358,7 @@ pub fn render_sarif(report: &VerificationReport) -> String {
         .iter()
         .map(|finding| {
             let target = finding_target(report, finding);
+            let message = finding_message_with_mutation_artifacts(report, finding);
             let uri = target
                 .map(|target| target.path.to_string())
                 .or_else(|| {
@@ -379,9 +384,9 @@ pub fn render_sarif(report: &VerificationReport) -> String {
           "level": "{}",
           "message": {{ "text": "{}" }},
           "locations": [{{ "physicalLocation": {{ "artifactLocation": {{ "uri": "{}" }}{} }} }}]
-        }}"#,
+                }}"#,
                 sarif_level(&finding.severity),
-                json_escape(&finding.message),
+                json_escape(&message),
                 json_escape(&uri),
                 region
             )
@@ -500,12 +505,33 @@ fn finding_target<'a>(
     report.targets.iter().find(|target| &target.id == target_id)
 }
 
-fn trim_junit_body(finding: &Failure) -> String {
-    let body = if finding.stdout_excerpt.trim().is_empty() {
-        finding.stderr_excerpt.as_str()
-    } else {
-        finding.stdout_excerpt.as_str()
+fn finding_message_with_mutation_artifacts(
+    report: &VerificationReport,
+    finding: &Failure,
+) -> String {
+    let Some(summary) = mutation_artifact_summary(report, finding) else {
+        return finding.message.clone();
     };
+    format!("{} Mutation artifacts: {summary}", finding.message)
+}
+
+fn junit_failure_body(report: &VerificationReport, finding: &Failure) -> String {
+    let mut body = if finding.stdout_excerpt.trim().is_empty() {
+        finding.stderr_excerpt.clone()
+    } else {
+        finding.stdout_excerpt.clone()
+    };
+    if let Some(summary) = mutation_artifact_summary(report, finding) {
+        if !body.trim().is_empty() {
+            body.push('\n');
+        }
+        body.push_str("Mutation artifacts: ");
+        body.push_str(&summary);
+    }
+    body
+}
+
+fn trim_junit_body(body: &str) -> String {
     const LIMIT: usize = 1200;
     if body.len() <= LIMIT {
         return body.to_string();
@@ -513,6 +539,82 @@ fn trim_junit_body(finding: &Failure) -> String {
     let mut trimmed = body.chars().take(LIMIT).collect::<String>();
     trimmed.push_str("\n... truncated by veritas ...");
     trimmed
+}
+
+fn mutation_artifact_summary(report: &VerificationReport, finding: &Failure) -> Option<String> {
+    let summaries = mutation_records_for_finding(report, finding)
+        .into_iter()
+        .filter_map(|record| {
+            let parts = mutation_artifact_parts(record);
+            if parts.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{} `{}`: {}",
+                    mutation_status_label(record.status),
+                    record.id,
+                    parts.join(", ")
+                ))
+            }
+        })
+        .collect::<Vec<_>>();
+    if summaries.is_empty() {
+        None
+    } else {
+        Some(summaries.join("; "))
+    }
+}
+
+fn mutation_records_for_finding<'a>(
+    report: &'a VerificationReport,
+    finding: &Failure,
+) -> Vec<&'a MutationRecord> {
+    let Some(target_id) = finding.target_id.as_ref() else {
+        return Vec::new();
+    };
+    report
+        .quality
+        .mutation
+        .records
+        .iter()
+        .filter(|record| mutation_record_target_id(record) == *target_id)
+        .collect()
+}
+
+fn mutation_record_target_id(record: &MutationRecord) -> String {
+    format!("{}:{}:{}", record.language, record.path, record.symbol)
+}
+
+fn mutation_artifact_parts(record: &MutationRecord) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(path) = &record.outcome_path {
+        parts.push(format!("outcome `{path}`"));
+    }
+    if let Some(path) = &record.diff_path {
+        parts.push(format!("diff `{path}`"));
+    }
+    if let Some(path) = &record.command_log_path {
+        parts.push(format!("command `{path}`"));
+    }
+    if let Some(path) = &record.stdout_log_path {
+        parts.push(format!("stdout `{path}`"));
+    }
+    if let Some(path) = &record.stderr_log_path {
+        parts.push(format!("stderr `{path}`"));
+    }
+    parts
+}
+
+fn mutation_status_label(status: MutationStatus) -> &'static str {
+    match status {
+        MutationStatus::Runnable => "runnable",
+        MutationStatus::NotCovered => "not covered",
+        MutationStatus::Killed => "killed",
+        MutationStatus::Lived => "lived",
+        MutationStatus::TimedOut => "timed out",
+        MutationStatus::NotViable => "not viable",
+        MutationStatus::Skipped => "skipped",
+    }
 }
 
 fn xml_escape(value: &str) -> String {
@@ -544,8 +646,8 @@ fn command_line(program: &str, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use veritas_plugin_api::{
-        Failure, FailureSeverity, LineRange, ReproCase, RiskLevel, TargetKind, VerificationReport,
-        VerificationTarget,
+        Failure, FailureSeverity, LineRange, MutationRecord, MutationStatus, ReproCase, RiskLevel,
+        TargetKind, VerificationReport, VerificationTarget,
     };
 
     use super::{render_junit, render_sarif};
@@ -647,6 +749,58 @@ mod tests {
 
         assert!(output.contains("truncated by veritas"));
         assert!(output.len() < 1_500);
+    }
+
+    #[test]
+    fn report_formats_include_mutation_artifact_paths() {
+        let mut report = report_with_finding("mutation survived", "still green");
+        report.findings[0].target_id = Some("rust:src/lib.rs:parse_total".to_string());
+        report.quality.mutation.records.push(MutationRecord {
+            id: "rust:src/lib.rs:parse_total:1:2".to_string(),
+            language: "rust".to_string(),
+            path: "src/lib.rs".into(),
+            symbol: "parse_total".to_string(),
+            operator: "comparison".to_string(),
+            domain: "boundary".to_string(),
+            status: MutationStatus::Lived,
+            from: Some("<=".to_string()),
+            to: Some("<".to_string()),
+            line_range: None,
+            source_span: None,
+            diff: Some("- <=\n+ <".to_string()),
+            diff_path: Some(".veritas/mutations/runs/rust-1-2/diffs/mutant.diff".into()),
+            outcome_path: Some(".veritas/mutations/runs/rust-1-2/records/mutant.json".into()),
+            command_log_path: Some(
+                ".veritas/mutations/runs/rust-1-2/logs/mutant.command.log".into(),
+            ),
+            stdout_log_path: Some(".veritas/mutations/runs/rust-1-2/logs/mutant.stdout.log".into()),
+            stderr_log_path: Some(".veritas/mutations/runs/rust-1-2/logs/mutant.stderr.log".into()),
+            risk_note: None,
+            suggested_test: None,
+            skip_reason: None,
+            selected_test_command: None,
+            test_selection_hint: None,
+            test_selection_fallback: None,
+            brittleness_probe: false,
+            command: None,
+            duration_ms: 12,
+        });
+
+        let markdown = super::render_markdown(&report);
+        assert!(markdown.contains("Mutation artifacts: lived"));
+        assert!(markdown.contains("mutant.stdout.log"));
+
+        let sarif = render_sarif(&report);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&sarif).expect("SARIF output should be valid JSON");
+        assert!(parsed["runs"][0]["results"][0]["message"]["text"]
+            .as_str()
+            .expect("message text")
+            .contains("mutant.command.log"));
+
+        let junit = render_junit(&report);
+        assert!(junit.contains("Mutation artifacts: lived"));
+        assert!(junit.contains("mutant.stderr.log"));
     }
 
     fn report_with_finding(message: &str, stdout_excerpt: &str) -> VerificationReport {

@@ -183,6 +183,8 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `.veritas/mutations/*.txt`
 - `.veritas/mutations/*_campaign.json`
 - `.veritas/mutations/*_progress.md`
+- `.veritas/mutations/*_progress.live.md`
+- `.veritas/mutations/runs/*/{records,diffs,logs}/*`
 - `.veritas/package_graph/*.json`
 - `.veritas/symbol_graph/*.json`
 - `.veritas/repros/*.md`

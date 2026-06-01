@@ -316,6 +316,80 @@ fn verifies_go_fixture_and_writes_fuzz_test() {
 
     assert!(fixture.path().join("veritas_fuzz_test.go").exists());
     assert!(fixture.path().join(".veritas/report.json").exists());
+
+    let report = read_report(fixture.path());
+    let records = report["quality"]["mutation"]["records"]
+        .as_array()
+        .expect("mutation records");
+    let survivor = records
+        .iter()
+        .find(|record| record["status"] == "lived" && record["stdout_log_path"].as_str().is_some())
+        .expect("surviving mutant with command logs");
+    for key in [
+        "diff_path",
+        "outcome_path",
+        "command_log_path",
+        "stdout_log_path",
+        "stderr_log_path",
+    ] {
+        let path = survivor[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {key}"));
+        assert!(
+            fixture.path().join(path).exists(),
+            "expected mutation artifact {key} at {path}"
+        );
+    }
+
+    let campaign: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.path().join(".veritas/mutations/go_campaign.json"))
+            .expect("read go mutation campaign"),
+    )
+    .expect("parse go mutation campaign");
+    assert_eq!(
+        campaign["layout"]["run_outputs"]["records"],
+        "records/{mutant}.json"
+    );
+    assert_eq!(
+        campaign["layout"]["run_outputs"]["logs"],
+        "logs/{mutant}.{command,stdout,stderr}.log"
+    );
+    assert!(fixture
+        .path()
+        .join(".veritas/mutations/go_progress.live.md")
+        .exists());
+    let progress = fs::read_to_string(fixture.path().join(".veritas/mutations/go_progress.md"))
+        .expect("read go progress");
+    assert!(progress.contains("Artifacts: outcome"));
+
+    let mut markdown = veritas();
+    markdown
+        .current_dir(fixture.path())
+        .args(["report", "--format", "markdown"]);
+    markdown
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mutation artifacts:"))
+        .stdout(predicate::str::contains(".stdout.log"));
+
+    let mut sarif = veritas();
+    sarif
+        .current_dir(fixture.path())
+        .args(["report", "--format", "sarif"]);
+    sarif
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".stdout.log"));
+
+    let mut junit = veritas();
+    junit
+        .current_dir(fixture.path())
+        .args(["report", "--format", "junit"]);
+    junit
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Mutation artifacts:"))
+        .stdout(predicate::str::contains(".stderr.log"));
 }
 
 #[test]

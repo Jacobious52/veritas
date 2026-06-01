@@ -221,10 +221,10 @@ Reports and artifacts:
 - saves the latest report to `.veritas/report.json`
 - lists and previews candidate mutants without executing tests through `veritas mutants list`, including JSON output, byte-range spans, diff previews, shard/filter controls, risk notes, and suggested tests
 - runs benchmark suites from `veritas-bench.toml` in temporary project copies and scores expected findings, commands, thresholds, and metrics
-- reports mutation score attribution/trends, per-mutant campaign records, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
+- reports mutation score attribution/trends, per-mutant campaign records, per-run survivor diffs/logs, assertion candidates, corpus entries/replay, differential replay cases, budget skips/timeouts, property-test strength, fuzz execution, and persisted repro counts in `.veritas/report.json`
 - summarizes current confidence and baseline deltas with `veritas score`
 - writes API signature baselines and accepted finding baselines
-- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
+- writes coverage feedback, mutation feedback, assertion candidates, corpus entries, replay manifests/results, budget plans, mutation trend JSON, mutation campaign JSON, tail-able mutation run directories under `.veritas/mutations/runs/`, evolutionary candidate suites and generation outcomes with fitness/selection signals, repro notes, candidate verification patches, regression notes, evolution plans, promoted regression scaffolds, and promotion notes
 - `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` now emit before/after proof artifacts and remove generated candidates that regress or fail evaluation
 - `veritas conformance` checks the plugin contract for stable IDs, source-relative paths, function symbols, line ranges, and existing target files
 - cleans generated artifacts with `veritas cleanup`

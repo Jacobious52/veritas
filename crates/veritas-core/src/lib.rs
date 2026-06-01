@@ -8,7 +8,7 @@ use std::{
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -22,8 +22,8 @@ use veritas_plugin_api::{
     EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
     EvolutionGeneration, EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta,
     EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
-    LineRange, MutationAttribution, MutationStatus, PerformanceMetrics, ProjectInfo,
-    QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
+    LineRange, MutationAttribution, MutationRecord, MutationStatus, PerformanceMetrics,
+    ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
     VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
     VerificationStrategy, VerificationTarget,
 };
@@ -3940,6 +3940,132 @@ fn stable_slug(value: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
+pub fn start_mutation_run(root: &Path, language: &str) -> Result<Utf8PathBuf> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let run_dir = Utf8PathBuf::from(format!(
+        ".veritas/mutations/runs/{language}-{millis}-{}",
+        std::process::id()
+    ));
+    for child in ["records", "diffs", "logs"] {
+        let path = root.join(&run_dir).join(child);
+        fs::create_dir_all(&path).with_context(|| {
+            format!("failed to create mutation run directory {}", path.display())
+        })?;
+    }
+
+    let readme = format!(
+        "# {language} Mutation Run\n\n\
+         This directory contains run-output artifacts for one mutation campaign invocation.\n\n\
+         - `records/`: per-mutant JSON outcomes with report paths.\n\
+         - `diffs/`: per-mutant source diffs.\n\
+         - `logs/`: command, stdout, and stderr logs for executed mutants.\n\
+         - `progress.md`: append-only live progress suitable for `tail -f` during long campaigns.\n\n\
+         Durable rollups live in `.veritas/mutations/{language}_campaign.json` and `.veritas/mutations/{language}_progress.md`; cache-like scratch roots stay outside the project and are removed by workers.\n"
+    );
+    fs::write(root.join(&run_dir).join("README.md"), readme)?;
+    fs::write(
+        root.join(&run_dir).join("progress.md"),
+        format!("# {language} mutation live progress\n\n"),
+    )?;
+    fs::write(
+        root.join(format!(".veritas/mutations/{language}_progress.live.md")),
+        format!("# {language} mutation live progress\n\n- Run directory: `{run_dir}`\n\n"),
+    )?;
+    Ok(run_dir)
+}
+
+pub fn persist_mutation_record_artifacts(
+    root: &Path,
+    run_dir: &Utf8PathBuf,
+    record: &mut veritas_plugin_api::MutationRecord,
+    command: Option<&CommandRecord>,
+) -> Result<()> {
+    let slug = {
+        let value = stable_slug(&record.id);
+        if value.is_empty() {
+            "mutant".to_string()
+        } else {
+            value
+        }
+    };
+    let diff_path = run_dir.join("diffs").join(format!("{slug}.diff"));
+    let outcome_path = run_dir.join("records").join(format!("{slug}.json"));
+    let command_log_path = run_dir.join("logs").join(format!("{slug}.command.log"));
+    let stdout_log_path = run_dir.join("logs").join(format!("{slug}.stdout.log"));
+    let stderr_log_path = run_dir.join("logs").join(format!("{slug}.stderr.log"));
+
+    record.diff_path = record.diff.as_ref().map(|_| diff_path.clone());
+    record.outcome_path = Some(outcome_path.clone());
+    if command.is_some() {
+        record.command_log_path = Some(command_log_path.clone());
+        record.stdout_log_path = Some(stdout_log_path.clone());
+        record.stderr_log_path = Some(stderr_log_path.clone());
+    }
+
+    if let Some(diff) = &record.diff {
+        fs::write(root.join(&diff_path), diff)
+            .with_context(|| format!("failed to write mutation diff {}", diff_path))?;
+    }
+    if let Some(command) = command {
+        fs::write(
+            root.join(&command_log_path),
+            format!(
+                "$ {}\nstatus: {:?}\nexit_code: {:?}\nduration_ms: {}\n",
+                command_line(&command.program, &command.args),
+                command.status,
+                command.exit_code,
+                command.duration_ms
+            ),
+        )
+        .with_context(|| format!("failed to write mutation command log {}", command_log_path))?;
+        fs::write(root.join(&stdout_log_path), &command.stdout)
+            .with_context(|| format!("failed to write mutation stdout log {}", stdout_log_path))?;
+        fs::write(root.join(&stderr_log_path), &command.stderr)
+            .with_context(|| format!("failed to write mutation stderr log {}", stderr_log_path))?;
+    }
+
+    let outcome = serde_json::to_string_pretty(record)?;
+    fs::write(root.join(&outcome_path), outcome)
+        .with_context(|| format!("failed to write mutation outcome {}", outcome_path))?;
+
+    let progress_line = format!(
+        "- `{}` `{}` `{}`/`{}` `{}` outcome `{}`{}\n",
+        mutation_status_label(record.status),
+        record.id,
+        record.domain,
+        record.operator,
+        record.symbol,
+        outcome_path,
+        record
+            .command_log_path
+            .as_ref()
+            .map(|path| format!(" log `{path}`"))
+            .unwrap_or_default()
+    );
+    append_file(root.join(run_dir).join("progress.md"), &progress_line)?;
+    append_file(
+        root.join(format!(
+            ".veritas/mutations/{}_progress.live.md",
+            record.language
+        )),
+        &progress_line,
+    )?;
+    Ok(())
+}
+
+fn append_file(path: PathBuf, contents: &str) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("failed to append {}", path.display()))
+}
+
 fn replay_result_artifacts(
     root: &Path,
     language: &str,
@@ -4406,8 +4532,22 @@ fn mutation_campaign_artifacts(
         "layout": {
             "campaign": format!(".veritas/mutations/{language}_campaign.json"),
             "progress": format!(".veritas/mutations/{language}_progress.md"),
+            "durable_rollups": {
+                "campaign": format!(".veritas/mutations/{language}_campaign.json"),
+                "progress": format!(".veritas/mutations/{language}_progress.md"),
+                "trend": format!(".veritas/trends/{language}_mutation.json")
+            },
+            "run_outputs": {
+                "base": format!(".veritas/mutations/runs/{language}-{{millis}}-{{pid}}"),
+                "records": "records/{mutant}.json",
+                "diffs": "diffs/{mutant}.diff",
+                "logs": "logs/{mutant}.{command,stdout,stderr}.log",
+                "tail_progress": format!(".veritas/mutations/{language}_progress.live.md")
+            },
             "repros": ".veritas/repros",
-            "scratch_roots": "created outside the project and removed when workers finish"
+            "cache_and_scratch": {
+                "scratch_roots": "created outside the project and removed when workers finish"
+            }
         },
         "output_statuses": output_statuses,
         "metrics": mutation,
@@ -4446,6 +4586,9 @@ fn mutation_campaign_artifacts(
                 .as_deref()
                 .unwrap_or("add a behavior-focused regression assertion")
         ));
+        if let Some(links) = mutation_record_artifact_links(record) {
+            progress.push_str(&format!("  - Artifacts: {links}\n"));
+        }
     }
     Ok(vec![
         GeneratedArtifact {
@@ -4469,6 +4612,30 @@ fn mutation_campaign_artifacts(
             status: ArtifactStatus::Planned,
         },
     ])
+}
+
+fn mutation_record_artifact_links(record: &MutationRecord) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(path) = &record.outcome_path {
+        parts.push(format!("outcome `{path}`"));
+    }
+    if let Some(path) = &record.diff_path {
+        parts.push(format!("diff `{path}`"));
+    }
+    if let Some(path) = &record.command_log_path {
+        parts.push(format!("command `{path}`"));
+    }
+    if let Some(path) = &record.stdout_log_path {
+        parts.push(format!("stdout `{path}`"));
+    }
+    if let Some(path) = &record.stderr_log_path {
+        parts.push(format!("stderr `{path}`"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 fn filtered_mutation_records(
@@ -5674,6 +5841,11 @@ mod tests {
             line_range: None,
             source_span: None,
             diff: None,
+            diff_path: None,
+            outcome_path: None,
+            command_log_path: None,
+            stdout_log_path: None,
+            stderr_log_path: None,
             risk_note: None,
             suggested_test: None,
             skip_reason: None,

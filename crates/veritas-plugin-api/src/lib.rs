@@ -591,6 +591,16 @@ pub struct MutationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_log_path: Option<Utf8PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk_note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_test: Option<String>,

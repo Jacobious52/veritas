@@ -29,7 +29,7 @@ A production plugin should make these fields stable before it is advertised as a
 - native commands honor plugin time budgets and produce `CommandRecord` entries with duration and status
 - coverage reports either include files/uncovered ranges or an explicit disabled/unavailable summary
 - mutation campaigns report generated, runnable, executed, killed, survived, skipped, and domain/operator attribution
-- mutation records include stable IDs, source-relative paths, symbols, byte spans, optional line ranges, from/to replacements, diff previews, selected test commands, skip reasons, risk notes, and suggested tests
+- mutation records include stable IDs, source-relative paths, symbols, byte spans, optional line ranges, from/to replacements, diff previews, selected test commands, per-run diff/outcome/log paths, skip reasons, risk notes, and suggested tests
 - mutation domains/operators map into the shared taxonomy (`database`, `synchronization`, `concurrency_lifecycle`, `retry_resilience`, `testability`, `brittleness`, and the base comparison/boundary/error domains) so filters, sharding, reporting, and AI repair prompts stay language-neutral
 - replay hooks batch target-level cases when possible and fall back cleanly when a signature is unsupported
 - evolution candidates include proposed action, keep criteria, proof commands, and done-when criteria

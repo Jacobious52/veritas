@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 use veritas_core::{
     config::{GoPluginConfig, MutationConfig},
-    isolated_mutation_root, run_parallel_jobs,
+    isolated_mutation_root, persist_mutation_record_artifacts, run_parallel_jobs,
+    start_mutation_run,
 };
 use veritas_plugin_api::{
     mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
@@ -2194,6 +2195,7 @@ fn run_mutation_checks(
     quality.mutation.baseline_duration_ms = baseline_duration_ms;
     quality.mutation.computed_timeout_seconds = Some(timeout.seconds);
     quality.mutation.timeout_source = Some(timeout.source.clone());
+    let run_dir = start_mutation_run(root, "go")?;
 
     if config.mutation.workers > 1 && !config.mutation.dry_run {
         return run_parallel_mutation_checks(
@@ -2205,6 +2207,7 @@ fn run_mutation_checks(
             baseline_duration_ms,
             run_start,
             plan,
+            run_dir,
             start,
             candidates,
             generated,
@@ -2228,6 +2231,7 @@ fn run_mutation_checks(
                 0,
             );
             record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
             quality.mutation.records.push(record);
             continue;
         }
@@ -2235,7 +2239,7 @@ fn run_mutation_checks(
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2243,14 +2247,16 @@ fn run_mutation_checks(
                 None,
                 Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if config.mutation.dry_run {
             quality.mutation.runnable += 1;
             record_mutation_runnable(&mut quality.mutation.by_domain, &domain);
             record_mutation_runnable(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2258,7 +2264,9 @@ fn run_mutation_checks(
                 None,
                 Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -2358,7 +2366,7 @@ fn run_mutation_checks(
                     path: Some(candidate.path.clone()),
                 }),
             });
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2366,7 +2374,9 @@ fn run_mutation_checks(
                 Some(&command_line(&command.program, &command.args)),
                 Some((&selection.hint, selection.fallback.as_deref())),
                 command.duration_ms,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+            quality.mutation.records.push(record);
         } else {
             let command = representative_command.as_ref();
             let status = if mutant_timed_out {
@@ -2385,7 +2395,7 @@ fn run_mutation_checks(
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 MutationStatus::Killed
             };
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2395,7 +2405,9 @@ fn run_mutation_checks(
                     .as_deref(),
                 Some((&selection.hint, selection.fallback.as_deref())),
                 command.map(|command| command.duration_ms).unwrap_or(0),
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, command)?;
+            quality.mutation.records.push(record);
         }
     }
     quality.mutation.skipped = quality
@@ -2437,6 +2449,7 @@ fn run_parallel_mutation_checks(
     baseline_duration_ms: Option<u128>,
     run_start: Instant,
     plan: &VerificationPlan,
+    run_dir: Utf8PathBuf,
     start: Instant,
     candidates: Vec<MutationCandidate>,
     generated: usize,
@@ -2471,6 +2484,7 @@ fn run_parallel_mutation_checks(
                 0,
             );
             record.skip_reason = Some("filtered by mutation config".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
             quality.mutation.records.push(record);
             continue;
         }
@@ -2478,7 +2492,7 @@ fn run_parallel_mutation_checks(
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2486,7 +2500,9 @@ fn run_parallel_mutation_checks(
                 None,
                 Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
         if budget_nearly_spent(run_start, plan.budget_seconds) {
@@ -2526,7 +2542,7 @@ fn run_parallel_mutation_checks(
                     .as_deref()
                     .unwrap_or("failed to prepare isolated mutation root"),
             )?);
-            quality.mutation.records.push(mutation_record(
+            let mut record = mutation_record(
                 &candidate,
                 &domain,
                 &operator,
@@ -2534,7 +2550,9 @@ fn run_parallel_mutation_checks(
                 None,
                 Some((&selection.hint, selection.fallback.as_deref())),
                 0,
-            ));
+            );
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
             continue;
         }
 
@@ -2564,7 +2582,7 @@ fn run_parallel_mutation_checks(
                     &command,
                     &selection.package_args,
                 ));
-                quality.mutation.records.push(mutation_record(
+                let mut record = mutation_record(
                     &candidate,
                     &domain,
                     &operator,
@@ -2572,13 +2590,17 @@ fn run_parallel_mutation_checks(
                     Some(&command_line(&command.program, &command.args)),
                     Some((&selection.hint, selection.fallback.as_deref())),
                     command.duration_ms,
-                ));
+                );
+                persist_mutation_record_artifacts(root, &run_dir, &mut record, Some(&command))?;
+                quality.mutation.records.push(record);
             }
             MutationStatus::TimedOut => {
                 quality.mutation.timed_out += 1;
                 record_mutation_timed_out(&mut quality.mutation.by_domain, &domain);
                 record_mutation_timed_out(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
@@ -2586,13 +2608,15 @@ fn run_parallel_mutation_checks(
                     MutationStatus::TimedOut,
                     representative_command.as_ref(),
                     &selection,
-                );
+                )?;
             }
             MutationStatus::NotViable => {
                 quality.mutation.not_viable += 1;
                 record_mutation_not_viable(&mut quality.mutation.by_domain, &domain);
                 record_mutation_not_viable(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
@@ -2600,13 +2624,15 @@ fn run_parallel_mutation_checks(
                     MutationStatus::NotViable,
                     representative_command.as_ref(),
                     &selection,
-                );
+                )?;
             }
             _ => {
                 quality.mutation.killed += 1;
                 record_mutation_killed(&mut quality.mutation.by_domain, &domain);
                 record_mutation_killed(&mut quality.mutation.by_operator, &operator);
                 push_go_mutation_record(
+                    root,
+                    &run_dir,
                     &mut quality,
                     &candidate,
                     &domain,
@@ -2614,7 +2640,7 @@ fn run_parallel_mutation_checks(
                     MutationStatus::Killed,
                     representative_command.as_ref(),
                     &selection,
-                );
+                )?;
             }
         }
     }
@@ -2759,7 +2785,10 @@ fn classify_go_mutation_status(commands: &[CommandRecord]) -> MutationStatus {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_go_mutation_record(
+    root: &Path,
+    run_dir: &Utf8PathBuf,
     quality: &mut VerificationQuality,
     candidate: &MutationCandidate,
     domain: &str,
@@ -2767,8 +2796,8 @@ fn push_go_mutation_record(
     status: MutationStatus,
     command: Option<&CommandRecord>,
     selection: &GoMutationSelection,
-) {
-    quality.mutation.records.push(mutation_record(
+) -> Result<()> {
+    let mut record = mutation_record(
         candidate,
         domain,
         operator,
@@ -2778,7 +2807,10 @@ fn push_go_mutation_record(
             .as_deref(),
         Some((&selection.hint, selection.fallback.as_deref())),
         command.map(|command| command.duration_ms).unwrap_or(0),
-    ));
+    );
+    persist_mutation_record_artifacts(root, run_dir, &mut record, command)?;
+    quality.mutation.records.push(record);
+    Ok(())
 }
 
 fn go_mutation_failure(
@@ -3166,6 +3198,11 @@ fn mutation_record(
             end_byte: candidate.end_byte,
         }),
         diff: Some(mutation_diff(candidate)),
+        diff_path: None,
+        outcome_path: None,
+        command_log_path: None,
+        stdout_log_path: None,
+        stderr_log_path: None,
         risk_note: Some(mutation_taxonomy::risk_note(domain, operator).to_string()),
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
