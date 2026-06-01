@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use veritas_plugin_api::{FailureSeverity, RiskLevel};
 
@@ -427,8 +427,32 @@ impl VeritasConfig {
             }
         }
 
+        validate_shard_config("plugins.rust.mutation", &config.plugins.rust.mutation)?;
+        validate_shard_config("plugins.go.mutation", &config.plugins.go.mutation)?;
+        validate_shard_config("plugins.python.mutation", &config.plugins.python.mutation)?;
+
         Ok(config)
     }
+}
+
+fn validate_shard_config(label: &str, mutation: &MutationConfig) -> Result<()> {
+    let Some(shard_count) = mutation.shard_count else {
+        if mutation.shard_index.is_some() {
+            bail!("{label}.shard_index requires {label}.shard_count");
+        }
+        return Ok(());
+    };
+    if shard_count == 0 {
+        bail!("{label}.shard_count must be greater than zero");
+    }
+    if let Some(shard_index) = mutation.shard_index {
+        if shard_index >= shard_count {
+            bail!(
+                "{label}.shard_index {shard_index} must be less than {label}.shard_count {shard_count}"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPartial) {
@@ -502,7 +526,7 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
         config.shard_index = Some(value);
     }
     if let Some(value) = partial.shard_count {
-        config.shard_count = Some(value.max(1));
+        config.shard_count = Some(value);
     }
     if let Some(value) = &partial.output_statuses {
         config.output_statuses = value.clone();
@@ -645,6 +669,25 @@ cpu_quota = "150%"
         assert!(config.plugins.rust.systemd_scope);
         assert_eq!(config.plugins.rust.memory_max.as_deref(), Some("4G"));
         assert_eq!(config.plugins.rust.cpu_quota.as_deref(), Some("150%"));
+    }
+
+    #[test]
+    fn rejects_misconfigured_mutation_shards() {
+        let root = TempRoot::new();
+        fs::write(
+            root.path().join("veritas.toml"),
+            r#"
+[plugins.rust.mutation]
+shard_index = 2
+shard_count = 2
+"#,
+        )
+        .expect("write config");
+
+        let error = VeritasConfig::load(root.path()).expect_err("invalid shard config");
+        assert!(error.to_string().contains(
+            "plugins.rust.mutation.shard_index 2 must be less than plugins.rust.mutation.shard_count 2"
+        ));
     }
 
     struct TempRoot {

@@ -136,6 +136,7 @@ veritas report --format markdown
 veritas report --format sarif
 veritas report --format junit
 veritas mutants list --lang rust --target src/lib.rs --diffs
+veritas mutants list --lang rust --target . --format json --shard-index 0 --shard-count 4
 veritas mutants list --lang go --target . --format json --domain database
 veritas mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
 veritas mutants merge .veritas/mutations/shard-*/rust_campaign.json --output .veritas/mutations/rust_merged.json
