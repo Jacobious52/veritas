@@ -21,12 +21,12 @@ use veritas_core::{
     start_mutation_run, IsolationSetupError,
 };
 use veritas_plugin_api::{
-    mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase, BehaviorReplayObservation,
-    BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport, Failure, FailureSeverity,
-    GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution, MutationIsolationRecord,
-    MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
-    SourceSpan, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
-    VerificationReport, VerificationStrategy, VerificationTarget,
+    finalize_mutation_metrics, mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase,
+    BehaviorReplayObservation, BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport,
+    Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
+    MutationIsolationRecord, MutationRecord, MutationStatus, PluginCapability, ProjectInfo,
+    ReproCase, RiskLevel, RunStatus, SourceSpan, TargetKind, TestRunResult, VerificationPlan,
+    VerificationQuality, VerificationReport, VerificationStrategy, VerificationTarget,
 };
 use walkdir::WalkDir;
 
@@ -2411,24 +2411,9 @@ fn run_mutation_checks(
             quality.mutation.records.push(record);
         }
     }
-    quality.mutation.skipped = quality
-        .mutation
-        .generated
-        .saturating_sub(quality.mutation.executed);
-    quality.mutation.score_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.killed + quality.mutation.survived)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.mutant_coverage_percent =
-        ((quality.mutation.killed + quality.mutation.survived) * 100)
-            .checked_div(
-                quality.mutation.killed + quality.mutation.survived + quality.mutation.not_covered,
-            )
-            .map(|score| score.try_into().unwrap_or(100));
     finalize_mutation_skips(&mut quality.mutation.by_domain);
     finalize_mutation_skips(&mut quality.mutation.by_operator);
+    finalize_mutation_metrics(&mut quality.mutation);
 
     Ok(TestRunResult {
         language: "go".to_string(),
@@ -2647,24 +2632,9 @@ fn run_parallel_mutation_checks(
         }
     }
 
-    quality.mutation.skipped = quality
-        .mutation
-        .generated
-        .saturating_sub(quality.mutation.executed);
-    quality.mutation.score_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.executed)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.efficacy_percent = (quality.mutation.killed * 100)
-        .checked_div(quality.mutation.killed + quality.mutation.survived)
-        .map(|score| score.try_into().unwrap_or(100));
-    quality.mutation.mutant_coverage_percent =
-        ((quality.mutation.killed + quality.mutation.survived) * 100)
-            .checked_div(
-                quality.mutation.killed + quality.mutation.survived + quality.mutation.not_covered,
-            )
-            .map(|score| score.try_into().unwrap_or(100));
     finalize_mutation_skips(&mut quality.mutation.by_domain);
     finalize_mutation_skips(&mut quality.mutation.by_operator);
+    finalize_mutation_metrics(&mut quality.mutation);
 
     Ok(TestRunResult {
         language: "go".to_string(),

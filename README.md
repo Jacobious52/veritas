@@ -189,7 +189,7 @@ Rust verification:
 - discovers public free functions and public methods with Tree-sitter
 - writes package-local `proptest` integration harnesses for supported public free functions, including no-panic and deterministic-output properties where signatures allow them
 - runs `cargo test --all-targets` with configurable jobs, test threads, command timeouts, and optional systemd scope limits
-- runs AST-scoped mutation probes, including comparison, boundary, async/task, synchronization, database, retry, testability, and brittleness domains, then reports surviving mutants
+- runs AST-scoped mutation probes, including comparison, boundary, async/task, synchronization, database, retry, testability, and brittleness domains, then reports correctness survivors separately from behavior-preserving brittleness probes
 - collects `cargo llvm-cov --summary-only` when enabled
 - writes Rust symbol graph artifacts under `.veritas/symbol_graph/`
 

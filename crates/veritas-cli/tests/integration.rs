@@ -252,6 +252,28 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
     assert!(mutation["executed"].as_u64().unwrap_or_default() > 0);
     assert!(mutation["killed"].as_u64().unwrap_or_default() > 0);
     assert!(mutation["survived"].as_u64().unwrap_or_default() > 0);
+    assert!(mutation["correctness_score_percent"].as_u64().is_some());
+    assert!(mutation["brittleness_executed"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(mutation["brittleness_killed"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert!(mutation["brittleness_survival_percent"].as_u64().is_some());
+    assert!(mutation["records"]
+        .as_array()
+        .expect("mutation records")
+        .iter()
+        .any(|record| record["brittleness_probe"] == true
+            && record["status"] == "killed"
+            && record["suggested_test"]
+                .as_str()
+                .is_some_and(|suggested| suggested.contains("loosen"))));
+    let mutation_feedback =
+        fs::read_to_string(fixture.path().join(".veritas/feedback/python_mutation.md"))
+            .expect("read python mutation feedback");
+    assert!(mutation_feedback.contains("Brittleness Probes Killed"));
+    assert!(mutation_feedback.contains("loosen exact ordering"));
     assert!(
         report["quality"]["performance"]["total_ms"]
             .as_u64()

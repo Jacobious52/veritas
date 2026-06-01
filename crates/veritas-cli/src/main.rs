@@ -1318,12 +1318,24 @@ fn mutation_trend_summaries(report: &VerificationReport) -> Vec<String> {
                 .unwrap_or_else(|| "n/a".to_string());
             let survived = mutation["survived"].as_u64().unwrap_or_default();
             let executed = mutation["executed"].as_u64().unwrap_or_default();
+            let correctness = mutation["correctness_score_percent"]
+                .as_u64()
+                .map(|score| format!(", correctness {score}%"))
+                .unwrap_or_default();
+            let brittleness = mutation["brittleness_survival_percent"]
+                .as_u64()
+                .map(|score| {
+                    let killed = mutation["brittleness_killed"].as_u64().unwrap_or_default();
+                    let executed = mutation["brittleness_executed"].as_u64().unwrap_or_default();
+                    format!(", brittleness survival {score}% (killed {killed}/{executed})")
+                })
+                .unwrap_or_default();
             let baseline = value["baseline_delta"]["mutation_score_delta"]
                 .as_i64()
                 .map(|delta| format!(", baseline score delta {delta:+}"))
                 .unwrap_or_default();
             Some(format!(
-                "`{language}` mutation score `{score}` over `{executed}` executed mutants, survivors `{survived}`{baseline}; artifact `{}`",
+                "`{language}` mutation score `{score}` over `{executed}` executed mutants, survivors `{survived}`{correctness}{brittleness}{baseline}; artifact `{}`",
                 artifact.path
             ))
         })
@@ -2819,6 +2831,29 @@ fn print_score(
             println!("- Score: `{}`", score.score);
             println!("- Grade: `{:?}`", score.grade);
             println!("- Summary: {}", score.summary);
+            if score.correctness_mutation_score_percent.is_some()
+                || score.brittleness_probe_survival_percent.is_some()
+            {
+                println!("\n## Mutation Signal\n");
+                println!(
+                    "- Correctness mutation score: `{}`",
+                    score
+                        .correctness_mutation_score_percent
+                        .map(|value| format!("{value}%"))
+                        .unwrap_or_else(|| "n/a".to_string())
+                );
+                if score.brittleness_probes_executed > 0 {
+                    println!(
+                        "- Brittleness probe survival: `{}` (killed `{}` of `{}`)",
+                        score
+                            .brittleness_probe_survival_percent
+                            .map(|value| format!("{value}%"))
+                            .unwrap_or_else(|| "n/a".to_string()),
+                        score.brittleness_probes_killed,
+                        score.brittleness_probes_executed
+                    );
+                }
+            }
             if let Some(delta) = &score.baseline_delta {
                 println!("\n## Baseline Delta\n");
                 println!(
@@ -2916,11 +2951,25 @@ fn score_mode_view(
                 "assertion candidates are not owned tests yet: -{penalty}"
             ));
         }
-        if report.quality.mutation.survived > 0 {
-            let penalty = (report.quality.mutation.survived as i16 * 2).min(12);
+        let correctness_survived = if report.quality.mutation.correctness_executed > 0
+            || report.quality.mutation.brittleness_executed > 0
+        {
+            report.quality.mutation.correctness_survived
+        } else {
+            report.quality.mutation.survived
+        };
+        if correctness_survived > 0 {
+            let penalty = (correctness_survived as i16 * 2).min(12);
             score -= penalty;
             adjustments.push(format!(
-                "surviving mutants remain verified debt: -{penalty}"
+                "surviving correctness mutants remain verified debt: -{penalty}"
+            ));
+        }
+        if report.quality.mutation.brittleness_killed > 0 {
+            let penalty = (report.quality.mutation.brittleness_killed as i16).min(8);
+            score -= penalty;
+            adjustments.push(format!(
+                "killed brittleness probes indicate implementation-coupled tests: -{penalty}"
             ));
         }
     }
@@ -3120,12 +3169,19 @@ fn print_cleanup_summary(summary: &CleanupSummary) {
 
 fn enforce_failure_policy(config: &VeritasConfig, report: &VerificationReport) -> Result<()> {
     if let Some(min_score) = config.policy.min_mutation_score {
-        match report.quality.mutation.score_percent {
+        match report
+            .quality
+            .mutation
+            .correctness_score_percent
+            .or(report.quality.mutation.score_percent)
+        {
             Some(score) if score < min_score => {
-                bail!("mutation score {score}% is below policy minimum {min_score}%");
+                bail!("correctness mutation score {score}% is below policy minimum {min_score}%");
             }
             None => {
-                bail!("mutation score was unavailable but policy minimum is {min_score}%");
+                bail!(
+                    "correctness mutation score was unavailable but policy minimum is {min_score}%"
+                );
             }
             _ => {}
         }
