@@ -708,7 +708,7 @@
                 <span class="kicker">Install</span>
                 <button class="copy" type="button" data-copy="install-code">Copy</button>
               </div>
-              <pre><code id="install-code">cargo install veritas-cli --locked</code></pre>
+              <pre><code id="install-code">curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh</code></pre>
               <div class="actions">
                 <a class="button primary" href="https://github.com/Jacobious52/veritas">View on GitHub</a>
                 <a class="button" href="#agent">Paste this for your agent</a>
@@ -723,7 +723,7 @@
               <pre><code id="agent-code">Install and use Veritas for this repo.
 
 Run:
-cargo install veritas-cli --locked
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
 veritas review-ai
 veritas verify --changed --profile ci
 veritas score

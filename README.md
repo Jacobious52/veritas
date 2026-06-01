@@ -23,7 +23,19 @@ Project site: [Jacobious52.github.io/veritas](https://jacobious52.github.io/veri
 
 ## Install
 
-From crates.io:
+Prebuilt Linux and macOS binaries:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+```
+
+Install a specific release:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | VERSION=v0.1.1 sh
+```
+
+Cargo fallback:
 
 ```bash
 cargo install veritas-cli --locked
@@ -34,10 +46,6 @@ From the Git repository:
 ```bash
 cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
 ```
-
-From GitHub Releases:
-
-Prebuilt binaries are published with release tags when available. Until your platform has a binary asset, use the crates.io or git install path above.
 
 For local development:
 
@@ -108,7 +116,7 @@ next agent step: promote assertion candidate, rerun, keep only if the mutant die
 ## Documentation
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
-- [Install Guide](docs/install.md): cargo, git, release binary, and GitHub Actions setup.
+- [Install Guide](docs/install.md): release binary, cargo, git, and GitHub Actions setup.
 - [AI Verification Loops](docs/ai-verification-loops.md): tangible Rust, Go, Python, and agent-loop examples.
 - [Project Site](docs/index.html): GitHub Pages landing page and public overview.
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
@@ -262,8 +270,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install veritas-cli --locked
+      - run: curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
       - run: veritas verify --changed --profile ci
       - run: veritas repair-prompt --github-step-summary
         if: always()

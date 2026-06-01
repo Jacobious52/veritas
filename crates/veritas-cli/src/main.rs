@@ -27,6 +27,7 @@ use veritas_rust::RustPlugin;
 
 #[derive(Debug, Parser)]
 #[command(name = "veritas")]
+#[command(version)]
 #[command(about = "Adversarial verification harness for AI-written and AI-modified software")]
 struct Cli {
     #[arg(long, global = true, default_value = ".")]

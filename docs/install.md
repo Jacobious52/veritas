@@ -1,6 +1,24 @@
 # Install Veritas
 
-The shortest path is crates.io:
+The shortest path is the prebuilt GitHub Release binary:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+```
+
+Install into a custom directory:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | INSTALL_DIR="$HOME/bin" sh
+```
+
+Install a specific tag:
+
+```bash
+curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | VERSION=v0.1.1 sh
+```
+
+Use crates.io when you prefer building locally:
 
 ```bash
 cargo install veritas-cli --locked
@@ -19,7 +37,8 @@ veritas-x86_64-unknown-linux-gnu.tar.gz
 veritas-aarch64-unknown-linux-gnu.tar.gz
 veritas-x86_64-apple-darwin.tar.gz
 veritas-aarch64-apple-darwin.tar.gz
-veritas-x86_64-pc-windows-msvc.zip
+veritas-checksums.txt
+install.sh
 ```
 
 Consumer GitHub Actions starter:
@@ -34,8 +53,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install veritas-cli --locked
+      - run: curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
       - run: veritas verify --changed --profile ci
       - run: veritas repair-prompt --github-step-summary
         if: always()
@@ -53,7 +71,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Jacobious52/veritas/.github/actions/veritas@main
         with:
           args: verify --changed --profile ci

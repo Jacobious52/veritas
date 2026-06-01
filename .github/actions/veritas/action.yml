@@ -16,7 +16,10 @@ runs:
   steps:
     - name: Install Veritas
       shell: bash
-      run: cargo install veritas-cli --locked
+      run: |
+        export INSTALL_DIR="${RUNNER_TEMP}/veritas-bin"
+        sh "${GITHUB_ACTION_PATH}/../../../install.sh"
+        echo "${INSTALL_DIR}" >> "$GITHUB_PATH"
 
     - name: Run Veritas
       shell: bash
