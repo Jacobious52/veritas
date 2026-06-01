@@ -1,14 +1,14 @@
 # veritas
 
-`veritas` is a CLI-first adversarial verification hub for AI-written and AI-modified software.
+`veritas` is a Tree-sitter testing oracle for AI-written and AI-modified software.
 
-AI agents write code fast. `veritas` tries to break that code before production with mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and a confidence score an agent can act on.
+It is a CLI harness for mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and evolutionary analysis across Rust, Go, Python, and future Tree-sitter language plugins.
 
 It answers the question ordinary test runs often miss:
 
 > Would the current tests catch the subtle mistakes an AI coding agent is likely to make?
 
-`veritas` maps changed code to verification targets with Tree-sitter-backed language plugins, generates reviewable harnesses, runs scoped tests under budgets, and writes CI-friendly reports plus AI-ready repair prompts.
+`veritas` maps changed code to verification targets, generates reviewable harnesses, runs scoped tests under budgets, and writes CI-friendly reports plus AI-ready repair prompts.
 
 The default path is deterministic and does not call an LLM. An optional external planner hook can be enabled for AI-assisted planning while `veritas` still owns execution scope, budgets, and artifact writes.
 
