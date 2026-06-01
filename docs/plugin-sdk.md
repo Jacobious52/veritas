@@ -18,6 +18,23 @@ Optional hooks make plugins more powerful without forcing every language to impl
 - `replay_behaviors` executes seeded differential replay cases in a target-level batch and returns structured observations keyed by case name. `replay_behavior` remains as the compatibility fallback.
 - `promote_regression` turns findings or evolution candidates into owned language tests.
 
+## Contract Checklist
+
+A production plugin should make these fields stable before it is advertised as a first-class language:
+
+- target IDs use `<language>:<relative/path>:<symbol>` for functions and stable package/file IDs for broader targets
+- paths are source-relative and never absolute inside generated artifacts
+- function targets include line ranges whenever Tree-sitter can provide them
+- generated artifacts declare an owning `target_id`, `ArtifactKind`, status, reviewable contents, and cleanup-safe paths
+- native commands honor plugin time budgets and produce `CommandRecord` entries with duration and status
+- coverage reports either include files/uncovered ranges or an explicit disabled/unavailable summary
+- mutation campaigns report generated, runnable, executed, killed, survived, skipped, and domain/operator attribution
+- replay hooks batch target-level cases when possible and fall back cleanly when a signature is unsupported
+- evolution candidates include proposed action, keep criteria, proof commands, and done-when criteria
+- cleanup leaves handwritten tests alone and removes only Veritas-owned generated artifacts
+
+The CLI integration suite verifies this contract across the Rust, Go, and Python fixtures by checking target IDs, symbol metadata, generated artifact shape, phase timings, and report quality fields.
+
 ## Stable Target IDs
 
 Use this shape for function targets:

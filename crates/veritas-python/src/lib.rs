@@ -1315,7 +1315,14 @@ fn is_python_test_file(path: &Path) -> bool {
 }
 
 fn python_test_args(root: &Path) -> (&'static str, Vec<String>) {
-    if prefers_pytest(root) && python_module_available(root, "pytest") {
+    python_test_args_with_availability(root, python_module_available(root, "pytest"))
+}
+
+fn python_test_args_with_availability(
+    root: &Path,
+    pytest_available: bool,
+) -> (&'static str, Vec<String>) {
+    if prefers_pytest(root) && pytest_available {
         (
             "pytest",
             vec!["-m".to_string(), "pytest".to_string(), "-q".to_string()],
@@ -1586,4 +1593,45 @@ fn excerpt(value: &str) -> String {
         lines.push_str("\n...");
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn pytest_preference_uses_pytest_when_available() {
+        let root = unique_test_root("pytest-available");
+        fs::create_dir_all(root.join("tests")).expect("create tests dir");
+        fs::write(root.join("pyproject.toml"), "[tool.pytest.ini_options]\n").expect("pyproject");
+
+        let (runner, args) = python_test_args_with_availability(&root, true);
+
+        fs::remove_dir_all(&root).ok();
+        assert_eq!(runner, "pytest");
+        assert_eq!(args, ["-m", "pytest", "-q"]);
+    }
+
+    #[test]
+    fn pytest_preference_falls_back_to_unittest_when_unavailable() {
+        let root = unique_test_root("pytest-unavailable");
+        fs::create_dir_all(root.join("tests")).expect("create tests dir");
+        fs::write(root.join("tests/test_invoice.py"), "import pytest\n").expect("test file");
+
+        let (runner, args) = python_test_args_with_availability(&root, false);
+
+        fs::remove_dir_all(&root).ok();
+        assert_eq!(runner, "unittest");
+        assert_eq!(args, ["-m", "unittest", "discover"]);
+    }
+
+    fn unique_test_root(name: &str) -> PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_millis();
+        std::env::temp_dir().join(format!("veritas-python-{name}-{millis}"))
+    }
 }

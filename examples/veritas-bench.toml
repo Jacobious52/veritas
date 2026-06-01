@@ -1,3 +1,5 @@
+profile = "seeded"
+
 [[case]]
 name = "rust-invoice"
 path = "rust-invoice"

@@ -711,6 +711,10 @@ pub struct EvolutionCandidateRecord {
     pub fitness: EvolutionFitness,
     pub proposed_action: String,
     pub keep_if: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proof_commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done_when: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

@@ -33,7 +33,7 @@ Before widening a plugin, run the seeded benchmark suite:
 cargo run -p veritas-cli -- --root examples bench
 ```
 
-The suite validates expected detections, required commands, runtime thresholds, mutation scores, property/fuzz quality metrics, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples.
+The suite validates expected detections, required commands, runtime thresholds, mutation scores, property/fuzz quality metrics, and report metrics against temporary copies of realistic Rust and Go examples, so benchmark artifacts do not dirty the source examples. Benchmark manifests can set `profile = "large-repo"` for pinned larger repositories or local scale fixtures; the output rollup records target counts, high-risk targets, total commands, findings, artifacts, phase timings, executed mutants, replay cases, selected evolution candidates, slowest case, and total duration.
 
 For a concrete before/candidate/after evolution run, use the Go evolution fixture:
 

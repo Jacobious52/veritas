@@ -108,6 +108,7 @@ next agent step: promote assertion candidate, rerun, keep only if the mutant die
 ## Documentation
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
+- [Install Guide](docs/install.md): cargo, git, release binary, and GitHub Actions setup.
 - [AI Verification Loops](docs/ai-verification-loops.md): tangible Rust, Go, Python, and agent-loop examples.
 - [Project Site](docs/index.html): GitHub Pages landing page and public overview.
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
@@ -198,7 +199,7 @@ Python verification:
 
 - detects Python projects through `pyproject.toml` or Python source roots
 - discovers functions with Tree-sitter and emits symbol graph artifacts
-- runs `python3 -m unittest discover`
+- runs `python3 -m pytest -q` when the project prefers pytest and it is installed, otherwise falls back to `python3 -m unittest discover`
 - collects coverage through `coverage.py` when enabled
 - runs executable source-range mutation checks for supported comparisons, boolean connectors, and default returns
 - supports replay cases for primitive single-argument and multi-argument public functions

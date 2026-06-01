@@ -17,7 +17,8 @@ use veritas_core::{
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
-    ArtifactKind, FailureSeverity, PerformanceMetrics, RiskLevel, VerificationReport,
+    ArtifactKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionSuite,
+    FailureSeverity, PerformanceMetrics, RiskLevel, TargetKind, VerificationReport,
     VerificationStrategy,
 };
 use veritas_python::PythonPlugin;
@@ -163,8 +164,29 @@ enum VerifyProfile {
 
 #[derive(Debug, Deserialize)]
 struct BenchSuite {
+    #[serde(default)]
+    profile: BenchProfile,
     #[serde(rename = "case")]
     cases: Vec<BenchCase>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum BenchProfile {
+    #[default]
+    Seeded,
+    LargeRepo,
+    Canary,
+}
+
+impl BenchProfile {
+    fn label(self) -> &'static str {
+        match self {
+            BenchProfile::Seeded => "seeded",
+            BenchProfile::LargeRepo => "large-repo",
+            BenchProfile::Canary => "canary",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +194,8 @@ struct BenchCase {
     name: String,
     path: PathBuf,
     language: String,
+    #[serde(default)]
+    profile: Option<BenchProfile>,
     target: Option<PathBuf>,
     #[serde(default)]
     expect_findings: Vec<String>,
@@ -198,14 +222,34 @@ struct BenchCase {
 #[derive(Debug, Serialize)]
 struct BenchReport {
     suite: String,
+    profile: BenchProfile,
     passed: bool,
+    summary: BenchSummary,
     cases: Vec<BenchCaseReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct BenchSummary {
+    total_cases: usize,
+    passed_cases: usize,
+    large_repo_cases: usize,
+    total_duration_ms: u128,
+    total_targets: usize,
+    high_risk_targets: usize,
+    total_commands: usize,
+    total_findings: usize,
+    total_artifacts: usize,
+    total_mutants_executed: usize,
+    total_replay_cases: usize,
+    total_evolution_selected: usize,
+    slowest_case: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct BenchCaseReport {
     name: String,
     language: String,
+    profile: BenchProfile,
     source: String,
     passed: bool,
     metrics: BenchMetrics,
@@ -220,6 +264,11 @@ struct BenchCaseReport {
 
 #[derive(Debug, Serialize)]
 struct BenchMetrics {
+    target_count: usize,
+    function_targets: usize,
+    package_targets: usize,
+    high_risk_targets: usize,
+    coverage_files: usize,
     command_count: usize,
     findings_by_severity: BTreeMap<String, usize>,
     artifacts_by_kind: BTreeMap<String, usize>,
@@ -459,14 +508,18 @@ fn run_bench_suite(root: &Path, suite: Option<&Path>) -> Result<BenchReport> {
     let suite: BenchSuite = toml::from_str(&contents)
         .with_context(|| format!("failed to parse benchmark suite {}", suite_path.display()))?;
 
+    let profile = suite.profile;
     let mut cases = Vec::new();
     for case in suite.cases {
-        cases.push(run_bench_case(suite_root, case)?);
+        cases.push(run_bench_case(suite_root, profile, case)?);
     }
     let passed = cases.iter().all(|case| case.passed);
+    let summary = bench_summary(&cases);
     Ok(BenchReport {
         suite: suite_path.display().to_string(),
+        profile,
         passed,
+        summary,
         cases,
     })
 }
@@ -537,6 +590,37 @@ fn render_ai_repair_prompt(report: &VerificationReport) -> String {
         }
     }
 
+    let selected_candidates = selected_evolution_candidates(report);
+    out.push_str("\n## Selected Evolution Candidates\n\n");
+    if selected_candidates.is_empty() {
+        out.push_str("- No selected evolution candidates were recorded. Use `veritas evolve --dry-run` after the next verification run.\n");
+    } else {
+        for candidate in selected_candidates.iter().take(8) {
+            out.push_str(&format!(
+                "- `{}` `{:?}` fitness `{}%`: {}\n",
+                candidate.id,
+                candidate.kind,
+                candidate.fitness.score_percent,
+                candidate.proposed_action
+            ));
+            out.push_str(&format!("  Target: `{}`\n", candidate.target_id));
+            if !candidate.proof_commands.is_empty() {
+                out.push_str("  Proof commands:\n");
+                for command in candidate.proof_commands.iter().take(3) {
+                    out.push_str(&format!("  - `{command}`\n"));
+                }
+            }
+            if !candidate.done_when.is_empty() {
+                out.push_str("  Done when:\n");
+                for criterion in candidate.done_when.iter().take(3) {
+                    out.push_str(&format!("  - {criterion}\n"));
+                }
+            } else {
+                out.push_str(&format!("  Done when: {}\n", candidate.keep_if));
+            }
+        }
+    }
+
     out.push_str("\n## Repair Rules\n\n");
     out.push_str("- Prefer adding the smallest owned regression, property, fuzz seed, or replay assertion before changing production code.\n");
     out.push_str("- Use `.veritas/assertions`, `.veritas/corpus`, `.veritas/differential`, and `.veritas/evolution` as the work queue.\n");
@@ -550,8 +634,41 @@ fn render_ai_repair_prompt(report: &VerificationReport) -> String {
     out
 }
 
-fn run_bench_case(suite_root: &Path, case: BenchCase) -> Result<BenchCaseReport> {
+fn selected_evolution_candidates(report: &VerificationReport) -> Vec<EvolutionCandidateRecord> {
+    let mut candidates = Vec::new();
+    for artifact in &report.artifacts {
+        if !matches!(
+            artifact.kind,
+            ArtifactKind::EvolutionSuite | ArtifactKind::EvolutionCandidate
+        ) {
+            continue;
+        }
+        if let Ok(suite) = serde_json::from_str::<EvolutionSuite>(&artifact.contents) {
+            candidates.extend(
+                suite
+                    .candidates
+                    .into_iter()
+                    .filter(|candidate| candidate.status == EvolutionCandidateStatus::Selected),
+            );
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .fitness
+            .score_percent
+            .cmp(&left.fitness.score_percent)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    candidates
+}
+
+fn run_bench_case(
+    suite_root: &Path,
+    suite_profile: BenchProfile,
+    case: BenchCase,
+) -> Result<BenchCaseReport> {
     let start = std::time::Instant::now();
+    let profile = case.profile.unwrap_or(suite_profile);
     let source = suite_root.join(&case.path);
     let source = source
         .canonicalize()
@@ -598,6 +715,7 @@ fn run_bench_case(suite_root: &Path, case: BenchCase) -> Result<BenchCaseReport>
         Ok(BenchCaseReport {
             name: case.name,
             language: case.language,
+            profile,
             source: source.display().to_string(),
             passed,
             metrics,
@@ -711,6 +829,27 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
     }
 
     BenchMetrics {
+        target_count: report.targets.len(),
+        function_targets: report
+            .targets
+            .iter()
+            .filter(|target| target.kind == TargetKind::Function)
+            .count(),
+        package_targets: report
+            .targets
+            .iter()
+            .filter(|target| target.kind == TargetKind::Package)
+            .count(),
+        high_risk_targets: report
+            .targets
+            .iter()
+            .filter(|target| target.risk == RiskLevel::High)
+            .count(),
+        coverage_files: report
+            .coverage
+            .iter()
+            .map(|coverage| coverage.files.len())
+            .sum(),
         command_count: report
             .runs
             .iter()
@@ -874,6 +1013,37 @@ fn bench_threshold_failures(
     failures
 }
 
+fn bench_summary(cases: &[BenchCaseReport]) -> BenchSummary {
+    let slowest_case = cases
+        .iter()
+        .max_by_key(|case| case.duration_ms)
+        .map(|case| case.name.clone());
+    BenchSummary {
+        total_cases: cases.len(),
+        passed_cases: cases.iter().filter(|case| case.passed).count(),
+        large_repo_cases: cases
+            .iter()
+            .filter(|case| case.profile == BenchProfile::LargeRepo)
+            .count(),
+        total_duration_ms: cases.iter().map(|case| case.duration_ms).sum(),
+        total_targets: cases.iter().map(|case| case.metrics.target_count).sum(),
+        high_risk_targets: cases
+            .iter()
+            .map(|case| case.metrics.high_risk_targets)
+            .sum(),
+        total_commands: cases.iter().map(|case| case.metrics.command_count).sum(),
+        total_findings: cases.iter().map(|case| case.findings).sum(),
+        total_artifacts: cases.iter().map(|case| case.artifacts).sum(),
+        total_mutants_executed: cases.iter().map(|case| case.metrics.mutants_executed).sum(),
+        total_replay_cases: cases.iter().map(|case| case.metrics.replay_cases).sum(),
+        total_evolution_selected: cases
+            .iter()
+            .map(|case| case.metrics.evolution_selected)
+            .sum(),
+        slowest_case,
+    }
+}
+
 fn bench_command_line(program: &str, args: &[String]) -> String {
     std::iter::once(program)
         .chain(args.iter().map(String::as_str))
@@ -888,16 +1058,47 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
             let passed = report.cases.iter().filter(|case| case.passed).count();
             println!("# veritas bench\n");
             println!("- Suite: `{}`", report.suite);
+            println!("- Profile: `{}`", report.profile.label());
             println!("- Cases: `{passed}/{}` passed", report.cases.len());
             println!(
                 "- Status: `{}`",
                 if report.passed { "passed" } else { "failed" }
             );
+            println!("\n## Summary\n");
+            println!(
+                "- Totals: cases `{}`, targets `{}`, high-risk targets `{}`, commands `{}`, findings `{}`, artifacts `{}`",
+                report.summary.total_cases,
+                report.summary.total_targets,
+                report.summary.high_risk_targets,
+                report.summary.total_commands,
+                report.summary.total_findings,
+                report.summary.total_artifacts
+            );
+            println!(
+                "- Verification signal: mutants executed `{}`, replay cases `{}`, selected evolution candidates `{}`",
+                report.summary.total_mutants_executed,
+                report.summary.total_replay_cases,
+                report.summary.total_evolution_selected
+            );
+            println!("- Large-repo cases: `{}`", report.summary.large_repo_cases);
+            if let Some(slowest_case) = &report.summary.slowest_case {
+                println!("- Slowest case: `{slowest_case}`");
+            }
+            println!("- Total duration: `{}ms`", report.summary.total_duration_ms);
             for case in &report.cases {
                 println!("\n## {}", case.name);
                 println!("- Language: `{}`", case.language);
+                println!("- Profile: `{}`", case.profile.label());
+                println!(
+                    "- Targets: `{}` (functions `{}`, packages `{}`, high-risk `{}`)",
+                    case.metrics.target_count,
+                    case.metrics.function_targets,
+                    case.metrics.package_targets,
+                    case.metrics.high_risk_targets
+                );
                 println!("- Findings: `{}`", case.findings);
                 println!("- Artifacts: `{}`", case.artifacts);
+                println!("- Coverage files: `{}`", case.metrics.coverage_files);
                 println!("- Commands: `{}`", case.metrics.command_count);
                 if case.metrics.phase_timings.total_ms > 0 {
                     println!(
@@ -1121,6 +1322,18 @@ fn print_evolve_summary(summary: &EvolveSummary) {
         println!("- Fitness: `{}%`", candidate.fitness_percent);
         println!("- Action: {}", candidate.proposed_action);
         println!("- Keep if: {}", candidate.keep_if);
+        if !candidate.proof_commands.is_empty() {
+            println!("- Proof commands:");
+            for command in &candidate.proof_commands {
+                println!("  - `{command}`");
+            }
+        }
+        if !candidate.done_when.is_empty() {
+            println!("- Done when:");
+            for criterion in &candidate.done_when {
+                println!("  - {criterion}");
+            }
+        }
         if candidate.applied {
             println!("- Result: `applied`");
         } else if let Some(reason) = &candidate.skipped_reason {

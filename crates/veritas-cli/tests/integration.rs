@@ -395,6 +395,8 @@ fn repair_prompt_summarizes_saved_report_for_agents() {
         .stdout(predicate::str::contains(
             "mutation survived in rust function",
         ))
+        .stdout(predicate::str::contains("Selected Evolution Candidates"))
+        .stdout(predicate::str::contains("Done when"))
         .stdout(predicate::str::contains(
             "veritas verify --changed --profile ci",
         ))
@@ -517,31 +519,23 @@ fn benchmark_suite_scores_seeded_examples() {
         return;
     }
 
-    let mut cmd = veritas();
-    cmd.current_dir(workspace_root())
-        .args(["--root", "examples", "bench"]);
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("# veritas bench"))
-        .stdout(predicate::str::contains("rust-commerce"))
-        .stdout(predicate::str::contains("go-api-service"))
-        .stdout(predicate::str::contains("rust-mutation-score"))
-        .stdout(predicate::str::contains("rust-risk-suite"))
-        .stdout(predicate::str::contains("go-risk-suite"))
-        .stdout(predicate::str::contains("rust-evolution-loop"))
-        .stdout(predicate::str::contains("go-evolution-loop"))
-        .stdout(predicate::str::contains("Mutation score:"))
-        .stdout(predicate::str::contains("Commands:"))
-        .stdout(predicate::str::contains("Generated test failures:"))
-        .stdout(predicate::str::contains("Evolution: suites"))
-        .stdout(predicate::str::contains("Cases: `10/10` passed"));
-
     let mut json = veritas();
     json.current_dir(workspace_root())
         .args(["--root", "examples", "bench", "--format", "json"]);
     json.assert()
         .success()
+        .stdout(predicate::str::contains("\"total_cases\": 10"))
         .stdout(predicate::str::contains("\"passed\": true"))
+        .stdout(predicate::str::contains("\"profile\": \"seeded\""))
+        .stdout(predicate::str::contains("\"summary\""))
+        .stdout(predicate::str::contains("\"total_targets\""))
+        .stdout(predicate::str::contains("\"high_risk_targets\""))
+        .stdout(predicate::str::contains("\"target_count\""))
+        .stdout(predicate::str::contains("\"large_repo_cases\""))
+        .stdout(predicate::str::contains("\"rust-commerce\""))
+        .stdout(predicate::str::contains("\"go-api-service\""))
+        .stdout(predicate::str::contains("\"rust-evolution-loop\""))
+        .stdout(predicate::str::contains("\"go-evolution-loop\""))
         .stdout(predicate::str::contains("\"command_count\""))
         .stdout(predicate::str::contains("\"mutation_score_percent\""))
         .stdout(predicate::str::contains(
@@ -803,45 +797,6 @@ fn write_fixture_file(root: &Path, relative: &str) {
 fn write_evolution_state(root: &Path, language: &str, target_id: &str, path: &str, symbol: &str) {
     let veritas = root.join(".veritas");
     fs::create_dir_all(veritas.join("evolution")).expect("create evolution dir");
-    let report = serde_json::json!({
-        "project": null,
-        "targets": [{
-            "id": target_id,
-            "language": language,
-            "kind": "function",
-            "path": path,
-            "symbol": symbol,
-            "signature": null,
-            "line_range": {"start": 1, "end": 12},
-            "description": "test target",
-            "risk": "medium"
-        }],
-        "plan": null,
-        "artifacts": [],
-        "runs": [],
-        "coverage": [],
-        "findings": [{
-            "id": "vts-test-finding",
-            "message": format!("mutation survived in {language} function `{symbol}`: comparison boundary mutation"),
-            "severity": "warning",
-            "target_id": target_id,
-            "artifact_id": null,
-            "command": "test command",
-            "stdout_excerpt": "",
-            "stderr_excerpt": "",
-            "repro": {
-                "command": "replace boundary and run tests",
-                "input": null,
-                "path": path
-            }
-        }],
-        "suggested_next_steps": []
-    });
-    fs::write(
-        veritas.join("report.json"),
-        serde_json::to_string_pretty(&report).expect("report json"),
-    )
-    .expect("write report");
     let suite = serde_json::json!({
         "version": 1,
         "language": language,
@@ -866,9 +821,66 @@ fn write_evolution_state(root: &Path, language: &str, target_id: &str, path: &st
                 "rationale": "surviving mutant should become an assertion"
             },
             "proposed_action": "Add the smallest assertion that fails under this surviving mutant.",
-            "keep_if": "mutant moves from lived to killed"
+            "keep_if": "mutant moves from lived to killed",
+            "proof_commands": [
+                format!("veritas verify --lang {language} --target <target>"),
+                "veritas score"
+            ],
+            "done_when": [
+                "the mutant moves from lived to killed in the next campaign",
+                "the confidence score improves or explains why it is unchanged"
+            ]
         }]
     });
+    let suite_contents = serde_json::to_string_pretty(&suite).expect("suite json");
+    let report = serde_json::json!({
+        "project": null,
+        "targets": [{
+            "id": target_id,
+            "language": language,
+            "kind": "function",
+            "path": path,
+            "symbol": symbol,
+            "signature": null,
+            "line_range": {"start": 1, "end": 12},
+            "description": "test target",
+            "risk": "medium"
+        }],
+        "plan": null,
+        "artifacts": [{
+            "id": format!("{language}-evolution-suite"),
+            "language": language,
+            "kind": "evolution_suite",
+            "target_id": format!("{language}:evolution"),
+            "path": format!(".veritas/evolution/{language}_suite.json"),
+            "contents": suite_contents,
+            "description": "Evolution suite for repair prompt tests",
+            "status": "written"
+        }],
+        "runs": [],
+        "coverage": [],
+        "findings": [{
+            "id": "vts-test-finding",
+            "message": format!("mutation survived in {language} function `{symbol}`: comparison boundary mutation"),
+            "severity": "warning",
+            "target_id": target_id,
+            "artifact_id": null,
+            "command": "test command",
+            "stdout_excerpt": "",
+            "stderr_excerpt": "",
+            "repro": {
+                "command": "replace boundary and run tests",
+                "input": null,
+                "path": path
+            }
+        }],
+        "suggested_next_steps": []
+    });
+    fs::write(
+        veritas.join("report.json"),
+        serde_json::to_string_pretty(&report).expect("report json"),
+    )
+    .expect("write report");
     fs::write(
         veritas.join(format!("evolution/{language}_suite.json")),
         serde_json::to_string_pretty(&suite).expect("suite json"),

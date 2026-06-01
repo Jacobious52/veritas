@@ -63,6 +63,8 @@ pub struct EvolveCandidateSummary {
     pub fitness_percent: u8,
     pub proposed_action: String,
     pub keep_if: String,
+    pub proof_commands: Vec<String>,
+    pub done_when: Vec<String>,
     pub applied: bool,
     pub skipped_reason: Option<String>,
     pub written_paths: Vec<Utf8PathBuf>,
@@ -1423,6 +1425,8 @@ fn evolve_candidate_summary(
         fitness_percent: candidate.fitness.score_percent,
         proposed_action: candidate.proposed_action.clone(),
         keep_if: candidate.keep_if.clone(),
+        proof_commands: candidate.proof_commands.clone(),
+        done_when: candidate.done_when.clone(),
         applied: false,
         skipped_reason: None,
         written_paths: Vec::new(),
@@ -1467,6 +1471,18 @@ fn applied_evolution_candidate_artifact(
     contents.push_str("\n\n## Keep If\n\n");
     contents.push_str(&candidate.keep_if);
     contents.push('\n');
+    if !candidate.proof_commands.is_empty() {
+        contents.push_str("\n## Proof Commands\n\n");
+        for command in &candidate.proof_commands {
+            contents.push_str(&format!("- `{command}`\n"));
+        }
+    }
+    if !candidate.done_when.is_empty() {
+        contents.push_str("\n## Done When\n\n");
+        for criterion in &candidate.done_when {
+            contents.push_str(&format!("- {criterion}\n"));
+        }
+    }
 
     GeneratedArtifact {
         id: format!("{}-evolution-applied-{index}", candidate.language),
@@ -3355,6 +3371,8 @@ fn evolution_candidates(
             ),
             proposed_action: action.to_string(),
             keep_if: keep_if.to_string(),
+            proof_commands: evolution_proof_commands(language),
+            done_when: evolution_done_when(record.status, score),
         });
     }
 
@@ -3394,6 +3412,12 @@ fn evolution_candidates(
             keep_if:
                 "the promoted regression passes normally and prevents the finding from recurring"
                     .to_string(),
+            proof_commands: evolution_proof_commands(language),
+            done_when: vec![
+                "the promoted regression is owned by the target package".to_string(),
+                "the original generated-test or fuzz finding no longer appears".to_string(),
+                "the confidence score is stable or improved".to_string(),
+            ],
         });
     }
 
@@ -3457,7 +3481,70 @@ fn evolution_candidate_from_artifact(
         ),
         proposed_action: proposed_action.to_string(),
         keep_if: keep_if.to_string(),
+        proof_commands: evolution_proof_commands(language),
+        done_when: evolution_done_when_for_kind(kind, score),
     }
+}
+
+fn evolution_proof_commands(language: &str) -> Vec<String> {
+    vec![
+        format!("veritas verify --lang {language} --target <target>"),
+        "veritas score".to_string(),
+        "veritas evolve --dry-run".to_string(),
+    ]
+}
+
+fn evolution_done_when(status: MutationStatus, score: u8) -> Vec<String> {
+    match status {
+        MutationStatus::Lived => vec![
+            "the mutant moves from lived to killed in the next campaign".to_string(),
+            "the new assertion fails against the mutant and passes against production code"
+                .to_string(),
+            "the confidence score improves or explains why it is unchanged".to_string(),
+        ],
+        MutationStatus::NotCovered => vec![
+            "mutant coverage improves for the target".to_string(),
+            "the new test asserts behavior rather than implementation details".to_string(),
+        ],
+        MutationStatus::TimedOut => vec![
+            "the command finishes inside the configured budget".to_string(),
+            "the mutant receives a concrete killed, lived, or not viable status".to_string(),
+        ],
+        _ => evolution_done_when_for_score(score),
+    }
+}
+
+fn evolution_done_when_for_kind(kind: EvolutionCandidateKind, score: u8) -> Vec<String> {
+    match kind {
+        EvolutionCandidateKind::Property => vec![
+            "property strength increases without adding flaky assumptions".to_string(),
+            "generated property tests pass under the normal verification command".to_string(),
+        ],
+        EvolutionCandidateKind::Fuzz => vec![
+            "the fuzz seed is persisted or promoted into the corpus".to_string(),
+            "the seed replays deterministically before acceptance".to_string(),
+        ],
+        EvolutionCandidateKind::Replay => vec![
+            "the replay case captures the expected old/new behavior".to_string(),
+            "any accepted behavior drift is documented or baselined".to_string(),
+        ],
+        EvolutionCandidateKind::Regression => vec![
+            "the regression test fails before the fix and passes after it".to_string(),
+            "the original finding disappears from the next Veritas report".to_string(),
+        ],
+        EvolutionCandidateKind::Mutation => evolution_done_when(MutationStatus::Lived, score),
+        EvolutionCandidateKind::Budget => vec![
+            "the skipped or timed-out command now produces useful signal".to_string(),
+            "runtime remains inside the configured profile budget".to_string(),
+        ],
+    }
+}
+
+fn evolution_done_when_for_score(score: u8) -> Vec<String> {
+    vec![
+        "the candidate produces a measurable verification signal".to_string(),
+        format!("the next evaluation keeps fitness at or above {score}%"),
+    ]
 }
 
 fn assertion_candidate_domain(artifact: &GeneratedArtifact) -> Option<String> {

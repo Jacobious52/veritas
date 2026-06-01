@@ -100,7 +100,9 @@ Core also exposes a plugin-generic isolated mutation root helper. A language plu
 
 ## Benchmark Suites
 
-`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Its JSON output includes command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, mutation worker metrics, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, persisted repro counts, evolution candidates, and selected evolution candidates. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
+`veritas bench` reads a `veritas-bench.toml` manifest, copies each case into a temporary directory, runs normal verification, and scores expected finding substrings, artifact kinds, command substrings, and thresholds. Suites can be marked `profile = "seeded"`, `profile = "large-repo"`, or `profile = "canary"`; individual cases can override the suite profile.
+
+Markdown and JSON output include a summary rollup for total cases, target counts, high-risk targets, commands, findings, artifacts, executed mutants, replay cases, selected evolution candidates, large-repo case count, total duration, and slowest case. Per-case metrics include target/function/package counts, coverage file counts, phase timings, command counts, finding counts by severity, artifact counts by kind, mutation score, mutant generated/executed/killed/survived/skipped counts, mutation worker metrics, generated-test failure counts, assertion candidate counts, corpus entries, replay cases, budget skips/timeouts, fuzz execution/failure counts, persisted repro counts, evolution candidates, and selected evolution candidates. This keeps seeded benchmark projects clean while giving generation, fuzzing, mutation, and reporting changes a concrete regression scoreboard.
 
 ## Tree-Sitter Use
 
