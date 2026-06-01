@@ -817,6 +817,7 @@ fn apply_mutants_list_config(
             shard_count,
             ..
         } => {
+            validate_mutants_shard_flags(*shard_index, *shard_count)?;
             for mutation in [
                 &mut config.plugins.rust.mutation,
                 &mut config.plugins.go.mutation,
@@ -842,7 +843,7 @@ fn apply_mutants_list_config(
                     mutation.exclude_symbols = exclude_symbol.clone();
                 }
                 mutation.shard_index = *shard_index;
-                mutation.shard_count = shard_count.map(|count| count.max(1));
+                mutation.shard_count = *shard_count;
             }
         }
         MutantsCommand::Run {
@@ -860,6 +861,27 @@ fn apply_mutants_list_config(
             }
         }
         MutantsCommand::Merge { .. } => {}
+    }
+    Ok(())
+}
+
+fn validate_mutants_shard_flags(
+    shard_index: Option<usize>,
+    shard_count: Option<usize>,
+) -> Result<()> {
+    let Some(shard_count) = shard_count else {
+        if shard_index.is_some() {
+            bail!("--shard-index requires --shard-count");
+        }
+        return Ok(());
+    };
+    if shard_count == 0 {
+        bail!("--shard-count must be greater than zero");
+    }
+    if let Some(shard_index) = shard_index {
+        if shard_index >= shard_count {
+            bail!("--shard-index {shard_index} must be less than --shard-count {shard_count}");
+        }
     }
     Ok(())
 }

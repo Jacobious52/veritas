@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -425,21 +426,17 @@ command_timeout_seconds = 20
 #[test]
 fn mutants_list_previews_advanced_records_without_executing_tests() {
     let fixture = copy_example("rust-concurrency-db");
-    let mut cmd = veritas();
-    cmd.current_dir(fixture.path()).args([
-        "mutants",
-        "list",
-        "--lang",
-        "rust",
-        "--target",
-        "src/lib.rs",
-        "--format",
-        "json",
-        "--domain",
-        "synchronization",
-    ]);
-    let output = cmd.assert().success().get_output().stdout.clone();
-    let json: Value = serde_json::from_slice(&output).expect("mutants list json");
+    let json = mutants_list_json(
+        fixture.path(),
+        &[
+            "--lang",
+            "rust",
+            "--target",
+            "src/lib.rs",
+            "--domain",
+            "synchronization",
+        ],
+    );
     assert!(json["count"].as_u64().expect("count") > 0);
     let records = json["records"].as_array().expect("records");
     assert!(records.iter().any(|record| {
@@ -461,6 +458,115 @@ fn mutants_list_previews_advanced_records_without_executing_tests() {
         .as_u64()
         .is_some_and(|count| count > 0));
     assert_eq!(json["plugins"][0]["invalid_mutation_records"], 0);
+}
+
+#[test]
+fn mutants_list_shards_cover_unsharded_candidates_without_duplicates() {
+    let fixture = copy_example("rust-concurrency-db");
+    let base_args = [
+        "--lang",
+        "rust",
+        "--target",
+        "src/lib.rs",
+        "--domain",
+        "synchronization",
+    ];
+    let unsharded = mutants_list_json(fixture.path(), &base_args);
+    let unsharded_ids = mutant_ids(&unsharded);
+    assert!(
+        unsharded_ids.len() > 2,
+        "fixture should produce shardable IDs"
+    );
+
+    let mut union = BTreeSet::new();
+    let mut shard_files = Vec::new();
+    for shard_index in 0..3 {
+        let shard_index_string = shard_index.to_string();
+        let shard = mutants_list_json(
+            fixture.path(),
+            &[
+                "--lang",
+                "rust",
+                "--target",
+                "src/lib.rs",
+                "--domain",
+                "synchronization",
+                "--shard-index",
+                &shard_index_string,
+                "--shard-count",
+                "3",
+            ],
+        );
+        for id in mutant_ids(&shard) {
+            assert!(union.insert(id.clone()), "duplicate shard mutant ID: {id}");
+        }
+        let shard_file = fixture.path().join(format!("shard-{shard_index}.json"));
+        fs::write(
+            &shard_file,
+            serde_json::to_vec_pretty(&shard).expect("encode shard"),
+        )
+        .expect("write shard file");
+        shard_files.push(format!("shard-{shard_index}.json"));
+    }
+
+    assert_eq!(union, unsharded_ids);
+
+    let mut merge = veritas();
+    merge
+        .current_dir(fixture.path())
+        .arg("mutants")
+        .arg("merge")
+        .args(&shard_files)
+        .args(["--format", "json"]);
+    let output = merge.assert().success().get_output().stdout.clone();
+    let merged: Value = serde_json::from_slice(&output).expect("merged mutants json");
+    assert_eq!(
+        merged["record_count"].as_u64().expect("record count"),
+        unsharded_ids.len() as u64
+    );
+}
+
+#[test]
+fn mutants_list_rejects_invalid_shard_flags() {
+    let fixture = copy_example("rust-concurrency-db");
+
+    let mut missing_count = veritas();
+    missing_count.current_dir(fixture.path()).args([
+        "mutants",
+        "list",
+        "--lang",
+        "rust",
+        "--target",
+        "src/lib.rs",
+        "--shard-index",
+        "1",
+    ]);
+    missing_count
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--shard-index requires --shard-count",
+        ));
+
+    let mut out_of_range = veritas();
+    out_of_range.current_dir(fixture.path()).args([
+        "mutants",
+        "list",
+        "--lang",
+        "rust",
+        "--target",
+        "src/lib.rs",
+        "--shard-index",
+        "3",
+        "--shard-count",
+        "3",
+    ]);
+    out_of_range
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--shard-index 3 must be less than --shard-count 3",
+        ));
 }
 
 #[test]
@@ -1089,6 +1195,31 @@ fn scan_fixture_json(name: &str) -> Value {
         .args(["scan", "--format", "json"]);
     let output = cmd.assert().success().get_output().stdout.clone();
     serde_json::from_slice(&output).expect("parse scan json")
+}
+
+fn mutants_list_json(root: &Path, args: &[&str]) -> Value {
+    let mut cmd = veritas();
+    cmd.current_dir(root)
+        .arg("mutants")
+        .arg("list")
+        .args(args)
+        .args(["--format", "json"]);
+    let output = cmd.assert().success().get_output().stdout.clone();
+    serde_json::from_slice(&output).expect("mutants list json")
+}
+
+fn mutant_ids(value: &Value) -> BTreeSet<String> {
+    value["records"]
+        .as_array()
+        .expect("mutation records")
+        .iter()
+        .map(|record| {
+            record["id"]
+                .as_str()
+                .expect("mutation record id")
+                .to_string()
+        })
+        .collect()
 }
 
 fn assert_target_contract(scan: &Value, id: &str, path: &str, symbol: &str) {

@@ -125,6 +125,68 @@ Mutation execution records the selected test command, the selection hint, and an
 
 Filter precedence is include first, then exclude, then sharding. Filter patterns support `exact:`, `glob:`/`*`, and `regex:` prefixes; unprefixed values are legacy substring matches. `include_target_ids` and `exclude_target_ids` operate on `lang:path:symbol`, while mutant ID filters operate on `lang:path:symbol:start:end`. Use `veritas:skip-mutation` inside a function for local source-owned skips, and `report_filtered = true` when CI should account for filtered mutants as skipped records.
 
+For CI sharding, run `mutants list` once per shard to create a deterministic campaign file, execute that shard with `mutants run --from-campaign`, upload each shard result, and merge the campaign records in a follow-up job. `--shard-index` is zero-based and must be less than `--shard-count`; providing an index without a count or a zero count fails before verification starts.
+
+```yaml
+name: veritas-mutants
+
+on:
+  pull_request:
+
+jobs:
+  mutation-shard:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install veritas-cli --locked
+      - run: mkdir -p .veritas/mutations/shards/${{ matrix.shard_index }}
+      - name: Discover shard mutants
+        run: |
+          veritas mutants list \
+            --lang rust \
+            --target . \
+            --format json \
+            --shard-index ${{ matrix.shard_index }} \
+            --shard-count 4 \
+            > .veritas/mutations/shards/${{ matrix.shard_index }}/rust_list.json
+      - name: Execute shard mutants
+        run: |
+          veritas mutants run \
+            --lang rust \
+            --target . \
+            --from-campaign .veritas/mutations/shards/${{ matrix.shard_index }}/rust_list.json \
+            --status runnable \
+            --format json \
+            > .veritas/mutations/shards/${{ matrix.shard_index }}/rust_run.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veritas-mutants-${{ matrix.shard_index }}
+          path: .veritas/mutations/shards/${{ matrix.shard_index }}/rust_run.json
+
+  mutation-merge:
+    needs: mutation-shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: veritas-mutants-*
+          path: .veritas/mutations/merged-inputs
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install veritas-cli --locked
+      - run: |
+          veritas mutants merge \
+            .veritas/mutations/merged-inputs/*.json \
+            --output .veritas/mutations/rust_merged.json \
+            --format markdown
+```
+
 Set `baseline_timing = true` when you want cargo-mutants-style adaptive timeout metadata. Veritas records the baseline test duration, the computed mutation timeout, the timeout source, and any timed-out mutant records. Recurring timeouts should usually become explicit skip/filter rules or deterministic test seams rather than ever-larger time budgets.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
