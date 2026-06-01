@@ -85,6 +85,7 @@ pub struct MutationConfig {
     pub include_mutant_ids: Vec<String>,
     pub exclude_mutant_ids: Vec<String>,
     pub dry_run: bool,
+    pub max_mutants: Option<usize>,
     pub workers: usize,
     pub test_cpu: Option<usize>,
     pub timeout_coefficient: u64,
@@ -197,6 +198,7 @@ struct MutationConfigPartial {
     include_mutant_ids: Option<Vec<String>>,
     exclude_mutant_ids: Option<Vec<String>>,
     dry_run: Option<bool>,
+    max_mutants: Option<usize>,
     workers: Option<usize>,
     test_cpu: Option<usize>,
     timeout_coefficient: Option<u64>,
@@ -451,6 +453,9 @@ fn apply_mutation_config(config: &mut MutationConfig, partial: &MutationConfigPa
     if let Some(value) = partial.dry_run {
         config.dry_run = value;
     }
+    if let Some(value) = partial.max_mutants {
+        config.max_mutants = Some(value.max(1));
+    }
     if let Some(value) = partial.workers {
         config.workers = value;
     }
@@ -514,6 +519,7 @@ min_mutant_coverage = 80
 disabled_operators = ["loop"]
 exclude_paths = ["vendor/", "_generated.go$"]
 dry_run = true
+max_mutants = 17
 workers = 4
 test_cpu = 2
 timeout_coefficient = 3
@@ -563,6 +569,7 @@ cpu_quota = "150%"
             vec!["loop"]
         );
         assert!(config.plugins.rust.mutation.dry_run);
+        assert_eq!(config.plugins.rust.mutation.max_mutants, Some(17));
         assert_eq!(config.plugins.rust.mutation.test_cpu, Some(2));
         assert_eq!(config.plugins.rust.mutation.timeout_coefficient, 3);
         assert_eq!(

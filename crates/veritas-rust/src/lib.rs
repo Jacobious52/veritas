@@ -1636,7 +1636,7 @@ fn run_mutation_checks(
         );
     }
 
-    for candidate in candidates.into_iter().take(8) {
+    for candidate in candidates.into_iter().take(mutation_max_mutants(config)) {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
@@ -1845,7 +1845,11 @@ fn run_parallel_mutation_checks(
 
     let mut jobs = Vec::new();
     let root_utf8 = utf8_path(root)?;
-    for (index, candidate) in candidates.into_iter().take(8).enumerate() {
+    for (index, candidate) in candidates
+        .into_iter()
+        .take(mutation_max_mutants(config))
+        .enumerate()
+    {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
@@ -2436,6 +2440,10 @@ fn mutation_timeout_seconds(config: &RustPluginConfig) -> u64 {
     timeout
 }
 
+fn mutation_max_mutants(config: &RustPluginConfig) -> usize {
+    config.mutation.max_mutants.unwrap_or(8)
+}
+
 fn test_package_roots(
     root: &Path,
     artifacts: &[GeneratedArtifact],
@@ -2654,9 +2662,6 @@ fn rust_mutation_candidate_from_identifier(
         "wrapping_add" => Some(("wrapping arithmetic direction", "wrapping_sub")),
         "is_ok" => Some(("result branch inversion", "is_err")),
         "is_err" => Some(("result branch inversion", "is_ok")),
-        "spawn" => Some(("concurrency_lifecycle task_spawn mutation", "block_on")),
-        "join" => Some(("concurrency_lifecycle await_join mutation", "try_join")),
-        "write" => Some(("synchronization lock_mode mutation", "read")),
         "read" => Some(("synchronization lock_mode mutation", "write")),
         "SeqCst" => Some(("synchronization atomic_ordering mutation", "Relaxed")),
         "Acquire" => Some(("synchronization atomic_ordering mutation", "Relaxed")),
@@ -2667,7 +2672,6 @@ fn rust_mutation_candidate_from_identifier(
         "rollback" => Some(("database rollback_commit mutation", "commit")),
         "begin" => Some(("database transaction_boundary mutation", "rollback")),
         "retry" => Some(("retry_resilience retry_attempt mutation", "try_once")),
-        "backoff" => Some(("retry_resilience backoff_cap mutation", "no_backoff")),
         "now" => Some(("testability injected_clock mutation", "default")),
         "random" => Some(("testability injected_randomness mutation", "default")),
         _ => None,
@@ -2767,12 +2771,33 @@ fn rust_mutation_candidate_from_boolean(
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
-        label: domain_mutation_label(&function.symbol, "boolean inversion"),
+        label: domain_mutation_label(
+            &function.symbol,
+            boolean_mutation_label_for_symbol(&function.symbol),
+        ),
         from: text.to_string(),
         to: to.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn boolean_mutation_label_for_symbol(symbol: &str) -> &'static str {
+    let lowered = symbol.to_ascii_lowercase();
+    if lowered.contains("concurrent") || lowered.contains("worker") || lowered.contains("join") {
+        "concurrency_lifecycle await_join mutation"
+    } else if lowered.contains("sync") || lowered.contains("lock") || lowered.contains("atomic") {
+        "synchronization lock_mode mutation"
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        "retry_resilience retry_classifier mutation"
+    } else if lowered.contains("clock") || lowered.contains("random") || lowered.contains("seam") {
+        "testability injected_clock mutation"
+    } else {
+        "boolean inversion"
+    }
 }
 
 fn rust_mutation_candidate_from_integer(
@@ -2850,6 +2875,9 @@ fn rust_target_matches_function(target_id: &str, function: &RustFunction) -> boo
 }
 
 fn domain_mutation_label(symbol: &str, base: &str) -> String {
+    if mutation_taxonomy::normalize_domain(base) != "general" {
+        return base.to_string();
+    }
     let lowered = symbol.to_ascii_lowercase();
     let domain = if lowered.contains("auth")
         || lowered.contains("permission")
@@ -2880,6 +2908,30 @@ fn domain_mutation_label(symbol: &str, base: &str) -> String {
         || lowered.contains("option")
     {
         Some("error_handling")
+    } else if lowered.contains("concurrent")
+        || lowered.contains("worker")
+        || lowered.contains("spawn")
+        || lowered.contains("join")
+        || lowered.contains("async")
+    {
+        Some("concurrency_lifecycle")
+    } else if lowered.contains("clock")
+        || lowered.contains("random")
+        || lowered.contains("seam")
+        || lowered.contains("deterministic")
+    {
+        Some("testability")
+    } else if lowered.contains("sync")
+        || lowered.contains("lock")
+        || lowered.contains("atomic")
+        || lowered.contains("channel")
+    {
+        Some("synchronization")
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        Some("retry_resilience")
     } else if lowered.contains("limit")
         || lowered.contains("threshold")
         || lowered.contains("min")

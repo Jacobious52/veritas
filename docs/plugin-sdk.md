@@ -101,6 +101,8 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 - executable mutation checks for simple Python AST-adjacent operators
 - batched executable differential replay for supported primitive free-function arguments
 
+Python currently proves the shared Tree-sitter/plugin contract and runs practical async/testability mutation probes when matching source constructs are present. The killed/surviving async fixture split used by the advanced Rust and Go examples is intentionally documented as unsupported for Python until the plugin grows deterministic async test-runner seams and fixture-owned event-loop controls.
+
 This gives future plugins a concrete path without requiring Rust/Go-specific assumptions in core.
 
 ## Skeleton Plugin

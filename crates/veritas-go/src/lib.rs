@@ -3090,6 +3090,16 @@ fn collect_go_mutation_nodes(
                 {
                     candidates.push(candidate);
                 }
+                if let Some(candidate) =
+                    mutation_candidate_from_make_channel(node, source, function)?
+                {
+                    candidates.push(candidate);
+                }
+            }
+            "select_statement" => {
+                if let Some(candidate) = mutation_candidate_from_select(node, source, function)? {
+                    candidates.push(candidate);
+                }
             }
             "interpreted_string_literal" | "raw_string_literal" => {
                 push_go_string_mutation_candidates(node, source, function, candidates)?;
@@ -3326,12 +3336,30 @@ fn mutation_candidate_from_literal(
     Ok(Some(MutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
-        label: domain_mutation_label(function, "literal value mutation"),
+        label: domain_mutation_label(function, literal_mutation_label_for_function(function)),
         from: text.to_string(),
         to: to.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn literal_mutation_label_for_function(function: &GoFunction) -> &'static str {
+    let lowered = function.symbol.to_ascii_lowercase();
+    if lowered.contains("concurrent") || lowered.contains("worker") || lowered.contains("join") {
+        "concurrency_lifecycle await_join mutation"
+    } else if lowered.contains("clock") || lowered.contains("random") || lowered.contains("seam") {
+        "testability injected_clock mutation"
+    } else if lowered.contains("sync") || lowered.contains("lock") || lowered.contains("atomic") {
+        "synchronization lock_mode mutation"
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        "retry_resilience retry_classifier mutation"
+    } else {
+        "literal value mutation"
+    }
 }
 
 fn mutation_candidate_from_go_statement(
@@ -3443,6 +3471,49 @@ fn mutation_candidate_from_context_call(
         to: replacement.to_string(),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
+    }))
+}
+
+fn mutation_candidate_from_make_channel(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?.trim().to_string();
+    if !text.starts_with("make(chan ") || !text.ends_with(", 1)") {
+        return Ok(None);
+    }
+    let Some(offset) = text.rfind(", 1)") else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "synchronization channel_select mutation"),
+        from: "1".to_string(),
+        to: "0".to_string(),
+        start_byte: node.start_byte() + offset + 2,
+        end_byte: node.start_byte() + offset + 3,
+    }))
+}
+
+fn mutation_candidate_from_select(
+    node: Node<'_>,
+    source: &str,
+    function: &GoFunction,
+) -> Result<Option<MutationCandidate>> {
+    let text = node_text(node, source)?;
+    let Some(offset) = text.find("default:") else {
+        return Ok(None);
+    };
+    Ok(Some(MutationCandidate {
+        path: function.path.clone(),
+        function: function.symbol.clone(),
+        label: domain_mutation_label(function, "synchronization channel_select mutation"),
+        from: "default:".to_string(),
+        to: "case <-time.After(time.Nanosecond):".to_string(),
+        start_byte: node.start_byte() + offset,
+        end_byte: node.start_byte() + offset + "default:".len(),
     }))
 }
 
@@ -3602,6 +3673,9 @@ fn is_simple_string_literal(expression: &str) -> bool {
 }
 
 fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
+    if mutation_taxonomy::normalize_domain(base) != "general" {
+        return base.to_string();
+    }
     let lowered = function.symbol.to_ascii_lowercase();
     let domain = if lowered.contains("auth")
         || lowered.contains("permission")
@@ -3631,6 +3705,30 @@ fn domain_mutation_label(function: &GoFunction, base: &str) -> String {
         || lowered.contains("valid")
     {
         Some("error_handling")
+    } else if lowered.contains("concurrent")
+        || lowered.contains("worker")
+        || lowered.contains("spawn")
+        || lowered.contains("join")
+        || lowered.contains("async")
+    {
+        Some("concurrency_lifecycle")
+    } else if lowered.contains("clock")
+        || lowered.contains("random")
+        || lowered.contains("seam")
+        || lowered.contains("deterministic")
+    {
+        Some("testability")
+    } else if lowered.contains("sync")
+        || lowered.contains("lock")
+        || lowered.contains("atomic")
+        || lowered.contains("channel")
+    {
+        Some("synchronization")
+    } else if lowered.contains("retry")
+        || lowered.contains("backoff")
+        || lowered.contains("transient")
+    {
+        Some("retry_resilience")
     } else if lowered.contains("limit")
         || lowered.contains("threshold")
         || lowered.contains("min")

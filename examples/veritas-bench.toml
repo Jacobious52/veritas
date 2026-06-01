@@ -176,6 +176,8 @@ expect_artifacts = ["mutation_check", "mutation_trend"]
 expect_commands = ["cargo test"]
 min_commands = 1
 min_mutants_executed = 2
+min_mutants_killed = 1
+min_mutants_survived = 1
 max_duration_ms = 60000
 
 [[case]]
@@ -187,4 +189,6 @@ expect_artifacts = ["mutation_check", "mutation_trend"]
 expect_commands = ["go test"]
 min_commands = 1
 min_mutants_executed = 2
+min_mutants_killed = 1
+min_mutants_survived = 1
 max_duration_ms = 30000
