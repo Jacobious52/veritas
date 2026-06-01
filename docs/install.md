@@ -24,6 +24,18 @@ Use crates.io when you prefer building locally:
 cargo install veritas-cli --locked
 ```
 
+Bootstrap a repository after install:
+
+```bash
+veritas init --ci --agent-instructions
+```
+
+That writes `.veritas.toml`, a starter GitHub Actions workflow, and copy-paste AI agent instructions under `.veritas/ai/`. Existing files are not overwritten unless `--force` is passed. Preview first with:
+
+```bash
+veritas init --ci --agent-instructions --dry-run
+```
+
 Use the Git repository when you want the latest `main` before a release:
 
 ```bash

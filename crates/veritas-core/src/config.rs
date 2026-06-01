@@ -344,6 +344,7 @@ impl VeritasConfig {
         if let Some(mutation) = parsed.mutation {
             apply_mutation_config(&mut config.plugins.rust.mutation, &mutation);
             apply_mutation_config(&mut config.plugins.go.mutation, &mutation);
+            apply_mutation_config(&mut config.plugins.python.mutation, &mutation);
         }
 
         if let Some(plugins) = parsed.plugins {
@@ -650,6 +651,11 @@ cpu_quota = "150%"
             config.plugins.go.mutation.exclude_paths,
             vec!["vendor/", "_generated.go$"]
         );
+        assert_eq!(
+            config.plugins.python.mutation.exclude_paths,
+            vec!["vendor/", "_generated.go$"]
+        );
+        assert_eq!(config.plugins.python.mutation.max_mutants, Some(17));
         assert!(!config.plugins.go.mutation.dry_run);
         assert_eq!(config.plugins.go.fuzz_seconds, 3);
         assert!(!config.plugins.go.fuzz_existing);
