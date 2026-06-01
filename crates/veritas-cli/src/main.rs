@@ -17,9 +17,9 @@ use veritas_core::{
 };
 use veritas_go::GoPlugin;
 use veritas_plugin_api::{
-    ArtifactKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionSuite,
-    FailureSeverity, MutationRecord, PerformanceMetrics, RiskLevel, TargetKind, VerificationReport,
-    VerificationStrategy,
+    mutation_taxonomy, ArtifactKind, EvolutionCandidateRecord, EvolutionCandidateStatus,
+    EvolutionSuite, FailureSeverity, MutationRecord, PerformanceMetrics, RiskLevel, TargetKind,
+    VerificationReport, VerificationStrategy,
 };
 use veritas_python::PythonPlugin;
 use veritas_report::{render_junit, render_markdown, render_sarif};
@@ -440,6 +440,8 @@ struct ConformancePluginReport {
     file_targets: usize,
     package_targets: usize,
     line_ranges: usize,
+    mutation_records: usize,
+    invalid_mutation_records: usize,
     failures: Vec<String>,
 }
 
@@ -1014,6 +1016,7 @@ fn run_bench_suite(root: &Path, suite: Option<&Path>) -> Result<BenchReport> {
 
 fn run_plugin_conformance(engine: &CoreEngine, root: &Path) -> Result<ConformanceReport> {
     let scan = engine.scan(root)?;
+    let saved_report = read_saved_report(root).ok();
     let mut plugins = Vec::new();
     for project in &scan.projects {
         let targets = scan
@@ -1070,6 +1073,52 @@ fn run_plugin_conformance(engine: &CoreEngine, root: &Path) -> Result<Conformanc
                 failures.push(format!("target id `{id}` appears {count} times"));
             }
         }
+        let mutation_records = saved_report
+            .as_ref()
+            .map(|report| {
+                report
+                    .runs
+                    .iter()
+                    .filter(|run| run.language == project.language)
+                    .flat_map(|run| run.quality.mutation.records.iter())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut invalid_mutation_records = 0;
+        for record in &mutation_records {
+            if !mutation_taxonomy::valid_domain(&record.domain) {
+                invalid_mutation_records += 1;
+                failures.push(format!(
+                    "mutation record `{}` has invalid domain `{}`",
+                    record.id, record.domain
+                ));
+            }
+            if !mutation_taxonomy::valid_operator(&record.operator) {
+                invalid_mutation_records += 1;
+                failures.push(format!(
+                    "mutation record `{}` has invalid operator `{}`",
+                    record.id, record.operator
+                ));
+            }
+            if record.id.trim().is_empty() {
+                invalid_mutation_records += 1;
+                failures.push("mutation record with empty stable id".to_string());
+            }
+            if record.path.as_str() == "." || record.path.is_absolute() {
+                invalid_mutation_records += 1;
+                failures.push(format!(
+                    "mutation record `{}` has invalid source-relative path `{}`",
+                    record.id, record.path
+                ));
+            }
+            if record.source_span.is_none() {
+                invalid_mutation_records += 1;
+                failures.push(format!(
+                    "mutation record `{}` has no source byte span",
+                    record.id
+                ));
+            }
+        }
         plugins.push(ConformancePluginReport {
             language: project.language.clone(),
             project: project.name.clone(),
@@ -1090,6 +1139,8 @@ fn run_plugin_conformance(engine: &CoreEngine, root: &Path) -> Result<Conformanc
                 .iter()
                 .filter(|target| target.line_range.is_some())
                 .count(),
+            mutation_records: mutation_records.len(),
+            invalid_mutation_records,
             failures,
         });
     }
@@ -2312,16 +2363,18 @@ fn print_conformance_report(report: &ConformanceReport, format: OutputFormat) ->
             println!("- Passed: `{}`", report.passed);
             println!("- Plugins: `{}`", report.plugins.len());
             println!();
-            println!("| Language | Project | Targets | Functions | Line ranges | Failures |");
-            println!("| --- | --- | ---: | ---: | ---: | ---: |");
+            println!("| Language | Project | Targets | Functions | Line ranges | Mutation records | Invalid mutations | Failures |");
+            println!("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |");
             for plugin in &report.plugins {
                 println!(
-                    "| {} | {} | {} | {} | {} | {} |",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} |",
                     plugin.language,
                     plugin.project,
                     plugin.targets,
                     plugin.function_targets,
                     plugin.line_ranges,
+                    plugin.mutation_records,
+                    plugin.invalid_mutation_records,
                     plugin.failures.len()
                 );
             }

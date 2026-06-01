@@ -375,6 +375,18 @@ fn mutants_list_previews_advanced_records_without_executing_tests() {
                 .as_str()
                 .is_some_and(|diff| diff.contains("@@ bytes"))
     }));
+
+    let mut conformance = veritas();
+    conformance
+        .current_dir(fixture.path())
+        .args(["conformance", "--format", "json"]);
+    let output = conformance.assert().success().get_output().stdout.clone();
+    let json: Value = serde_json::from_slice(&output).expect("conformance json");
+    assert_eq!(json["passed"], true);
+    assert!(json["plugins"][0]["mutation_records"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert_eq!(json["plugins"][0]["invalid_mutation_records"], 0);
 }
 
 #[test]
