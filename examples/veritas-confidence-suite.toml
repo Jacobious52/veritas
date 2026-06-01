@@ -1,0 +1,66 @@
+profile = "large-repo"
+
+[[case]]
+name = "rust-risk-suite-confidence"
+path = "rust-risk-suite"
+language = "rust"
+target = "src/lib.rs"
+expect_artifacts = ["mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
+expect_commands = ["cargo test"]
+min_commands = 2
+min_mutants_executed = 4
+min_mutation_score = 40
+min_assertion_candidates = 1
+min_replay_cases = 1
+min_evolution_candidates = 3
+max_duration_ms = 90000
+
+[[case]]
+name = "go-risk-suite-confidence"
+path = "go-risk-suite"
+language = "go"
+target = "."
+expect_artifacts = ["fuzz_harness", "mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
+expect_commands = ["go test"]
+min_commands = 2
+min_mutants_executed = 4
+min_mutation_score = 40
+min_assertion_candidates = 1
+min_replay_cases = 1
+min_evolution_candidates = 3
+max_duration_ms = 60000
+
+[[case]]
+name = "rust-workspace-confidence"
+path = "../fixtures/rust-workspace"
+language = "rust"
+target = "."
+expect_artifacts = ["property_test", "mutation_check", "symbol_graph"]
+expect_commands = ["cargo test"]
+min_commands = 2
+min_mutants_executed = 4
+max_duration_ms = 90000
+
+[[case]]
+name = "go-multimodule-confidence"
+path = "../fixtures/go-multimodule"
+language = "go"
+target = "services/billing/pkg/invoice"
+expect_artifacts = ["fuzz_harness", "mutation_check", "symbol_graph"]
+expect_commands = ["go test"]
+min_commands = 2
+min_mutants_executed = 4
+max_duration_ms = 60000
+
+[[case]]
+name = "python-confidence"
+path = "../fixtures/sample-python"
+language = "python"
+target = "invoice.py"
+expect_artifacts = ["property_test", "mutation_check", "symbol_graph", "replay_result"]
+expect_commands = ["python3"]
+min_commands = 1
+min_mutants_executed = 2
+min_assertion_candidates = 1
+min_replay_cases = 1
+max_duration_ms = 60000

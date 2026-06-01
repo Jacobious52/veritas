@@ -32,8 +32,10 @@ examples/
   rust-concurrency-db/  # advanced Rust mutation fixture for locks, transactions, retries, threads
   go-concurrency-db/    # advanced Go mutation fixture for goroutines, locks, transactions, retries
   veritas-bench.toml    # benchmark manifest of expected detections
+  veritas-confidence-suite.toml # broader confidence/trend manifest
 docs/                   # durable docs plus GitHub Pages landing page
 scripts/run-canaries.sh # pinned external repo smoke/verify checks
+scripts/run-confidence-suite.sh # local large-repo confidence trend runner
 ```
 
 ## Tooling
@@ -71,6 +73,7 @@ VERITAS_RELEASE_ALLOW_DIRTY=1 ./scripts/publish-crates.sh --dry-run
 Run fixture checks:
 
 ```bash
+cargo run -p veritas-cli -- init --root fixtures/sample-rust --dry-run --ci --agent-instructions
 cargo run -p veritas-cli -- scan --root fixtures/sample-rust
 cargo run -p veritas-cli -- verify --root fixtures/sample-rust --lang rust --target src/lib.rs
 cargo run -p veritas-cli -- conformance --root fixtures/sample-rust
@@ -104,6 +107,7 @@ cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants list --l
 cargo run -p veritas-cli -- --root examples/go-concurrency-db mutants list --lang go --target . --diffs
 cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
 cargo run -p veritas-cli -- --root examples bench
+./scripts/run-confidence-suite.sh
 ```
 
 Dogfood `veritas` on itself safely:
@@ -144,6 +148,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - `veritas score --mode all` prints current, strict, and verified anti-gaming confidence views.
 - `veritas review-packet` writes `.veritas/review/query.json` and `.veritas/review/prompt.md` for blind agent review across naming, abstractions, boundaries, error handling, testability, and security.
 - `veritas agent-instructions --agent codex` writes `.veritas/ai/veritas_agent_instructions.md` with the proof loop and anti-gaming rules.
+- `veritas init --ci --agent-instructions` writes `.veritas.toml`, a starter GitHub Actions workflow, and copy-paste AI agent instructions without overwriting existing files unless `--force` is passed.
 - `veritas badge` writes `.veritas/badge.svg` with confidence grade and mutation score for README/Pages use.
 - Observation artifacts now include structured `.veritas/cache/*_targets.json`, `.veritas/assertions/*.json`, `.veritas/corpus/*.json`, `.veritas/corpus/replay_result.json`, `.veritas/differential/*_result.json`, `.veritas/budgets/*.json`, `.veritas/trends/*.json`, `.veritas/mutations/*_campaign.json`, and `.veritas/evolution/*_candidates.json` plus `*_suite.json` to help AI agents close the verification loop.
 - Evolution suites are plugin-neutral ranked queues. `veritas evolve --dry-run` inspects them, while `veritas evolve --index <n> --evaluate` and `--all-selected --evaluate` apply safe selected candidates as reviewable artifacts or language-owned regression scaffolds, rerun scoped verification, write `.veritas/evolution/*_evaluation_*.md`, and remove generated candidate files when the evaluated report regresses or cannot be evaluated.
@@ -158,10 +163,12 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
 - Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, Hypothesis property candidate execution when `hypothesis` and `pytest` are installed, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
+- The local confidence suite runs through `./scripts/run-confidence-suite.sh` and writes `target/confidence-suite/confidence-report.json`, `confidence-summary.json`, and `confidence-history.jsonl`.
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
+- GitHub Actions includes a live installer smoke workflow for published releases and a manual confidence-suite benchmark job.
 - Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
-- GitHub Actions release workflow exists. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
+- GitHub Actions release workflow builds Linux/macOS binaries, publishes `install.sh`, checksums, a CycloneDX SBOM, and provenance attestations. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
 ## Generated Artifacts
 

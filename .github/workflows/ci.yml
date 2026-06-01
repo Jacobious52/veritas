@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/install-smoke.yml"
+      - ".github/workflows/benchmarks.yml"
       - ".github/actions/**"
       - "install.sh"
       - "Cargo.lock"
@@ -21,6 +23,8 @@ on:
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/release.yml"
+      - ".github/workflows/install-smoke.yml"
+      - ".github/workflows/benchmarks.yml"
       - ".github/actions/**"
       - "install.sh"
       - "Cargo.lock"

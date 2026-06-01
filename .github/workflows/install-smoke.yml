@@ -1,0 +1,49 @@
+name: Installer Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to install; leave empty for latest"
+        required: false
+        type: string
+  schedule:
+    - cron: "41 8 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    name: Install smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install latest release
+        shell: bash
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION_INPUT:-}" ]; then
+            curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | VERSION="${VERSION_INPUT}" sh
+          else
+            curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Version smoke
+        run: veritas --version
+
+      - name: Scan smoke
+        run: veritas scan --root fixtures/sample-rust
+
+      - name: Verify smoke
+        run: veritas verify --root fixtures/sample-rust --lang rust --target src/lib.rs

@@ -9,6 +9,7 @@ on:
       - "Cargo.toml"
       - "crates/**"
       - "examples/**"
+      - "scripts/run-confidence-suite.sh"
       - "docs/confidence.md"
 
 permissions:
@@ -31,3 +32,31 @@ jobs:
 
       - name: Run seeded benchmark suite
         run: cargo run -p veritas-cli --locked -- --root examples bench --format json
+
+  confidence-suite:
+    name: Confidence suite
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Check Go
+        run: go version
+
+      - name: Run confidence suite
+        run: ./scripts/run-confidence-suite.sh
+
+      - name: Upload confidence artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritas-confidence-suite
+          path: |
+            target/confidence-suite/confidence-report.json
+            target/confidence-suite/confidence-summary.json
+            target/confidence-suite/confidence-history.jsonl
+          if-no-files-found: error

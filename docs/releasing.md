@@ -12,6 +12,7 @@ veritas-core
 veritas-report
 veritas-rust
 veritas-go
+veritas-python
 veritas-cli
 ```
 
@@ -56,9 +57,10 @@ veritas-x86_64-unknown-linux-gnu.tar.gz
 veritas-aarch64-unknown-linux-gnu.tar.gz
 veritas-aarch64-apple-darwin.tar.gz
 veritas-x86_64-apple-darwin.tar.gz
+veritas-sbom.cdx.json
 ```
 
-The public installer downloads the right binary for Linux/macOS and verifies it against `veritas-checksums.txt` when `sha256sum` or `shasum` is available:
+The public installer downloads the right binary for Linux/macOS and verifies it against `veritas-checksums.txt` when `sha256sum` or `shasum` is available. Release assets also include a CycloneDX SBOM generated from `cargo metadata`, and the release workflow requests GitHub build provenance attestations for the uploaded assets.
 
 ```bash
 curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
@@ -85,6 +87,14 @@ cargo install --git https://github.com/Jacobious52/veritas veritas-cli --locked
 The publish script is resumable: it skips crate versions that already exist on crates.io and retries once after short crates.io rate-limit responses. If a first workspace release partially succeeds, rerun the failed workflow after the crates.io retry time instead of changing the published artifacts.
 
 Manual `dry_run=true` release workflow runs validate crates and build/upload binary artifacts to the workflow run without creating a GitHub Release. Tag pushes matching `v*` create or update the GitHub Release assets.
+
+After a release is published, run the live installer smoke workflow:
+
+```bash
+gh workflow run install-smoke.yml --repo Jacobious52/veritas -f version=v0.1.1
+```
+
+The smoke workflow installs from GitHub Releases on Ubuntu and macOS, then runs `veritas --version`, `scan`, and a minimal fixture `verify`.
 
 After any successful publish, bump the workspace package version and internal crate dependency versions before landing new feature work.
 

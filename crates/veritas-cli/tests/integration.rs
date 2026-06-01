@@ -21,6 +21,72 @@ fn scans_rust_fixture() {
 }
 
 #[test]
+fn init_writes_config_ci_and_agent_instructions() {
+    let temp = TempDir::new().expect("temp dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let mut cmd = veritas();
+    cmd.current_dir(temp.path())
+        .args(["init", "--ci", "--agent-instructions"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(".veritas.toml"))
+        .stdout(predicate::str::contains("veritas_agent_instructions.md"));
+
+    let config = fs::read_to_string(temp.path().join(".veritas.toml")).expect("read config");
+    assert!(config.contains("[plugins.rust]"));
+    assert!(!config.contains("[plugins.go]"));
+    assert!(config.contains("min_mutation_score = 40"));
+
+    let workflow = fs::read_to_string(temp.path().join(".github/workflows/veritas.yml"))
+        .expect("read workflow");
+    assert!(workflow.contains("curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh"));
+    assert!(workflow.contains("veritas verify --changed --profile ci --lang rust"));
+
+    let instructions = fs::read_to_string(
+        temp.path()
+            .join(".veritas/ai/veritas_agent_instructions.md"),
+    )
+    .expect("read instructions");
+    assert!(instructions.contains("Veritas Agent Instructions"));
+}
+
+#[test]
+fn init_dry_run_and_no_overwrite_existing_config() {
+    let temp = TempDir::new().expect("temp dir");
+    fs::write(temp.path().join(".veritas.toml"), "sentinel = true\n").expect("write sentinel");
+
+    let mut dry_run = veritas();
+    dry_run
+        .current_dir(temp.path())
+        .args(["init", "--lang", "all", "--dry-run", "--ci"]);
+    dry_run
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dry-run"))
+        .stdout(predicate::str::contains("Skipped existing files"));
+    assert!(!temp.path().join(".github/workflows/veritas.yml").exists());
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".veritas.toml")).expect("read sentinel"),
+        "sentinel = true\n"
+    );
+
+    let mut force = veritas();
+    force
+        .current_dir(temp.path())
+        .args(["init", "--lang", "all", "--force"]);
+    force.assert().success();
+    let config = fs::read_to_string(temp.path().join(".veritas.toml")).expect("read config");
+    assert!(config.contains("[plugins.rust]"));
+    assert!(config.contains("[plugins.go]"));
+    assert!(config.contains("[plugins.python]"));
+}
+
+#[test]
 fn verifies_rust_fixture_and_writes_property_test() {
     let fixture = copy_fixture("sample-rust");
     let mut cmd = veritas();

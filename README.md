@@ -72,6 +72,12 @@ cargo install cargo-llvm-cov
 
 ## Quick Start
 
+Bootstrap a repo:
+
+```bash
+veritas init --ci --agent-instructions
+```
+
 Use `veritas` on a changed branch:
 
 ```bash
@@ -130,6 +136,7 @@ next agent step: promote assertion candidate, rerun, keep only if the mutant die
 
 ```bash
 veritas scan
+veritas init --ci --agent-instructions
 veritas review-ai
 veritas review-packet
 veritas verify --changed
@@ -170,6 +177,7 @@ veritas accept-baseline --id <finding-id>
 veritas accept-baseline --all
 veritas bench --root examples
 veritas bench --root examples --format json
+veritas bench --root examples --suite veritas-confidence-suite.toml --format json
 veritas cleanup
 veritas cleanup --dry-run
 ```
