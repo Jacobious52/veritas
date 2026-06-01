@@ -2105,7 +2105,7 @@ struct GoMutationJob {
     index: usize,
     candidate: MutationCandidate,
     modules: Vec<GoModule>,
-    package_args: Vec<String>,
+    selection: GoMutationSelection,
     config: GoPluginConfig,
     root: Utf8PathBuf,
 }
@@ -2113,11 +2113,20 @@ struct GoMutationJob {
 #[derive(Debug)]
 struct GoMutationOutcome {
     candidate: MutationCandidate,
+    selection: GoMutationSelection,
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
     isolation_setup_ms: u128,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GoMutationSelection {
+    package_args: Vec<String>,
+    hint: String,
+    fallback: Option<String>,
+    has_tests: bool,
 }
 
 fn run_mutation_checks(
@@ -2162,9 +2171,10 @@ fn run_mutation_checks(
     for candidate in candidates.into_iter().take(config.max_mutants) {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if !candidate_has_package_tests(&candidate, context) {
+        if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
@@ -2174,6 +2184,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -2188,6 +2199,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::Runnable,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -2221,7 +2233,7 @@ fn run_mutation_checks(
 
         let mut mutation_commands = Vec::new();
         for (module_root, module_package_args) in
-            module_package_args(&context.modules, package_args)
+            module_package_args(&context.modules, &selection.package_args)
         {
             let test_args = go_test_args(config, &module_package_args);
             mutation_commands.push(run_command(
@@ -2283,7 +2295,7 @@ fn run_mutation_checks(
                         candidate.from,
                         candidate.to,
                         candidate.path,
-                        package_args.join(" ")
+                        selection.package_args.join(" ")
                     ),
                     input: None,
                     path: Some(candidate.path.clone()),
@@ -2295,6 +2307,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::Lived,
                 Some(&command_line(&command.program, &command.args)),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.duration_ms,
             ));
         } else {
@@ -2323,6 +2336,7 @@ fn run_mutation_checks(
                 command
                     .map(|command| command_line(&command.program, &command.args))
                     .as_deref(),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.map(|command| command.duration_ms).unwrap_or(0),
             ));
         }
@@ -2381,9 +2395,10 @@ fn run_parallel_mutation_checks(
     for (index, candidate) in candidates.into_iter().take(config.max_mutants).enumerate() {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_go_mutation_tests(&candidate, context, config, package_args);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if !candidate_has_package_tests(&candidate, context) {
+        if !selection.has_tests {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
@@ -2393,6 +2408,7 @@ fn run_parallel_mutation_checks(
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -2409,7 +2425,7 @@ fn run_parallel_mutation_checks(
             index,
             candidate,
             modules: context.modules.clone(),
-            package_args: package_args.to_vec(),
+            selection,
             config: config.clone(),
             root: root_utf8.clone(),
         });
@@ -2419,6 +2435,7 @@ fn run_parallel_mutation_checks(
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
         quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
+        let selection = outcome.selection.clone();
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -2438,6 +2455,7 @@ fn run_parallel_mutation_checks(
                 &operator,
                 MutationStatus::Skipped,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -2467,7 +2485,7 @@ fn run_parallel_mutation_checks(
                     artifacts,
                     &candidate,
                     &command,
-                    package_args,
+                    &selection.package_args,
                 ));
                 quality.mutation.records.push(mutation_record(
                     &candidate,
@@ -2475,6 +2493,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::Lived,
                     Some(&command_line(&command.program, &command.args)),
+                    Some((&selection.hint, selection.fallback.as_deref())),
                     command.duration_ms,
                 ));
             }
@@ -2489,6 +2508,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::TimedOut,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
             MutationStatus::NotViable => {
@@ -2502,6 +2522,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::NotViable,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
             _ => {
@@ -2515,6 +2536,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::Killed,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
         }
@@ -2551,12 +2573,14 @@ fn run_parallel_mutation_checks(
 
 fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
     let candidate = job.candidate;
+    let selection = job.selection;
     let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "go", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
             return GoMutationOutcome {
                 candidate,
+                selection,
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
@@ -2570,13 +2594,14 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
         isolated.path(),
         &candidate,
         &job.modules,
-        &job.package_args,
+        &selection.package_args,
         &job.config,
     ) {
         Ok(commands) => {
             let status = classify_go_mutation_status(&commands);
             GoMutationOutcome {
                 candidate,
+                selection,
                 commands,
                 status,
                 isolation_failed: false,
@@ -2586,6 +2611,7 @@ fn run_go_mutation_job(job: GoMutationJob) -> GoMutationOutcome {
         }
         Err(error) => GoMutationOutcome {
             candidate,
+            selection,
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
@@ -2661,6 +2687,7 @@ fn push_go_mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&CommandRecord>,
+    selection: &GoMutationSelection,
 ) {
     quality.mutation.records.push(mutation_record(
         candidate,
@@ -2670,6 +2697,7 @@ fn push_go_mutation_record(
         command
             .map(|command| command_line(&command.program, &command.args))
             .as_deref(),
+        Some((&selection.hint, selection.fallback.as_deref())),
         command.map(|command| command.duration_ms).unwrap_or(0),
     ));
 }
@@ -2903,15 +2931,66 @@ fn mutation_candidate_in_shard(candidate: &MutationCandidate, config: &MutationC
     (hasher.finish() as usize % shard_count) == shard_index
 }
 
-fn candidate_has_package_tests(
+fn select_go_mutation_tests(
     candidate: &MutationCandidate,
     context: &GoVerificationContext,
-) -> bool {
-    let dir = package_dir(&candidate.path);
-    context.packages.iter().any(|package| {
-        package.dir == dir
+    config: &GoPluginConfig,
+    fallback_package_args: &[String],
+) -> GoMutationSelection {
+    if config.mutation.disable_test_selection {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selection disabled; using the verification package set".to_string(),
+            fallback: Some("mutation.disable_test_selection is true".to_string()),
+            has_tests: true,
+        };
+    }
+
+    if context.packages.is_empty() {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selected verification package set because go list metadata was unavailable"
+                .to_string(),
+            fallback: Some("Go package graph was unavailable".to_string()),
+            has_tests: true,
+        };
+    }
+
+    let candidate_dir = package_dir(&candidate.path);
+    let selected_dirs = BTreeSet::from([candidate_dir.clone()]);
+    let scoped_dirs = scoped_package_dirs(
+        &context.packages,
+        &selected_dirs,
+        config.reverse_dependency_depth,
+        config.max_packages,
+    );
+    let has_tests = context.packages.iter().any(|package| {
+        scoped_dirs.contains(&package.dir)
             && (!package.test_go_files.is_empty() || !package.x_test_go_files.is_empty())
-    })
+    });
+    let package_args = scoped_dirs.iter().map(package_arg).collect::<Vec<_>>();
+
+    if package_args.is_empty() {
+        return GoMutationSelection {
+            package_args: fallback_package_args.to_vec(),
+            hint: "selected verification package set because the mutant package was ambiguous"
+                .to_string(),
+            fallback: Some(format!(
+                "candidate package `{candidate_dir}` was not present in the Go package graph"
+            )),
+            has_tests: true,
+        };
+    }
+
+    GoMutationSelection {
+        package_args,
+        hint: format!(
+            "selected Go package `{candidate_dir}` plus reverse dependencies to depth {}",
+            config.reverse_dependency_depth
+        ),
+        fallback: None,
+        has_tests,
+    }
 }
 
 fn taxonomy_matches(operator: &str, configured: &str) -> bool {
@@ -2944,6 +3023,7 @@ fn mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&str>,
+    selection: Option<(&str, Option<&str>)>,
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
@@ -2966,6 +3046,9 @@ fn mutation_record(
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: selection.map(|(hint, _)| hint.to_string()),
+        test_selection_fallback: selection
+            .and_then(|(_, fallback)| fallback.map(ToString::to_string)),
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,

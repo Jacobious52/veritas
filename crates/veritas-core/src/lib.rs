@@ -5660,6 +5660,8 @@ mod tests {
             suggested_test: None,
             skip_reason: None,
             selected_test_command: None,
+            test_selection_hint: None,
+            test_selection_fallback: None,
             brittleness_probe: false,
             command: None,
             duration_ms: 0,

@@ -309,6 +309,8 @@ exclude_symbols = []
 include_mutant_ids = []
 exclude_mutant_ids = []
 dry_run = false
+max_mutants = 8
+disable_test_selection = false # set true to run the broader verification package set for every mutant
 workers = 1 # Rust/Go use isolated temp roots when workers > 1; keep small repos serial by default
 test_cpu = 1
 timeout_coefficient = 1
@@ -341,6 +343,8 @@ max_packages = 64
 max_mutants = 8
 build_tags = []
 ```
+
+By default mutation runs select the narrowest package-level test commands the plugin can justify. Rust uses symbol/package ownership; Go uses the package graph plus reverse dependencies. Set `disable_test_selection = true` when a repo has global integration fixtures, hidden build tags, or cross-package side effects that make broad mutation commands safer than local selection.
 
 For shared machines, keep Rust coverage disabled unless needed and enable systemd scope limits:
 

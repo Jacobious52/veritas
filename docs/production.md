@@ -85,6 +85,7 @@ exclude_symbols = []
 include_mutant_ids = []
 exclude_mutant_ids = []
 dry_run = false
+disable_test_selection = false
 workers = 2 # Rust and Go use isolated temp roots for parallel mutants when enabled
 test_cpu = 1
 timeout_coefficient = 2
@@ -114,6 +115,8 @@ Reports include phase timings for discovery, generation, test execution, coverag
 Set `policy.min_mutation_score`, `policy.min_mutation_efficacy`, and `policy.min_mutant_coverage` when you want Gremlins-style mutation quality gates. These thresholds are enforced after the report is scored, and they are language-neutral so Rust, Go, and future plugins share the same CI contract.
 
 The `[mutation]` section is shared across plugins. Language plugins map generic operator names such as `arithmetic`, `comparison`, `boolean`, `bitwise`, `assignment`, `increment`, `loop`, `literal`, `negation`, `await_join`, `task_spawn`, `lock_mode`, `atomic_ordering`, `transaction_boundary`, `tenant_filter`, `retry_attempt`, `backoff_cap`, and `injected_clock` to their tree-sitter mutation operators. `dry_run = true` records runnable mutants without executing package tests. Use `veritas mutants list --diffs` before turning on execution in a large repo, `veritas mutants run --from-campaign ... --status lived` for survivor-focused loops, and `veritas mutants merge` for CI shard artifacts.
+
+Mutation execution records the selected test command, the selection hint, and any fallback reason. Keep `disable_test_selection = false` for normal large-repo runs so Rust can use package-local ownership and Go can use package plus reverse-dependent tests. Flip it to `true` when integration-only coverage, global fixtures, or unusual build tags mean local package selection could miss real signal.
 
 Go fuzz targets run through the shared scheduler with `fuzz_concurrency` as the per-repo cap. Keep this low in CI so fuzzing cannot starve normal package tests or mutation probes.
 

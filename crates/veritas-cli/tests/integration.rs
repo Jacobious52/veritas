@@ -430,6 +430,24 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
     assert!(graph.contains("\"root\": \"services/billing\""));
     assert!(graph.contains("\"root\": \"services/gateway\""));
     assert!(graph.contains("\"run_reason\": \"reverse dependency\""));
+
+    let report =
+        fs::read_to_string(fixture.path().join(".veritas/report.json")).expect("read report");
+    let report: Value = serde_json::from_str(&report).expect("report json");
+    let records = report["quality"]["mutation"]["records"]
+        .as_array()
+        .expect("mutation records");
+    assert!(records.iter().any(|record| {
+        record["status"] == "killed"
+            && record["selected_test_command"]
+                .as_str()
+                .is_some_and(|command| {
+                    command.contains("go test ./pkg/invoice") && !command.contains("./...")
+                })
+            && record["test_selection_hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("reverse dependencies"))
+    }));
 }
 
 #[test]

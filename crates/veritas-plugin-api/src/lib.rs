@@ -592,6 +592,10 @@ pub struct MutationRecord {
     pub skip_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_test_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_selection_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_selection_fallback: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub brittleness_probe: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

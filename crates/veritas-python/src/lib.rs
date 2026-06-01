@@ -1163,6 +1163,8 @@ fn python_mutation_record(
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: None,
+        test_selection_fallback: None,
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,

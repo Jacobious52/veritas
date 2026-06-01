@@ -2711,6 +2711,12 @@ fn print_mutant_record(record: &MutationRecord, diffs: bool) {
     if let Some(command) = &record.selected_test_command {
         println!("- Selected test command: `{command}`");
     }
+    if let Some(hint) = &record.test_selection_hint {
+        println!("- Test selection: {hint}");
+    }
+    if let Some(reason) = &record.test_selection_fallback {
+        println!("- Test selection fallback: {reason}");
+    }
     if let Some(reason) = &record.skip_reason {
         println!("- Skip reason: {reason}");
     }

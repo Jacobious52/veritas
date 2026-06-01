@@ -1583,7 +1583,7 @@ struct MutationCandidate {
 struct RustMutationJob {
     index: usize,
     candidate: MutationCandidate,
-    package_roots: BTreeSet<Utf8PathBuf>,
+    selection: RustMutationSelection,
     config: RustPluginConfig,
     root: Utf8PathBuf,
 }
@@ -1591,11 +1591,19 @@ struct RustMutationJob {
 #[derive(Debug)]
 struct RustMutationOutcome {
     candidate: MutationCandidate,
+    selection: RustMutationSelection,
     commands: Vec<CommandRecord>,
     status: MutationStatus,
     isolation_failed: bool,
     isolation_setup_ms: u128,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RustMutationSelection {
+    package_roots: BTreeSet<Utf8PathBuf>,
+    hint: String,
+    fallback: Option<String>,
 }
 
 fn run_mutation_checks(
@@ -1639,9 +1647,10 @@ fn run_mutation_checks(
     for candidate in candidates.into_iter().take(mutation_max_mutants(config)) {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if package_roots.is_empty() {
+        if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
@@ -1651,6 +1660,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -1665,6 +1675,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::Runnable,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -1698,7 +1709,7 @@ fn run_mutation_checks(
 
         let mutation_commands = run_cargo_tests_with_timeout(
             root,
-            package_roots,
+            &selection.package_roots,
             config,
             mutation_timeout_seconds(config),
         );
@@ -1763,6 +1774,7 @@ fn run_mutation_checks(
                 &operator,
                 MutationStatus::Lived,
                 Some(&command_line(&command.program, &command.args)),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.duration_ms,
             ));
         } else {
@@ -1791,6 +1803,7 @@ fn run_mutation_checks(
                 command
                     .map(|command| command_line(&command.program, &command.args))
                     .as_deref(),
+                Some((&selection.hint, selection.fallback.as_deref())),
                 command.map(|command| command.duration_ms).unwrap_or(0),
             ));
         }
@@ -1852,9 +1865,10 @@ fn run_parallel_mutation_checks(
     {
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
+        let selection = select_rust_mutation_tests(&candidate, package_roots, config);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);
         record_mutation_generated(&mut quality.mutation.by_operator, &operator);
-        if package_roots.is_empty() {
+        if selection.package_roots.is_empty() {
             quality.mutation.not_covered += 1;
             record_mutation_not_covered(&mut quality.mutation.by_domain, &domain);
             record_mutation_not_covered(&mut quality.mutation.by_operator, &operator);
@@ -1864,6 +1878,7 @@ fn run_parallel_mutation_checks(
                 &operator,
                 MutationStatus::NotCovered,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -1879,7 +1894,7 @@ fn run_parallel_mutation_checks(
         jobs.push(RustMutationJob {
             index,
             candidate,
-            package_roots: package_roots.clone(),
+            selection,
             config: config.clone(),
             root: root_utf8.clone(),
         });
@@ -1890,6 +1905,7 @@ fn run_parallel_mutation_checks(
     quality.mutation.effective_workers = summary.max_concurrency;
     for outcome in outcomes {
         quality.mutation.isolation_setup_ms += outcome.isolation_setup_ms;
+        let selection = outcome.selection.clone();
         let candidate = outcome.candidate;
         let domain = mutation_domain_from_label(&candidate.label);
         let operator = mutation_operator_from_label(&candidate.label);
@@ -1909,6 +1925,7 @@ fn run_parallel_mutation_checks(
                 &operator,
                 MutationStatus::Skipped,
                 None,
+                Some((&selection.hint, selection.fallback.as_deref())),
                 0,
             ));
             continue;
@@ -1951,6 +1968,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::Lived,
                     Some(&command_line(&command.program, &command.args)),
+                    Some((&selection.hint, selection.fallback.as_deref())),
                     command.duration_ms,
                 ));
             }
@@ -1965,6 +1983,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::TimedOut,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
             MutationStatus::NotViable => {
@@ -1978,6 +1997,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::NotViable,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
             _ => {
@@ -1991,6 +2011,7 @@ fn run_parallel_mutation_checks(
                     &operator,
                     MutationStatus::Killed,
                     representative_command.as_ref(),
+                    &selection,
                 );
             }
         }
@@ -2027,12 +2048,14 @@ fn run_parallel_mutation_checks(
 
 fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
     let candidate = job.candidate;
+    let selection = job.selection;
     let isolation_start = Instant::now();
     let isolated = match isolated_mutation_root(job.root.as_std_path(), "rust", job.index) {
         Ok(isolated) => isolated,
         Err(error) => {
             return RustMutationOutcome {
                 candidate,
+                selection,
                 commands: Vec::new(),
                 status: MutationStatus::Skipped,
                 isolation_failed: true,
@@ -2042,11 +2065,17 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
         }
     };
     let isolation_setup_ms = isolation_start.elapsed().as_millis();
-    match execute_rust_mutation(isolated.path(), &candidate, &job.package_roots, &job.config) {
+    match execute_rust_mutation(
+        isolated.path(),
+        &candidate,
+        &selection.package_roots,
+        &job.config,
+    ) {
         Ok(commands) => {
             let status = classify_rust_mutation_status(&commands);
             RustMutationOutcome {
                 candidate,
+                selection,
                 commands,
                 status,
                 isolation_failed: false,
@@ -2056,6 +2085,7 @@ fn run_rust_mutation_job(job: RustMutationJob) -> RustMutationOutcome {
         }
         Err(error) => RustMutationOutcome {
             candidate,
+            selection,
             commands: Vec::new(),
             status: MutationStatus::NotViable,
             isolation_failed: false,
@@ -2124,6 +2154,7 @@ fn push_rust_mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&CommandRecord>,
+    selection: &RustMutationSelection,
 ) {
     quality.mutation.records.push(mutation_record(
         candidate,
@@ -2133,6 +2164,7 @@ fn push_rust_mutation_record(
         command
             .map(|command| command_line(&command.program, &command.args))
             .as_deref(),
+        Some((&selection.hint, selection.fallback.as_deref())),
         command.map(|command| command.duration_ms).unwrap_or(0),
     ));
 }
@@ -2360,6 +2392,7 @@ fn mutation_record(
     operator: &str,
     status: MutationStatus,
     command: Option<&str>,
+    selection: Option<(&str, Option<&str>)>,
     duration_ms: u128,
 ) -> MutationRecord {
     MutationRecord {
@@ -2382,6 +2415,9 @@ fn mutation_record(
         suggested_test: Some(mutation_taxonomy::suggested_test(domain, operator).to_string()),
         skip_reason: mutation_skip_reason(status),
         selected_test_command: command.map(ToString::to_string),
+        test_selection_hint: selection.map(|(hint, _)| hint.to_string()),
+        test_selection_fallback: selection
+            .and_then(|(_, fallback)| fallback.map(ToString::to_string)),
         brittleness_probe: domain == "brittleness",
         command: command.map(ToString::to_string),
         duration_ms,
@@ -2502,6 +2538,43 @@ fn run_cargo_tests_with_timeout(
         )?);
     }
     Ok(commands)
+}
+
+fn select_rust_mutation_tests(
+    candidate: &MutationCandidate,
+    package_roots: &BTreeSet<Utf8PathBuf>,
+    config: &RustPluginConfig,
+) -> RustMutationSelection {
+    if config.mutation.disable_test_selection {
+        return RustMutationSelection {
+            package_roots: package_roots.clone(),
+            hint: "selection disabled; using all selected Rust package roots".to_string(),
+            fallback: Some("mutation.disable_test_selection is true".to_string()),
+        };
+    }
+
+    let selected = package_roots
+        .iter()
+        .filter(|root| root.as_str() == "." || candidate.path.starts_with(*root))
+        .max_by_key(|root| root.as_str().len())
+        .cloned();
+
+    if let Some(package_root) = selected {
+        return RustMutationSelection {
+            package_roots: BTreeSet::from([package_root.clone()]),
+            hint: format!(
+                "selected Rust package-local tests from symbol ownership: `{}`",
+                package_root
+            ),
+            fallback: None,
+        };
+    }
+
+    RustMutationSelection {
+        package_roots: package_roots.clone(),
+        hint: "selected all Rust package roots because the mutant owner was ambiguous".to_string(),
+        fallback: Some("owning package root was not present in selected artifacts".to_string()),
+    }
 }
 
 fn rust_path_from_target_id(target_id: &str) -> Option<Utf8PathBuf> {
