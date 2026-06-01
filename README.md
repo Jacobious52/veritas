@@ -316,6 +316,7 @@ max_mutants = 8
 disable_test_selection = false # set true to run the broader verification package set for every mutant
 baseline_timing = false # set true to derive mutation timeout metadata from the baseline test duration
 workers = 1 # Rust/Go use isolated temp roots when workers > 1; keep small repos serial by default
+isolation_exclude_paths = [] # extra names or relative paths to skip in isolated mutation copies
 test_cpu = 1
 timeout_coefficient = 1
 timeout_min_seconds = 10

@@ -402,6 +402,9 @@ struct BenchMetrics {
     mutation_requested_workers: usize,
     mutation_effective_workers: usize,
     mutation_isolation_failures: usize,
+    mutation_isolation_setup_ms: u128,
+    mutation_isolation_copy_ms: u128,
+    mutation_isolation_excluded_path_count: usize,
     mutation_score_percent: Option<u8>,
     mutation_findings: usize,
     property_artifacts: usize,
@@ -2002,6 +2005,12 @@ fn bench_metrics(report: &VerificationReport) -> BenchMetrics {
         mutation_requested_workers: report.quality.mutation.requested_workers,
         mutation_effective_workers: report.quality.mutation.effective_workers,
         mutation_isolation_failures: report.quality.mutation.isolation_failures,
+        mutation_isolation_setup_ms: report.quality.mutation.isolation_setup_ms,
+        mutation_isolation_copy_ms: report.quality.mutation.isolation_copy_ms,
+        mutation_isolation_excluded_path_count: report
+            .quality
+            .mutation
+            .isolation_excluded_path_count,
         mutation_score_percent: report.quality.mutation.score_percent,
         property_artifacts: report.quality.property.generated_artifacts,
         generated_test_failures: report.quality.property.failed_generated_tests,
@@ -2278,12 +2287,16 @@ fn print_bench_report(report: &BenchReport, format: OutputFormat) -> Result<()> 
                 if case.metrics.mutation_requested_workers > 0
                     || case.metrics.mutation_effective_workers > 0
                     || case.metrics.mutation_isolation_failures > 0
+                    || case.metrics.mutation_isolation_copy_ms > 0
                 {
                     println!(
-                        "- Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`",
+                        "- Mutation workers: requested `{}`, effective `{}`, isolation failures `{}`, setup `{}` ms, copy `{}` ms, excluded paths `{}`",
                         case.metrics.mutation_requested_workers,
                         case.metrics.mutation_effective_workers,
-                        case.metrics.mutation_isolation_failures
+                        case.metrics.mutation_isolation_failures,
+                        case.metrics.mutation_isolation_setup_ms,
+                        case.metrics.mutation_isolation_copy_ms,
+                        case.metrics.mutation_isolation_excluded_path_count
                     );
                 }
                 println!("- Mutation findings: `{}`", case.metrics.mutation_findings);

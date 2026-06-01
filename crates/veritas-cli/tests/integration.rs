@@ -511,6 +511,23 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
     let records = report["quality"]["mutation"]["records"]
         .as_array()
         .expect("mutation records");
+    let mutation = &report["quality"]["mutation"];
+    assert!(mutation["isolation_copy_ms"].as_u64().is_some());
+    assert!(mutation["isolation_runs"]
+        .as_array()
+        .expect("isolation runs")
+        .iter()
+        .any(|run| run["copy_duration_ms"].as_u64().is_some()
+            && run["exclusion_patterns"]
+                .as_array()
+                .expect("exclusion patterns")
+                .iter()
+                .any(|pattern| pattern == "services/billing/.veritas-local-cache")));
+    assert!(mutation["isolation_excluded_path_samples"]
+        .as_array()
+        .expect("excluded path samples")
+        .iter()
+        .any(|path| path == "services/billing/.veritas-local-cache"));
     assert!(records.iter().any(|record| {
         record["status"] == "killed"
             && record["selected_test_command"]
@@ -859,6 +876,7 @@ fn benchmark_suite_scores_seeded_examples() {
         .stdout(predicate::str::contains("\"go-concurrency-db\""))
         .stdout(predicate::str::contains("\"command_count\""))
         .stdout(predicate::str::contains("\"mutation_score_percent\""))
+        .stdout(predicate::str::contains("\"mutation_isolation_copy_ms\""))
         .stdout(predicate::str::contains(
             "\"property_strength_score_percent\"",
         ))

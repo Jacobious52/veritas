@@ -2,7 +2,8 @@ pub mod config;
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    fs,
+    error::Error,
+    fmt, fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -22,10 +23,10 @@ use veritas_plugin_api::{
     EvolutionCandidateKind, EvolutionCandidateRecord, EvolutionCandidateStatus, EvolutionFitness,
     EvolutionGeneration, EvolutionGenerationCandidate, EvolutionOutcome, EvolutionQualityDelta,
     EvolutionStrategy, EvolutionSuite, Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin,
-    LineRange, MutationAttribution, MutationRecord, MutationStatus, PerformanceMetrics,
-    ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus, TargetKind, TestRunResult,
-    VerificationPlan, VerificationPlanner, VerificationQuality, VerificationReport,
-    VerificationStrategy, VerificationTarget,
+    LineRange, MutationAttribution, MutationIsolationRecord, MutationRecord, MutationStatus,
+    PerformanceMetrics, ProjectInfo, QualityBaseline, QualityDelta, ReproCase, RunStatus,
+    TargetKind, TestRunResult, VerificationPlan, VerificationPlanner, VerificationQuality,
+    VerificationReport, VerificationStrategy, VerificationTarget,
 };
 
 use crate::config::{PlannerMode, VeritasConfig};
@@ -265,13 +266,47 @@ where
 #[derive(Debug)]
 pub struct IsolatedMutationRoot {
     path: PathBuf,
+    diagnostics: MutationIsolationRecord,
 }
 
 impl IsolatedMutationRoot {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn diagnostics(&self) -> &MutationIsolationRecord {
+        &self.diagnostics
+    }
 }
+
+#[derive(Debug)]
+pub struct IsolationSetupError {
+    diagnostics: MutationIsolationRecord,
+    message: String,
+}
+
+impl IsolationSetupError {
+    pub fn diagnostics(&self) -> &MutationIsolationRecord {
+        &self.diagnostics
+    }
+}
+
+impl fmt::Display for IsolationSetupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} (scratch root: {})",
+            self.message,
+            self.diagnostics
+                .scratch_root
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    }
+}
+
+impl Error for IsolationSetupError {}
 
 impl Drop for IsolatedMutationRoot {
     fn drop(&mut self) {
@@ -284,6 +319,36 @@ pub fn isolated_mutation_root(
     language: &str,
     index: usize,
 ) -> Result<IsolatedMutationRoot> {
+    isolated_mutation_root_with_exclusions(source_root, language, index, &[])
+}
+
+pub fn isolated_mutation_root_for_config(
+    source_root: &Path,
+    language: &str,
+    index: usize,
+    config: &crate::config::MutationConfig,
+) -> Result<IsolatedMutationRoot> {
+    isolated_mutation_root_with_exclusions(
+        source_root,
+        language,
+        index,
+        &config.isolation_exclude_paths,
+    )
+}
+
+pub fn default_isolation_exclusion_patterns() -> Vec<String> {
+    DEFAULT_ISOLATION_EXCLUSIONS
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect()
+}
+
+fn isolated_mutation_root_with_exclusions(
+    source_root: &Path,
+    language: &str,
+    index: usize,
+    configured_exclusions: &[String],
+) -> Result<IsolatedMutationRoot> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -294,11 +359,42 @@ pub fn isolated_mutation_root(
     ));
     fs::create_dir_all(&path)
         .with_context(|| format!("failed to create isolated mutation root {}", path.display()))?;
-    copy_isolated_project(source_root, &path)?;
-    Ok(IsolatedMutationRoot { path })
+    let start = Instant::now();
+    let mut excluded_paths = Vec::new();
+    let copy_result = copy_isolated_project(
+        source_root,
+        &path,
+        Path::new(""),
+        configured_exclusions,
+        &mut excluded_paths,
+    );
+    let copy_duration_ms = start.elapsed().as_millis();
+    let diagnostics = mutation_isolation_record(
+        language,
+        index,
+        &path,
+        copy_duration_ms,
+        configured_exclusions,
+        &excluded_paths,
+        copy_result.as_ref().err().map(ToString::to_string),
+    );
+    if let Err(error) = copy_result {
+        return Err(IsolationSetupError {
+            diagnostics,
+            message: format!("failed to copy isolated mutation root: {error}"),
+        }
+        .into());
+    }
+    Ok(IsolatedMutationRoot { path, diagnostics })
 }
 
-fn copy_isolated_project(source: &Path, destination: &Path) -> Result<()> {
+fn copy_isolated_project(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    configured_exclusions: &[String],
+    excluded_paths: &mut Vec<Utf8PathBuf>,
+) -> Result<()> {
     for entry in fs::read_dir(source)
         .with_context(|| format!("failed to read source root {}", source.display()))?
     {
@@ -306,20 +402,29 @@ fn copy_isolated_project(source: &Path, destination: &Path) -> Result<()> {
             entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
         let file_name = entry.file_name();
         let file_name_string = file_name.to_string_lossy();
-        if excluded_isolation_entry(&file_name_string) {
-            continue;
-        }
         let source_path = entry.path();
         let destination_path = destination.join(&file_name);
+        let relative_path = relative.join(&file_name);
+        if excluded_isolation_entry(&relative_path, &file_name_string, configured_exclusions) {
+            excluded_paths.push(utf8_path_buf(&relative_path)?);
+            continue;
+        }
         let metadata = fs::symlink_metadata(&source_path)
             .with_context(|| format!("failed to inspect {}", source_path.display()))?;
         if metadata.file_type().is_symlink() {
+            excluded_paths.push(utf8_path_buf(&relative_path)?);
             continue;
         }
         if metadata.is_dir() {
             fs::create_dir_all(&destination_path)
                 .with_context(|| format!("failed to create {}", destination_path.display()))?;
-            copy_isolated_project(&source_path, &destination_path)?;
+            copy_isolated_project(
+                &source_path,
+                &destination_path,
+                &relative_path,
+                configured_exclusions,
+                excluded_paths,
+            )?;
         } else if metadata.is_file() {
             fs::copy(&source_path, &destination_path).with_context(|| {
                 format!(
@@ -333,30 +438,99 @@ fn copy_isolated_project(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn excluded_isolation_entry(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".veritas"
-            | "target"
-            | "node_modules"
-            | ".next"
-            | "dist"
-            | "build"
-            | ".cache"
-            | ".direnv"
-            | ".mypy_cache"
-            | ".pytest_cache"
-            | ".ruff_cache"
-            | ".tox"
-            | ".venv"
-            | "__pycache__"
-            | "coverage"
-            | "tmp"
-            | "venv"
-    )
+const DEFAULT_ISOLATION_EXCLUSIONS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    ".veritas",
+    "target",
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    ".cache",
+    ".direnv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "coverage",
+    "tmp",
+    "venv",
+];
+
+fn excluded_isolation_entry(
+    relative_path: &Path,
+    name: &str,
+    configured_exclusions: &[String],
+) -> bool {
+    DEFAULT_ISOLATION_EXCLUSIONS.contains(&name)
+        || configured_exclusions
+            .iter()
+            .any(|pattern| isolation_pattern_matches(relative_path, name, pattern))
+}
+
+fn isolation_pattern_matches(relative_path: &Path, name: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim().trim_matches('/');
+    if pattern.is_empty() {
+        return false;
+    }
+    let relative = relative_path.to_string_lossy().replace('\\', "/");
+    let pattern = pattern.strip_prefix("glob:").unwrap_or(pattern);
+    if pattern.contains('*') {
+        return wildcard_match(&relative, pattern) || wildcard_match(name, pattern);
+    }
+    relative == pattern
+        || name == pattern
+        || relative.starts_with(&format!("{pattern}/"))
+        || relative.ends_with(&format!("/{pattern}"))
+}
+
+fn wildcard_match(text: &str, pattern: &str) -> bool {
+    let mut rest = text;
+    for part in pattern.split('*').filter(|part| !part.is_empty()) {
+        let Some(offset) = rest.find(part) else {
+            return false;
+        };
+        rest = &rest[offset + part.len()..];
+    }
+    true
+}
+
+fn mutation_isolation_record(
+    language: &str,
+    index: usize,
+    scratch_root: &Path,
+    copy_duration_ms: u128,
+    configured_exclusions: &[String],
+    excluded_paths: &[Utf8PathBuf],
+    error: Option<String>,
+) -> MutationIsolationRecord {
+    let mut exclusion_patterns = default_isolation_exclusion_patterns();
+    exclusion_patterns.extend(configured_exclusions.iter().cloned());
+    MutationIsolationRecord {
+        language: language.to_string(),
+        worker_index: index,
+        shard_index: None,
+        mutant_id: None,
+        scratch_root: error.as_ref().map(|_| utf8_path_buf_lossy(scratch_root)),
+        copy_duration_ms,
+        excluded_path_count: excluded_paths.len(),
+        excluded_path_samples: excluded_paths.iter().take(20).cloned().collect(),
+        exclusion_patterns,
+        error,
+    }
+}
+
+fn utf8_path_buf(path: &Path) -> Result<Utf8PathBuf> {
+    Utf8PathBuf::from_path_buf(path.to_path_buf())
+        .map_err(|path| anyhow!("path is not valid UTF-8: {}", path.display()))
+}
+
+fn utf8_path_buf_lossy(path: &Path) -> Utf8PathBuf {
+    Utf8PathBuf::from(path.to_string_lossy().to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -4446,6 +4620,7 @@ fn mutation_trend_artifacts(
             .effective_workers
             .max(run.quality.mutation.effective_workers);
         quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
+        merge_mutation_isolation_metadata(&mut quality.mutation, &run.quality.mutation);
         merge_mutation_timeout_metadata(&mut quality.mutation, &run.quality.mutation);
         quality
             .mutation
@@ -4514,6 +4689,7 @@ fn mutation_campaign_artifacts(
             .effective_workers
             .max(run.quality.mutation.effective_workers);
         mutation.isolation_failures += run.quality.mutation.isolation_failures;
+        merge_mutation_isolation_metadata(&mut mutation, &run.quality.mutation);
         merge_mutation_attribution(&mut mutation.by_domain, &run.quality.mutation.by_domain);
         merge_mutation_attribution(&mut mutation.by_operator, &run.quality.mutation.by_operator);
         mutation
@@ -5026,6 +5202,7 @@ fn refresh_report_quality(report: &mut VerificationReport) {
             .effective_workers
             .max(run.quality.mutation.effective_workers);
         quality.mutation.isolation_failures += run.quality.mutation.isolation_failures;
+        merge_mutation_isolation_metadata(&mut quality.mutation, &run.quality.mutation);
         merge_mutation_timeout_metadata(&mut quality.mutation, &run.quality.mutation);
         quality
             .mutation
@@ -5234,6 +5411,28 @@ fn merge_mutation_timeout_metadata(
     if target.timeout_source.is_none() {
         target.timeout_source = source.timeout_source.clone();
     }
+}
+
+fn merge_mutation_isolation_metadata(
+    target: &mut veritas_plugin_api::MutationMetrics,
+    source: &veritas_plugin_api::MutationMetrics,
+) {
+    target.isolation_copy_ms += source.isolation_copy_ms;
+    target.isolation_excluded_path_count += source.isolation_excluded_path_count;
+    for pattern in &source.isolation_exclusion_patterns {
+        if !target.isolation_exclusion_patterns.contains(pattern) {
+            target.isolation_exclusion_patterns.push(pattern.clone());
+        }
+    }
+    for path in &source.isolation_excluded_path_samples {
+        if target.isolation_excluded_path_samples.len() >= 20 {
+            break;
+        }
+        if !target.isolation_excluded_path_samples.contains(path) {
+            target.isolation_excluded_path_samples.push(path.clone());
+        }
+    }
+    target.isolation_runs.extend(source.isolation_runs.clone());
 }
 
 fn finalize_mutation_percentages(mutation: &mut veritas_plugin_api::MutationMetrics) {
@@ -5675,9 +5874,10 @@ mod tests {
         api_baseline_artifact, assertion_candidate_artifacts, classify_evolution_outcome,
         cleanup_generated_artifacts, confidence_score, corpus_entry_artifacts,
         differential_replay_artifact, evolution_artifacts, evolution_metrics_from_artifacts,
-        filtered_mutation_records, isolated_mutation_root, parse_unified_diff,
+        filtered_mutation_records, isolated_mutation_root_for_config, parse_unified_diff,
         regression_artifacts, replay_cases_for_target, replay_result_artifacts, run_parallel_jobs,
-        targets_for_changed_files, ChangedFile, TargetKind, VerificationTarget,
+        targets_for_changed_files, ChangedFile, IsolationSetupError, TargetKind,
+        VerificationTarget,
     };
 
     #[test]
@@ -5699,20 +5899,64 @@ mod tests {
         let root = TempRoot::new();
         write_file(root.path(), "go.mod");
         write_file(root.path(), "pkg/invoice/invoice.go");
+        write_file(root.path(), "pkg/localdep/go.mod");
+        write_file(root.path(), "pkg/localdep/dep.go");
+        write_file(root.path(), ".cache/custom.bin");
         write_file(root.path(), ".veritas/report.json");
         write_file(root.path(), "target/cache.bin");
+        write_file(root.path(), "tmp/generated.bin");
 
         let isolated_path = {
-            let isolated = isolated_mutation_root(root.path(), "go", 0).expect("isolate project");
+            let config = crate::config::MutationConfig {
+                isolation_exclude_paths: vec!["tmp".to_string()],
+                ..Default::default()
+            };
+            let isolated = isolated_mutation_root_for_config(root.path(), "go", 0, &config)
+                .expect("isolate project");
             let isolated_path = isolated.path().to_path_buf();
             assert!(isolated_path.join("go.mod").exists());
             assert!(isolated_path.join("pkg/invoice/invoice.go").exists());
+            assert!(isolated_path.join("pkg/localdep/go.mod").exists());
+            assert!(isolated_path.join("pkg/localdep/dep.go").exists());
             assert!(!isolated_path.join(".veritas/report.json").exists());
             assert!(!isolated_path.join("target/cache.bin").exists());
+            assert!(!isolated_path.join(".cache/custom.bin").exists());
+            assert!(!isolated_path.join("tmp/generated.bin").exists());
+            assert!(isolated.diagnostics().excluded_path_count >= 3);
+            assert!(isolated
+                .diagnostics()
+                .excluded_path_samples
+                .iter()
+                .any(|path| path == ".veritas"));
+            assert!(isolated
+                .diagnostics()
+                .exclusion_patterns
+                .iter()
+                .any(|pattern| pattern == "tmp"));
             isolated_path
         };
 
         assert!(!isolated_path.exists());
+    }
+
+    #[test]
+    fn isolated_mutation_root_reports_scratch_path_on_copy_failure() {
+        let root = TempRoot::new();
+        let missing = root.path().join("missing");
+        let error = isolated_mutation_root_for_config(
+            &missing,
+            "go",
+            7,
+            &crate::config::MutationConfig::default(),
+        )
+        .expect_err("missing source should fail isolation");
+        let isolation = error
+            .downcast_ref::<IsolationSetupError>()
+            .expect("error should expose isolation diagnostics");
+
+        assert_eq!(isolation.diagnostics().worker_index, 7);
+        assert!(isolation.diagnostics().scratch_root.is_some());
+        assert!(isolation.to_string().contains("veritas-go-mutation"));
     }
 
     #[test]
