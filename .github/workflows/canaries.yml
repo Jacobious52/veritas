@@ -10,6 +10,7 @@ on:
         default: smoke
         options:
           - smoke
+          - large-smoke
           - verify-fast
           - verify
   schedule:
@@ -50,7 +51,9 @@ jobs:
           name: veritas-canary-dashboard-${{ env.VERITAS_CANARY_MODE }}
           path: |
             target/external-fixtures/reports/canary-dashboard.md
+            target/external-fixtures/reports/canaries.json
             target/external-fixtures/reports/canary-summary.json
+            target/external-fixtures/reports/canary-profiles.md
             target/external-fixtures/reports/*-scan.json
             target/external-fixtures/reports/*-report.json
             target/external-fixtures/reports/*-verify.md

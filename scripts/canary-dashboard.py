@@ -187,6 +187,7 @@ def main():
             "run_id": run_id,
             "name": name,
             "language": canary["language"],
+            "profile": canary.get("profile", "baseline"),
             "repository": canary["repository"],
             "sha": canary["sha"],
             "mode": mode,
@@ -227,8 +228,8 @@ def main():
         f"- Run ID: `{run_id}`",
         f"- Threshold status: `{'passed' if not failures else 'failed'}`",
         "",
-        "| Canary | Lang | Tier | Targets | Findings | Confidence | Mutation | Replay | Trend |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Canary | Profile | Lang | Tier | Targets | Findings | Confidence | Mutation | Replay | Trend |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for item in summaries:
         prior = previous.get(item["name"])
@@ -244,8 +245,9 @@ def main():
             trend_bits.append(f"find {finding_delta}")
         trend = ", ".join(trend_bits) if trend_bits else "new"
         lines.append(
-            "| {name} | {language} | {tier} | {targets} | {findings} | {confidence} | {mutation_score} | {replay_cases} | {trend} |".format(
+            "| {name} | {profile} | {language} | {tier} | {targets} | {findings} | {confidence} | {mutation_score} | {replay_cases} | {trend} |".format(
                 name=item["name"],
+                profile=item.get("profile", "baseline"),
                 language=item["language"],
                 tier=item["tier"],
                 targets=item.get("targets", 0),

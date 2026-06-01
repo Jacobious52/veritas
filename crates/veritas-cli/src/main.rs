@@ -621,6 +621,23 @@ fn render_ai_repair_prompt(report: &VerificationReport) -> String {
         }
     }
 
+    out.push_str("\n## Patch Plan\n\n");
+    out.push_str("1. Start with the highest-fitness selected evolution candidate or the highest-severity finding.\n");
+    out.push_str("2. Add the smallest owned test, property, fuzz seed, replay assertion, or regression scaffold that proves the behavior.\n");
+    out.push_str("3. Run the proof command named by the candidate, then `veritas verify --changed --profile ci` and `veritas score`.\n");
+    out.push_str("4. Keep the patch only when the done-when criteria pass, the finding disappears, the mutant dies, or the confidence score improves.\n");
+    out.push_str("5. Stop if the next step requires broad production rewrites without a failing proof artifact.\n");
+
+    let mutation_trends = mutation_trend_summaries(report);
+    out.push_str("\n## Mutation Trend\n\n");
+    if mutation_trends.is_empty() {
+        out.push_str("- No mutation trend artifact was recorded in the latest report.\n");
+    } else {
+        for trend in mutation_trends {
+            out.push_str(&format!("- {trend}\n"));
+        }
+    }
+
     out.push_str("\n## Repair Rules\n\n");
     out.push_str("- Prefer adding the smallest owned regression, property, fuzz seed, or replay assertion before changing production code.\n");
     out.push_str("- Use `.veritas/assertions`, `.veritas/corpus`, `.veritas/differential`, and `.veritas/evolution` as the work queue.\n");
@@ -632,6 +649,33 @@ fn render_ai_repair_prompt(report: &VerificationReport) -> String {
         ));
     }
     out
+}
+
+fn mutation_trend_summaries(report: &VerificationReport) -> Vec<String> {
+    report
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == ArtifactKind::MutationTrend)
+        .filter_map(|artifact| {
+            let value = serde_json::from_str::<serde_json::Value>(&artifact.contents).ok()?;
+            let language = value["language"].as_str().unwrap_or(&artifact.language);
+            let mutation = &value["mutation"];
+            let score = mutation["score_percent"]
+                .as_u64()
+                .map(|score| format!("{score}%"))
+                .unwrap_or_else(|| "n/a".to_string());
+            let survived = mutation["survived"].as_u64().unwrap_or_default();
+            let executed = mutation["executed"].as_u64().unwrap_or_default();
+            let baseline = value["baseline_delta"]["mutation_score_delta"]
+                .as_i64()
+                .map(|delta| format!(", baseline score delta {delta:+}"))
+                .unwrap_or_default();
+            Some(format!(
+                "`{language}` mutation score `{score}` over `{executed}` executed mutants, survivors `{survived}`{baseline}; artifact `{}`",
+                artifact.path
+            ))
+        })
+        .collect()
 }
 
 fn selected_evolution_candidates(report: &VerificationReport) -> Vec<EvolutionCandidateRecord> {

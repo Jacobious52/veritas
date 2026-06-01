@@ -1,0 +1,12 @@
+[package]
+name = "veritas-example-plugin"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+camino = "1"
+veritas-plugin-api = { path = "../../crates/veritas-plugin-api" }

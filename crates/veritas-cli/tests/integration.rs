@@ -189,7 +189,8 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
         .success()
         .stdout(predicate::str::contains("Generated Artifacts"))
         .stdout(predicate::str::contains("SymbolGraph"))
-        .stdout(predicate::str::contains("MutationCheck"));
+        .stdout(predicate::str::contains("MutationCheck"))
+        .stdout(predicate::str::contains("PropertyTest"));
 
     let report = read_report(fixture.path());
     assert!(report["artifacts"]
@@ -202,12 +203,32 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
         .expect("artifacts array")
         .iter()
         .any(|artifact| artifact["kind"] == "symbol_graph"));
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| {
+            artifact["kind"] == "property_test"
+                && artifact["contents"]
+                    .as_str()
+                    .is_some_and(|contents| contents.contains("from hypothesis import given"))
+        }));
+    assert!(fixture
+        .path()
+        .join(".veritas/properties/python_python_invoice_py.py")
+        .exists());
     let mutation = &report["quality"]["mutation"];
     assert!(mutation["executed"].as_u64().unwrap_or_default() > 0);
     assert!(mutation["killed"].as_u64().unwrap_or_default() > 0);
     assert!(mutation["survived"].as_u64().unwrap_or_default() > 0);
     assert!(
         report["quality"]["performance"]["total_ms"]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    );
+    assert!(
+        report["quality"]["property"]["generated_artifacts"]
             .as_u64()
             .unwrap_or_default()
             > 0

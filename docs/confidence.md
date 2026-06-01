@@ -68,11 +68,12 @@ External canaries clone pinned public repositories into `target/external-fixture
 
 ```bash
 ./scripts/run-canaries.sh smoke
+./scripts/run-canaries.sh large-smoke
 ./scripts/run-canaries.sh verify-fast
 ./scripts/run-canaries.sh verify
 ```
 
-Smoke mode scans each repository and writes JSON scan summaries. Verify-fast mode scans every canary and verifies the fast subset (`rust-itoa` and `go-uuid`). Verify mode runs `veritas verify --target .` for every canary, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
+Smoke mode scans each baseline repository and writes JSON scan summaries. Large-smoke mode adds larger pinned Rust, Go, and Python repositories (`rust-clap`, `go-gin`, and `python-click`) and keeps them scan-only by default so target discovery and dashboard rollups exercise scale without exhausting shared runners. Verify-fast mode scans every baseline canary and verifies the fast subset (`rust-itoa` and `go-uuid`). Verify mode runs `veritas verify --target .` for every baseline canary, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
 
 Both modes write a dashboard:
 
@@ -80,11 +81,12 @@ Both modes write a dashboard:
 target/external-fixtures/reports/canary-dashboard.md
 target/external-fixtures/reports/canary-summary.json
 target/external-fixtures/reports/canary-history.jsonl
+target/external-fixtures/reports/canary-profiles.md
 ```
 
 The dashboard assigns a real-repo tier per canary. `scan` means target discovery completed. Verify-mode `high`, `medium`, and `low` tiers come from the saved confidence score and finding count. If local history exists, the dashboard includes confidence, mutation, and finding deltas against the previous run for the same canary. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` to make the dashboard command exit nonzero when a configured threshold is missed.
 
-GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`, uploads the dashboard and per-canary reports as artifacts, and can be started manually with `mode=verify-fast` or `mode=verify` when validating a larger release or a plugin behavior change.
+GitHub Actions runs smoke canaries weekly through `.github/workflows/canaries.yml`, uploads the dashboard and per-canary reports as artifacts, and can be started manually with `mode=large-smoke`, `mode=verify-fast`, or `mode=verify` when validating a larger release or a plugin behavior change.
 
 Current pinned canaries:
 
@@ -92,5 +94,8 @@ Current pinned canaries:
 - Rust: `BurntSushi/memchr` at `ff7dca72388ade97ec536f550271fe5acab0a05f`
 - Go: `google/uuid` at `2d3c2a9cc518326daf99a383f07c4d3c44317e4d`
 - Go: `gorilla/mux` at `db9d1d0073d27a0a2d9a8c1bc52aa0af4374d265`
+- Large Rust: `clap-rs/clap` at `8141e110ecee321277e90b4baa22a5baa02813ea`
+- Large Go: `gin-gonic/gin` at `5f4f9643258dc2a65e684b63f12c8d543c936c67`
+- Large Python: `pallets/click` at `c48021040a50c659b74e24ac2b11c9c9c6620a21`
 
 Update pins deliberately and in their own commit so canary drift is easy to review.

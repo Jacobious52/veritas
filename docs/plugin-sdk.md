@@ -77,3 +77,7 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 - batched executable differential replay for supported primitive free-function arguments
 
 This gives future plugins a concrete path without requiring Rust/Go-specific assumptions in core.
+
+## Skeleton Plugin
+
+`examples/plugin-skeleton` contains a minimal Rust crate that implements the `LanguagePlugin` trait with stable project/function targets, a symbol graph artifact, native command result wiring, and coverage fallback. It is intentionally small so a new language plugin can copy it, add a Tree-sitter grammar, and then grow into mutation, replay, coverage, and regression promotion one hook at a time.

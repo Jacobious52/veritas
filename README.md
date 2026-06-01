@@ -388,8 +388,9 @@ Run external canary smoke checks when you want confidence against real pinned re
 
 ```bash
 ./scripts/run-canaries.sh smoke
+./scripts/run-canaries.sh large-smoke
 ./scripts/run-canaries.sh verify-fast
 ./scripts/run-canaries.sh verify
 ```
 
-The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` when a canary dashboard should fail CI on a missed threshold.
+The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. `large-smoke` adds pinned larger Rust, Go, and Python repositories from `canaries/pinned-repos.json` while keeping them scan-only by default. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` when a canary dashboard should fail CI on a missed threshold.

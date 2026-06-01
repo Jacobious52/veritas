@@ -41,6 +41,25 @@ jobs:
         if: always()
 ```
 
+Local action shortcut:
+
+```yaml
+name: Veritas
+on: [pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Jacobious52/veritas/.github/actions/veritas@main
+        with:
+          args: verify --changed --profile ci
+          repair-prompt: "true"
+```
+
 Optional language tools:
 
 - Go projects need `go` on `PATH`.
