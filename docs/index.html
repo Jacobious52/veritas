@@ -220,7 +220,8 @@
       background: linear-gradient(90deg, var(--warn), var(--bad), var(--violet));
     }
     .visual-panel {
-      min-height: 300px;
+      min-height: 380px;
+      margin-top: 30px;
       padding: 0;
       background:
         radial-gradient(circle at 72% 18%, rgba(122,168,255,.22), transparent 38%),
@@ -233,7 +234,7 @@
     #hero-visual-canvas {
       display: block;
       width: 100%;
-      height: 300px;
+      height: 380px;
     }
     .visual-caption {
       position: absolute;
@@ -638,8 +639,16 @@
       .lede { font-size: 18px; }
       .actions { flex-direction: column; }
       .actions .button { width: 100%; }
-      .visual-panel { min-height: 260px; }
-      #hero-visual-canvas { height: 260px; }
+      .visual-panel { min-height: 340px; }
+      #hero-visual-canvas { height: 340px; }
+    }
+    @media (max-width: 560px) {
+      .visual-caption {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+      }
+      .visual-panel { min-height: 360px; }
+      #hero-visual-canvas { height: 360px; }
     }
     @media (prefers-reduced-motion: reduce) {
       #hero-canvas { opacity: .22; }
@@ -683,6 +692,15 @@
           <span>Budgets, timeouts, CI policy</span>
         </div>
 
+        <div class="panel visual-panel" aria-label="Veritas scanning and mutation animation">
+          <canvas id="hero-visual-canvas" aria-hidden="true"></canvas>
+          <div class="visual-caption">
+            <span>scan symbols</span>
+            <span>mutate paths</span>
+            <span>score confidence</span>
+          </div>
+        </div>
+
         <div class="hero-grid">
           <div class="hero-stack">
             <div id="install" class="panel">
@@ -716,15 +734,6 @@ Use .veritas/ feedback, replay results, mutation survivors, and the evolution su
           </div>
 
           <div class="hero-side">
-            <div class="panel visual-panel" aria-label="Veritas scanning and mutation animation">
-              <canvas id="hero-visual-canvas" aria-hidden="true"></canvas>
-              <div class="visual-caption">
-                <span>scan symbols</span>
-                <span>mutate paths</span>
-                <span>score confidence</span>
-              </div>
-            </div>
-
             <div class="panel proof-panel">
               <div class="proof-topline">
                 <span>Example report</span>
@@ -1039,13 +1048,14 @@ Next: add assertions for:
         function seedSyntaxTree() {
           syntaxNodes.length = 0;
           const compact = width < (isAmbient ? 760 : 520);
+          const wideShowcase = !isAmbient && width >= 780;
           const originX = isAmbient
             ? (compact ? width * .68 : width * .73)
-            : (compact ? width * .72 : width * .7);
+            : (wideShowcase ? width * .53 : (compact ? width * .72 : width * .7));
           const originY = isAmbient
             ? (compact ? height * .16 : height * .2)
-            : (compact ? height * .16 : height * .18);
-          const scale = isAmbient ? (compact ? .64 : 1) : (compact ? .38 : .48);
+            : (wideShowcase ? height * .22 : (compact ? height * .16 : height * .18));
+          const scale = isAmbient ? (compact ? .64 : 1) : (wideShowcase ? .42 : (compact ? .38 : .48));
           const levels = [
             [{ label: "source_file", x: 0, y: 0, color: colors[1] }],
             [
@@ -1081,6 +1091,7 @@ Next: add assertions for:
           context.fillRect(0, 0, width, height);
 
           const t = time * .001;
+          const compactShowcase = !isAmbient && width < 520;
           drawGrid(t);
           if (isAmbient) {
             context.save();
@@ -1089,6 +1100,10 @@ Next: add assertions for:
             drawOperatorStream(t);
             drawSignalRail(t);
             context.restore();
+          } else if (compactShowcase) {
+            drawCodeScanner(t);
+            drawMutationDiff(t);
+            drawSignalRail(t);
           } else {
             drawCodeScanner(t);
             drawSyntaxTree(t);
@@ -1122,15 +1137,16 @@ Next: add assertions for:
 
         function drawCodeScanner(t) {
           const compact = width < 520;
-          const x = compact ? 14 : 18;
-          const y = compact ? 30 : 34;
-          const w = compact ? width - 28 : width * .57;
-          const h = compact ? 150 : 178;
-          const lineH = compact ? 20 : 22;
+          const wide = width >= 780;
+          const x = compact ? 14 : 28;
+          const y = compact ? 106 : 74;
+          const w = compact ? width - 28 : (wide ? Math.min(440, width * .4) : width * .57);
+          const h = compact ? 118 : 220;
+          const lineH = compact ? 18 : 25;
           const scan = reduceMotion ? 2 : Math.floor((t * 2.7) % 6);
           panel(x, y, w, h, "rgba(9,13,23,.9)", "rgba(101,215,255,.35)");
           label("TREE-SITTER SCAN", x + 16, y + 25, "#65d7ff");
-          const visibleLines = codeLines.slice(0, compact ? 5 : 6);
+          const visibleLines = codeLines.slice(0, compact ? 4 : 7);
           for (let i = 0; i < visibleLines.length; i += 1) {
             const yy = y + 56 + i * lineH;
             if (i === scan) {
@@ -1140,7 +1156,7 @@ Next: add assertions for:
               context.strokeRect(x + 12, yy - 16, w - 24, 22);
             }
             context.fillStyle = lineColor(visibleLines[i]);
-            context.font = `${compact ? 10 : 11}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            context.font = `${compact ? 10 : 12}px ui-monospace, SFMono-Regular, Menlo, monospace`;
             context.fillText(visibleLines[i], x + 18, yy);
           }
           const beamX = x + 14 + ((reduceMotion ? .5 : (t * .22) % 1) * (w - 28));
@@ -1185,14 +1201,15 @@ Next: add assertions for:
 
         function drawOperatorStream(t) {
           const compact = width < (isAmbient ? 760 : 520);
+          const wideShowcase = !isAmbient && width >= 780;
           const startX = isAmbient ? (compact ? width * .18 : width * .48) : width * .15;
-          const endX = isAmbient ? (compact ? width * .82 : width * .88) : width * .88;
-          const y = isAmbient ? (compact ? height * .5 : height * .46) : height * .52;
+          const endX = isAmbient ? (compact ? width * .82 : width * .88) : (wideShowcase ? width * .86 : width * .88);
+          const y = isAmbient ? (compact ? height * .5 : height * .46) : (wideShowcase ? height * .74 : height * .52);
           for (let i = 0; i < operators.length; i += 1) {
             const progress = reduceMotion ? i / operators.length : ((t * (isAmbient ? .08 : .17) + i / operators.length) % 1);
             const x = startX + (endX - startX) * progress;
-            const drift = Math.sin(t * 1.7 + i) * (isAmbient ? (compact ? 10 : 18) : 10);
-            const alpha = (isAmbient ? .12 : .24) + Math.sin(progress * Math.PI) * (isAmbient ? .42 : .58);
+            const drift = Math.sin(t * 1.7 + i) * (isAmbient ? (compact ? 10 : 18) : (wideShowcase ? 5 : 10));
+            const alpha = (isAmbient ? .12 : (wideShowcase ? .18 : .24)) + Math.sin(progress * Math.PI) * (isAmbient ? .42 : .58);
             context.globalAlpha = alpha;
             context.fillStyle = "rgba(8,12,20,.82)";
             context.strokeStyle = colors[i % colors.length];
@@ -1208,26 +1225,36 @@ Next: add assertions for:
 
         function drawMutationDiff(t) {
           const compact = width < 520;
-          const x = compact ? width * .36 : width * .51;
-          const y = compact ? height * .58 : height * .6;
-          const w = compact ? width * .58 : width * .43;
-          const h = compact ? 106 : 118;
+          const wide = width >= 780;
+          const x = compact ? 24 : (wide ? width * .71 : width * .51);
+          const y = compact ? 236 : (wide ? height * .25 : height * .6);
+          const w = compact ? width - 48 : (wide ? Math.min(292, width * .25) : width * .43);
+          const h = compact ? 88 : (wide ? 176 : 118);
           panel(x, y, w, h, "rgba(15,20,32,.9)", "rgba(255,209,102,.34)");
           label("MUTATION CAMPAIGN", x + 14, y + 24, "#ffd166");
           const blink = reduceMotion || Math.sin(t * 5) > -0.4;
-          diffLine("- cents <= 500", x + 16, y + 54, "#ff9fb3", blink);
-          diffLine("+ cents < 500", x + 16, y + 78, "#58e6b7", true);
+          diffLine("- if cents <= 500", x + 16, y + (compact ? 48 : 58), "#ff9fb3", blink);
+          diffLine("+ if cents < 500", x + 16, y + (compact ? 70 : 86), "#58e6b7", true);
           context.fillStyle = "#aeb8c8";
-          context.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
-          context.fillText("survivor -> test", x + 16, y + 100);
+          context.font = `${compact ? 10 : 11}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+          if (!compact) {
+            context.fillText("survivor -> assertion candidate", x + 16, y + (wide ? 124 : 108));
+          }
+          if (wide) {
+            context.fillStyle = "rgba(88,230,183,.12)";
+            roundRect(x + 16, y + 140, w - 32, 22, 11, true, false);
+            context.fillStyle = "#58e6b7";
+            context.fillText("rerun: mutant killed", x + 28, y + 156);
+          }
         }
 
         function drawSignalRail(t) {
           const compact = width < (isAmbient ? 760 : 520);
-          const startX = isAmbient ? (compact ? width * .18 : width * .09) : width * .14;
-          const y = isAmbient ? (compact ? height * .78 : height * .66) : height * .86;
+          const wideShowcase = !isAmbient && width >= 780;
+          const startX = isAmbient ? (compact ? width * .18 : width * .09) : (wideShowcase ? width * .12 : width * .14);
+          const y = isAmbient ? (compact ? height * .78 : height * .66) : (wideShowcase ? height - 58 : height - 32);
           const labels = ["symbols", "mutants", "seeds", "replay", "score"];
-          const step = isAmbient ? (compact ? 70 : 110) : Math.min(78, (width - 80) / 4);
+          const step = isAmbient ? (compact ? 70 : 110) : (wideShowcase ? (width * .76) / 4 : Math.min(78, (width - 80) / 4));
           context.strokeStyle = "rgba(88,230,183,.32)";
           context.lineWidth = 1;
           context.beginPath();
@@ -1239,10 +1266,10 @@ Next: add assertions for:
             const active = reduceMotion ? i === 2 : Math.floor((t * 1.8) % labels.length) === i;
             context.fillStyle = active ? colors[i % colors.length] : "rgba(15,21,34,.95)";
             context.strokeStyle = colors[i % colors.length];
-            const pillW = isAmbient ? (compact ? 58 : 76) : (compact ? 54 : 64);
+            const pillW = isAmbient ? (compact ? 58 : 76) : (wideShowcase ? 92 : (compact ? 54 : 64));
             roundRect(x - pillW / 2, y - 17, pillW, 34, 17, true, true);
             context.fillStyle = active ? "#071017" : "#e5ecf7";
-            context.font = `${isAmbient ? (compact ? 9 : 11) : 9}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            context.font = `${isAmbient ? (compact ? 9 : 11) : (wideShowcase ? 11 : 9)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
             context.textAlign = "center";
             context.fillText(labels[i], x, y + 4);
           }
