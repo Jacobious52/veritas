@@ -1922,7 +1922,7 @@ fn render_init_config(languages: &[&str]) -> String {
              fuzz_seconds = 10\n\
              fuzz_existing = true\n\
              fuzz_concurrency = 2\n\
-             coverage_enabled = true\n\
+             coverage_enabled = false\n\
              reverse_dependency_depth = 1\n\
              max_fuzz_targets = 20\n\
              command_timeout_seconds = 120\n\

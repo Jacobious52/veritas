@@ -51,6 +51,8 @@ The Go plugin is package-aware:
 
 - discovers one or more `go.mod` roots
 - runs `go list -json ./...` per module
+- skips global target discovery for explicit `--target path/to/file.go` or `--target path/to/package` runs
+- reuses Go module/package/function discovery within one verification run
 - maps selected artifacts and target IDs back to package directories
 - includes configurable reverse dependencies
 - applies `build_tags` to `go list`, `go test`, fuzzing, coverage, and mutation commands

@@ -798,7 +798,7 @@ fn mutants_list_rejects_invalid_shard_flags() {
 }
 
 #[test]
-fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
+fn verifies_go_multimodule_fixture_scopes_explicit_package_targets() {
     if !go_available() {
         return;
     }
@@ -816,7 +816,7 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
         .success()
         .stdout(predicate::str::contains("2 Go modules"))
         .stdout(predicate::str::contains("go test ./pkg/invoice"))
-        .stdout(predicate::str::contains("go test ./pkg/api"))
+        .stdout(predicate::str::contains("go test ./pkg/api").not())
         .stdout(predicate::str::contains("FuzzApplyDiscountCents"))
         .stdout(predicate::str::contains("mutation survived"));
 
@@ -837,7 +837,8 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
         .expect("read package graph");
     assert!(graph.contains("\"root\": \"services/billing\""));
     assert!(graph.contains("\"root\": \"services/gateway\""));
-    assert!(graph.contains("\"run_reason\": \"reverse dependency\""));
+    assert!(graph.contains("\"scoped_without_package_graph\": true"));
+    assert!(!graph.contains("\"run_reason\": \"reverse dependency\""));
 
     let report =
         fs::read_to_string(fixture.path().join(".veritas/report.json")).expect("read report");
@@ -871,7 +872,7 @@ fn verifies_go_multimodule_fixture_and_scopes_reverse_dependencies() {
                 })
             && record["test_selection_hint"]
                 .as_str()
-                .is_some_and(|hint| hint.contains("reverse dependencies"))
+                .is_some_and(|hint| hint.contains("without scanning full go list metadata"))
     }));
 }
 

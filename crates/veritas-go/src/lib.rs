@@ -39,6 +39,7 @@ pub struct GoPlugin {
 #[derive(Debug, Default)]
 struct GoPluginState {
     coverage_package_args: BTreeMap<Utf8PathBuf, Vec<String>>,
+    contexts: BTreeMap<Utf8PathBuf, GoVerificationContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,7 @@ struct GoVerificationContext {
     packages: Vec<GoPackage>,
     functions: Vec<GoFunction>,
     fuzz_targets: GoFuzzTargets,
+    scoped_without_package_graph: bool,
 }
 
 impl GoPlugin {
@@ -157,6 +159,62 @@ impl GoPlugin {
             .cloned()
             .unwrap_or_else(|| vec!["./...".to_string()]))
     }
+
+    fn context(&self, root: &Path) -> Result<GoVerificationContext> {
+        let root_key = utf8_path(root)?;
+        if let Some(context) = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Go plugin state lock was poisoned"))?
+            .contexts
+            .get(&root_key)
+            .cloned()
+        {
+            return Ok(context);
+        }
+
+        let context = GoVerificationContext::discover(root, &self.config)?;
+        self.state
+            .lock()
+            .map_err(|_| anyhow!("Go plugin state lock was poisoned"))?
+            .contexts
+            .insert(root_key, context.clone());
+        Ok(context)
+    }
+
+    fn context_for_target(
+        &self,
+        root: &Path,
+        target: &VerificationTarget,
+    ) -> Result<GoVerificationContext> {
+        if target.kind == TargetKind::Project || target.path.as_str() == "." {
+            return self.context(root);
+        }
+        let root_key = utf8_path(root)?;
+        if let Some(context) = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Go plugin state lock was poisoned"))?
+            .contexts
+            .get(&root_key)
+            .filter(|context| !context.scoped_without_package_graph)
+            .cloned()
+        {
+            return Ok(context);
+        }
+        let context = GoVerificationContext::discover_scoped(root, &self.config, &target.path)?;
+        self.cache_context(root, context.clone())?;
+        Ok(context)
+    }
+
+    fn cache_context(&self, root: &Path, context: GoVerificationContext) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow!("Go plugin state lock was poisoned"))?
+            .contexts
+            .insert(utf8_path(root)?, context);
+        Ok(())
+    }
 }
 
 impl GoVerificationContext {
@@ -184,14 +242,34 @@ impl GoVerificationContext {
                         function
                     }),
             );
-            let module_fuzz = discover_existing_fuzz_targets(&module_root)?;
-            merge_prefixed_fuzz_targets(&mut fuzz_targets, &module.root, module_fuzz);
+            if config.fuzz_existing {
+                let module_fuzz = discover_existing_fuzz_targets(&module_root)?;
+                merge_prefixed_fuzz_targets(&mut fuzz_targets, &module.root, module_fuzz);
+            }
         }
         Ok(Self {
             modules,
             packages,
             functions,
             fuzz_targets,
+            scoped_without_package_graph: false,
+        })
+    }
+
+    fn discover_scoped(root: &Path, config: &GoPluginConfig, scope: &Utf8PathBuf) -> Result<Self> {
+        let modules = discover_go_modules(root)?;
+        let functions = discover_functions_for_scope(root, scope)?;
+        let fuzz_targets = if config.fuzz_existing {
+            discover_existing_fuzz_targets_for_scope(root, scope)?
+        } else {
+            GoFuzzTargets::default()
+        };
+        Ok(Self {
+            modules,
+            packages: Vec::new(),
+            functions,
+            fuzz_targets,
+            scoped_without_package_graph: true,
         })
     }
 }
@@ -244,7 +322,7 @@ impl LanguagePlugin for GoPlugin {
     }
 
     fn discover_targets(&self, root: &Path) -> Result<Vec<VerificationTarget>> {
-        let context = GoVerificationContext::discover(root, &self.config)?;
+        let context = self.context(root)?;
         let mut targets = vec![VerificationTarget {
             id: "go:project".to_string(),
             language: "go".to_string(),
@@ -307,7 +385,7 @@ impl LanguagePlugin for GoPlugin {
         plan: &VerificationPlan,
     ) -> Result<Vec<GeneratedArtifact>> {
         let root = std::env::current_dir()?;
-        let context = GoVerificationContext::discover(&root, &self.config)?;
+        let context = self.context_for_target(&root, target)?;
         let selected: Vec<GoFunction> = context
             .functions
             .iter()
@@ -426,7 +504,7 @@ impl LanguagePlugin for GoPlugin {
         plan: &VerificationPlan,
     ) -> Result<TestRunResult> {
         let start = Instant::now();
-        let context = GoVerificationContext::discover(root, &self.config)?;
+        let context = self.context(root)?;
         let mut commands = Vec::new();
         let mut quality = VerificationQuality::default();
         let package_args = test_package_args(&context, artifacts, &self.config);
@@ -532,7 +610,7 @@ impl LanguagePlugin for GoPlugin {
             }));
         }
 
-        let context = GoVerificationContext::discover(root, &self.config)?;
+        let context = self.context(root)?;
         let report_dir = root.join(".veritas");
         fs::create_dir_all(&report_dir)
             .with_context(|| format!("failed to create {}", report_dir.display()))?;
@@ -602,7 +680,7 @@ impl LanguagePlugin for GoPlugin {
         target: &VerificationTarget,
         case: &BehaviorReplayCase,
     ) -> Result<Option<BehaviorReplayObservation>> {
-        let context = GoVerificationContext::discover(root, &self.config)?;
+        let context = self.context(root)?;
         let Some(function) = context
             .functions
             .iter()
@@ -619,7 +697,7 @@ impl LanguagePlugin for GoPlugin {
         target: &VerificationTarget,
         cases: &[BehaviorReplayCase],
     ) -> Result<BTreeMap<String, BehaviorReplayObservation>> {
-        let context = GoVerificationContext::discover(root, &self.config)?;
+        let context = self.context(root)?;
         let Some(function) = context
             .functions
             .iter()
@@ -1441,6 +1519,7 @@ fn package_graph_artifact(
         "target_id": target.id,
         "reverse_dependency_depth": config.reverse_dependency_depth,
         "max_packages": config.max_packages,
+        "scoped_without_package_graph": context.scoped_without_package_graph,
         "modules": modules,
         "packages": packages,
     }))?;
@@ -1697,44 +1776,76 @@ fn merge_prefixed_fuzz_targets(
 }
 
 fn discover_functions(root: &Path) -> Result<Vec<GoFunction>> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_go::LANGUAGE.into())
-        .map_err(|error| anyhow!("failed to load tree-sitter Go grammar: {error}"))?;
+    let paths = go_source_paths(root, root)?;
+    discover_functions_from_paths(root, &paths)
+}
 
+fn discover_functions_for_scope(root: &Path, scope: &Utf8PathBuf) -> Result<Vec<GoFunction>> {
+    let scope_path = root.join(scope);
+    let paths = go_source_paths(root, &scope_path)?;
+    discover_functions_from_paths(root, &paths)
+}
+
+fn discover_functions_from_paths(root: &Path, paths: &[Utf8PathBuf]) -> Result<Vec<GoFunction>> {
+    let mut parser = go_parser()?;
     let mut functions = Vec::new();
-    for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
+    for path in paths {
+        let absolute = root.join(path);
+        let contents = fs::read_to_string(&absolute)
+            .with_context(|| format!("failed to read {}", absolute.display()))?;
+        let package_name = parse_package_name(&contents).unwrap_or_else(|| "main".to_string());
+        let tree = parser
+            .parse(&contents, None)
+            .ok_or_else(|| anyhow!("failed to parse Go source {}", absolute.display()))?;
+        collect_go_functions(
+            tree.root_node(),
+            &contents,
+            &package_name,
+            path,
+            &mut functions,
+        )?;
+    }
+    Ok(functions)
+}
+
+fn go_source_paths(root: &Path, scope: &Path) -> Result<Vec<Utf8PathBuf>> {
+    if scope.is_file() {
+        if is_go_source_file(scope) {
+            return Ok(vec![relative_utf8(root, scope)?]);
+        }
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    for entry in WalkDir::new(scope).into_iter().filter_entry(|entry| {
         entry.depth() == 0
             || (!is_ignored(entry.path(), entry.file_name())
                 && !is_nested_go_module_root(entry.path(), entry.depth()))
     }) {
         let entry = entry?;
-        if !entry.file_type().is_file()
-            || entry.path().extension() != Some(OsStr::new("go"))
-            || entry
-                .path()
-                .file_name()
-                .and_then(OsStr::to_str)
-                .is_some_and(|name| name.ends_with("_test.go"))
-        {
-            continue;
+        if entry.file_type().is_file() && is_go_source_file(entry.path()) {
+            paths.push(relative_utf8(root, entry.path())?);
         }
-        let path = relative_utf8(root, entry.path())?;
-        let contents = fs::read_to_string(entry.path())
-            .with_context(|| format!("failed to read {}", entry.path().display()))?;
-        let package_name = parse_package_name(&contents).unwrap_or_else(|| "main".to_string());
-        let tree = parser
-            .parse(&contents, None)
-            .ok_or_else(|| anyhow!("failed to parse Go source {}", entry.path().display()))?;
-        collect_go_functions(
-            tree.root_node(),
-            &contents,
-            &package_name,
-            &path,
-            &mut functions,
-        )?;
     }
-    Ok(functions)
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn is_go_source_file(path: &Path) -> bool {
+    path.extension() == Some(OsStr::new("go"))
+        && !path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.ends_with("_test.go"))
+}
+
+fn go_parser() -> Result<Parser> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_go::LANGUAGE.into())
+        .map_err(|error| anyhow!("failed to load tree-sitter Go grammar: {error}"))?;
+    Ok(parser)
 }
 
 fn parse_package_name(contents: &str) -> Option<String> {
@@ -3108,11 +3219,21 @@ fn select_go_mutation_tests(
     }
 
     if context.packages.is_empty() {
+        let (hint, fallback) = if context.scoped_without_package_graph {
+            (
+                "selected explicit Go target package set without scanning full go list metadata",
+                "Full Go package graph was intentionally skipped for explicit target performance",
+            )
+        } else {
+            (
+                "selected verification package set because go list metadata was unavailable",
+                "Go package graph was unavailable",
+            )
+        };
         return GoMutationSelection {
             package_args: fallback_package_args.to_vec(),
-            hint: "selected verification package set because go list metadata was unavailable"
-                .to_string(),
-            fallback: Some("Go package graph was unavailable".to_string()),
+            hint: hint.to_string(),
+            fallback: Some(fallback.to_string()),
             has_tests: true,
         };
     }
@@ -4297,13 +4418,20 @@ fn fuzz_targets(artifacts: &[GeneratedArtifact]) -> BTreeMap<Utf8PathBuf, Vec<St
 }
 
 fn discover_existing_fuzz_targets(root: &Path) -> Result<GoFuzzTargets> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_go::LANGUAGE.into())
-        .map_err(|error| anyhow!("failed to load tree-sitter Go grammar: {error}"))?;
+    discover_existing_fuzz_targets_in(root, root)
+}
 
+fn discover_existing_fuzz_targets_for_scope(
+    root: &Path,
+    scope: &Utf8PathBuf,
+) -> Result<GoFuzzTargets> {
+    discover_existing_fuzz_targets_in(root, &root.join(scope))
+}
+
+fn discover_existing_fuzz_targets_in(root: &Path, scope: &Path) -> Result<GoFuzzTargets> {
+    let mut parser = go_parser()?;
     let mut targets = GoFuzzTargets::default();
-    for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
+    for entry in WalkDir::new(scope).into_iter().filter_entry(|entry| {
         entry.depth() == 0
             || (!is_ignored(entry.path(), entry.file_name())
                 && !is_nested_go_module_root(entry.path(), entry.depth()))
@@ -4941,6 +5069,7 @@ mod tests {
             functions: vec![],
             fuzz_targets: discover_existing_fuzz_targets(root.path())
                 .expect("fuzz discovery succeeds"),
+            scoped_without_package_graph: false,
         };
         let targets = relevant_fuzz_targets(&context, &[artifact], &test_go_config());
 
@@ -5049,6 +5178,61 @@ mod tests {
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, "ValidateInvoice");
         assert!(functions[0].params.is_empty());
+    }
+
+    #[test]
+    fn scoped_function_discovery_only_parses_requested_package() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "pkg/invoice/invoice.go",
+            "package invoice\n\nfunc ParseInvoiceTotal(input string) int { return len(input) }\n",
+        );
+        write_file(
+            root.path(),
+            "pkg/other/other.go",
+            "package other\n\nfunc ParseOther(input string) int { return len(input) }\n",
+        );
+
+        let functions =
+            discover_functions_for_scope(root.path(), &Utf8PathBuf::from("pkg/invoice"))
+                .expect("discover scoped functions");
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].symbol, "ParseInvoiceTotal");
+        assert_eq!(
+            functions[0].path,
+            Utf8PathBuf::from("pkg/invoice/invoice.go")
+        );
+    }
+
+    #[test]
+    fn scoped_context_skips_fuzz_walk_when_existing_fuzz_is_disabled() {
+        let root = TempRoot::new();
+        write_file(root.path(), "go.mod", "module example.com/app\n\ngo 1.22\n");
+        write_file(
+            root.path(),
+            "pkg/invoice/invoice.go",
+            "package invoice\n\nfunc ParseInvoiceTotal(input string) int { return len(input) }\n",
+        );
+        write_file(
+            root.path(),
+            "pkg/invoice/invoice_test.go",
+            "package invoice\n\nimport \"testing\"\n\nfunc FuzzParseInvoiceTotal(f *testing.F) {}\n",
+        );
+        let mut config = test_go_config();
+        config.fuzz_existing = false;
+
+        let context = GoVerificationContext::discover_scoped(
+            root.path(),
+            &config,
+            &Utf8PathBuf::from("pkg/invoice"),
+        )
+        .expect("discover scoped context");
+
+        assert_eq!(context.functions.len(), 1);
+        assert!(context.fuzz_targets.handwritten.is_empty());
+        assert!(context.fuzz_targets.generated.is_empty());
     }
 
     #[test]
