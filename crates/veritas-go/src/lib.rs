@@ -3503,6 +3503,9 @@ fn mutation_candidate_from_binary(
     source: &str,
     function: &GoFunction,
 ) -> Result<Option<MutationCandidate>> {
+    if is_inside_map_make_capacity(node, source) {
+        return Ok(None);
+    }
     let Some(operator) = binary_operator_node(node) else {
         return Ok(None);
     };
@@ -3708,6 +3711,9 @@ fn mutation_candidate_from_literal(
     source: &str,
     function: &GoFunction,
 ) -> Result<Option<MutationCandidate>> {
+    if is_inside_map_make_capacity(node, source) {
+        return Ok(None);
+    }
     let text = node_text(node, source)?.trim();
     let to = match text {
         "true" => "false",
@@ -3725,6 +3731,23 @@ fn mutation_candidate_from_literal(
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn is_inside_map_make_capacity(node: Node<'_>, source: &str) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "call_expression" {
+            if let Ok(text) = node_text(parent, source) {
+                let trimmed = text.trim_start();
+                if trimmed.starts_with("make(map[") {
+                    let relative_start = node.start_byte().saturating_sub(parent.start_byte());
+                    return text.find(',').is_some_and(|comma| relative_start > comma);
+                }
+            }
+        }
+        current = parent;
+    }
+    false
 }
 
 fn literal_mutation_label_for_function(function: &GoFunction) -> &'static str {
@@ -5337,6 +5360,40 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.from == "err != nil"));
+    }
+
+    #[test]
+    fn mutation_candidates_skip_map_make_capacity_hints() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "maps.go",
+            "package maps\n\nfunc CopyMap(in map[string]string) (map[string]string, []string) {\n\tout := make(map[string]string, len(in)+1)\n\titems := make([]string, len(in)+1)\n\treturn out, items\n}\n",
+        );
+        let functions = discover_functions(root.path()).expect("discover functions");
+        let artifact = GeneratedArtifact {
+            id: "go-mutation-maps".to_string(),
+            language: "go".to_string(),
+            kind: ArtifactKind::MutationCheck,
+            target_id: "go:maps.go:CopyMap".to_string(),
+            path: Utf8PathBuf::from(".veritas/mutations/go_maps.txt"),
+            contents: String::new(),
+            description: String::new(),
+            status: ArtifactStatus::Planned,
+        };
+
+        let candidates =
+            go_mutation_candidates(&functions, root.path(), &[artifact]).expect("mutations");
+
+        assert!(candidates.iter().any(|candidate| candidate.from == "+"));
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.from == "+" || candidate.from == "1")
+                .count(),
+            2,
+            "only the observable slice length expression should be mutated; candidates={candidates:?}"
+        );
     }
 
     #[test]
