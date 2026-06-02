@@ -1,0 +1,8 @@
+{
+  "name": "sample-typescript",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {}
+}

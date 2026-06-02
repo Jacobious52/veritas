@@ -34,6 +34,7 @@ pub struct PluginConfigs {
     pub rust: RustPluginConfig,
     pub go: GoPluginConfig,
     pub python: PythonPluginConfig,
+    pub typescript: TypeScriptPluginConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +70,12 @@ pub struct GoPluginConfig {
 pub struct PythonPluginConfig {
     pub command_timeout_seconds: u64,
     pub coverage_enabled: bool,
+    pub mutation: MutationConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeScriptPluginConfig {
+    pub command_timeout_seconds: u64,
     pub mutation: MutationConfig,
 }
 
@@ -153,6 +160,7 @@ struct PluginSection {
     rust: Option<RustPluginConfigPartial>,
     go: Option<GoPluginConfigPartial>,
     python: Option<PythonPluginConfigPartial>,
+    typescript: Option<TypeScriptPluginConfigPartial>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,6 +196,12 @@ struct GoPluginConfigPartial {
 struct PythonPluginConfigPartial {
     command_timeout_seconds: Option<u64>,
     coverage_enabled: Option<bool>,
+    mutation: Option<MutationConfigPartial>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TypeScriptPluginConfigPartial {
+    command_timeout_seconds: Option<u64>,
     mutation: Option<MutationConfigPartial>,
 }
 
@@ -273,6 +287,10 @@ impl Default for VeritasConfig {
                     coverage_enabled: false,
                     mutation: MutationConfig::default(),
                 },
+                typescript: TypeScriptPluginConfig {
+                    command_timeout_seconds: 120,
+                    mutation: MutationConfig::default(),
+                },
             },
         }
     }
@@ -345,6 +363,7 @@ impl VeritasConfig {
             apply_mutation_config(&mut config.plugins.rust.mutation, &mutation);
             apply_mutation_config(&mut config.plugins.go.mutation, &mutation);
             apply_mutation_config(&mut config.plugins.python.mutation, &mutation);
+            apply_mutation_config(&mut config.plugins.typescript.mutation, &mutation);
         }
 
         if let Some(plugins) = parsed.plugins {
@@ -426,11 +445,23 @@ impl VeritasConfig {
                     apply_mutation_config(&mut config.plugins.python.mutation, &value);
                 }
             }
+            if let Some(typescript) = plugins.typescript {
+                if let Some(value) = typescript.command_timeout_seconds {
+                    config.plugins.typescript.command_timeout_seconds = value;
+                }
+                if let Some(value) = typescript.mutation {
+                    apply_mutation_config(&mut config.plugins.typescript.mutation, &value);
+                }
+            }
         }
 
         validate_shard_config("plugins.rust.mutation", &config.plugins.rust.mutation)?;
         validate_shard_config("plugins.go.mutation", &config.plugins.go.mutation)?;
         validate_shard_config("plugins.python.mutation", &config.plugins.python.mutation)?;
+        validate_shard_config(
+            "plugins.typescript.mutation",
+            &config.plugins.typescript.mutation,
+        )?;
 
         Ok(config)
     }
@@ -611,6 +642,12 @@ test_threads = 3
 systemd_scope = true
 memory_max = "4G"
 cpu_quota = "150%"
+
+[plugins.typescript]
+command_timeout_seconds = 11
+
+[plugins.typescript.mutation]
+enabled_operators = ["boolean"]
 "#,
         )
         .expect("write config");
@@ -675,6 +712,15 @@ cpu_quota = "150%"
         assert!(config.plugins.rust.systemd_scope);
         assert_eq!(config.plugins.rust.memory_max.as_deref(), Some("4G"));
         assert_eq!(config.plugins.rust.cpu_quota.as_deref(), Some("150%"));
+        assert_eq!(config.plugins.typescript.command_timeout_seconds, 11);
+        assert_eq!(
+            config.plugins.typescript.mutation.enabled_operators,
+            vec!["boolean"]
+        );
+        assert_eq!(
+            config.plugins.typescript.mutation.exclude_paths,
+            vec!["vendor/", "_generated.go$"]
+        );
     }
 
     #[test]

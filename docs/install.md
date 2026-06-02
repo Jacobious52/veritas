@@ -93,6 +93,7 @@ Optional language tools:
 
 - Go projects need `go` on `PATH`.
 - Python projects need `python3`; coverage feedback needs `python3 -m coverage`.
+- TypeScript/JavaScript projects use `bun test`; scans and symbol artifacts still work when Bun is not installed.
 - Rust coverage needs `cargo-llvm-cov` and should stay disabled on shared machines unless explicitly needed.
 
 For shared runners, prefer changed verification first:

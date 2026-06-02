@@ -14,6 +14,7 @@ LANGUAGE_EXTENSIONS = {
     "rust": [".rs"],
     "go": [".go"],
     "python": [".py"],
+    "typescript": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
 }
 
 
@@ -21,6 +22,7 @@ COMMENT_PREFIX = {
     "rust": "//",
     "go": "//",
     "python": "#",
+    "typescript": "//",
 }
 
 

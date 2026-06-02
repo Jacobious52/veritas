@@ -58,6 +58,12 @@ jobs:
       - name: Check Python
         run: python3 --version
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Check Bun
+        run: bun --version
+
       - name: Format
         run: cargo fmt --all -- --check
 
@@ -75,9 +81,12 @@ jobs:
           cargo run -p veritas-cli --locked -- verify --root fixtures/sample-go --lang go --target .
           cargo run -p veritas-cli --locked -- scan --root fixtures/sample-python
           cargo run -p veritas-cli --locked -- verify --root fixtures/sample-python --lang python --target invoice.py
+          cargo run -p veritas-cli --locked -- scan --root fixtures/sample-typescript
+          cargo run -p veritas-cli --locked -- verify --root fixtures/sample-typescript --lang typescript --target src/invoice.ts
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-rust
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-go
           cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-python
+          cargo run -p veritas-cli --locked -- conformance --root fixtures/sample-typescript
 
       - name: Installer syntax
         run: sh -n install.sh

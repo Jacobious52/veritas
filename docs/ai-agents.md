@@ -78,7 +78,7 @@ The first report produces `14` candidates, `12` selected candidates, `4` survivi
 
 See `docs/evolution.md` for the exact before/candidate/after commands, expected metrics, and artifact paths.
 
-See `docs/ai-verification-loops.md` for concrete Rust, Go, Python, and agent-repair examples that can be pasted into onboarding docs or issue comments.
+See `docs/ai-verification-loops.md` for concrete Rust, Go, Python, TypeScript/JavaScript, and agent-repair examples that can be pasted into onboarding docs or issue comments.
 
 ## AI-Facing Artifacts
 

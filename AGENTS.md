@@ -16,10 +16,13 @@ crates/
   veritas-rust/         # Rust detection, Tree-sitter symbols, proptest, cargo, coverage, mutation
   veritas-go/           # Go detection, Tree-sitter symbols, fuzzing, go test, coverage, mutation
   veritas-python/       # Python detection, Tree-sitter symbols, pytest/unittest, coverage, mutation
+  veritas-typescript/   # TypeScript/JavaScript detection, Tree-sitter symbols, Bun tests, mutation, replay
   veritas-report/       # Markdown, SARIF, and JUnit renderers
 fixtures/
   sample-rust/          # small integration fixture
   sample-go/            # small integration fixture
+  sample-python/        # small integration fixture
+  sample-typescript/    # small TS/JS integration fixture
 examples/
   rust-invoice/         # richer Rust test bed with hidden parser assumptions
   go-invoice/           # richer Go test bed with hidden parser assumptions
@@ -46,6 +49,7 @@ Installed locally for Jacob:
 - Rust/Cargo: available through `/home/jacob/.cargo/bin`
 - Go: `/home/jacob/.local/bin/go` -> `/home/jacob/.local/go/bin/go`
 - `cargo-llvm-cov`: `/home/jacob/.cargo/bin/cargo-llvm-cov`
+- Bun: optional for TypeScript/JavaScript `bun test`; scans and symbol artifacts still work when Bun is missing
 
 `/home/jacob/.local/bin` and `/home/jacob/.cargo/bin` are expected to be on `PATH`.
 
@@ -91,6 +95,10 @@ cargo run -p veritas-cli -- scan --root fixtures/sample-python
 cargo run -p veritas-cli -- verify --root fixtures/sample-python --lang python --target invoice.py
 cargo run -p veritas-cli -- conformance --root fixtures/sample-python
 cargo run -p veritas-cli -- cleanup --root fixtures/sample-python
+cargo run -p veritas-cli -- scan --root fixtures/sample-typescript
+cargo run -p veritas-cli -- verify --root fixtures/sample-typescript --lang typescript --target src/invoice.ts
+cargo run -p veritas-cli -- conformance --root fixtures/sample-typescript
+cargo run -p veritas-cli -- cleanup --root fixtures/sample-typescript
 ```
 
 Run example test beds:
@@ -164,12 +172,13 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Go writes package awareness, package graph, and symbol graph artifacts.
 - Medium confidence fixtures live in `fixtures/rust-workspace` and `fixtures/go-multimodule`.
 - Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, Hypothesis property candidate execution when `hypothesis` and `pytest` are installed, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
+- TypeScript/JavaScript supports project detection from package/config/source roots, Tree-sitter target discovery for `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, and `.cjs`, symbol graphs, executable Bun property checks for supported exported free functions, source-range mutation checks for comparisons/equality/boolean/default/string-normalization operators, batched primitive free-function replay, and `bun test` execution. If Bun is not installed, `verify` records a skipped Bun command instead of failing discovery.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
 - The local confidence suite runs through `./scripts/run-confidence-suite.sh` and writes `target/confidence-suite/confidence-report.json`, `confidence-summary.json`, and `confidence-history.jsonl`.
 - Large-repo benchmarks run through `./scripts/run-large-repo-benchmarks.py`, with pinned real repos in `benchmarks/large-repos.toml` and fast local script coverage in `benchmarks/local-large-repos-smoke.toml`. The `mutation-inventory` mode walks discovered source files and reports unique mutation candidates, cap-hit paths, and domain/operator distribution. Outputs land under `target/large-repo-benchmarks/reports/`.
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
 - GitHub Actions includes a live installer smoke workflow for published releases plus manual confidence-suite and large-repo benchmark jobs.
-- Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.
+- Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python/TypeScript fixture smoke verification.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
 - GitHub Actions release workflow builds Linux/macOS binaries, publishes `install.sh`, checksums, a CycloneDX SBOM, and provenance attestations. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
@@ -211,6 +220,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust promoted regression scaffolds under `tests/veritas_regression_*.rs` or package-local equivalents
 - Go generated fuzz files such as `veritas_fuzz_test.go`
 - Go promoted regression scaffolds such as `veritas_regression_*_test.go`
+- TypeScript/JavaScript generated symbol and property-candidate artifacts under `.veritas/symbols/` and `.veritas/properties/`
 
 Treat generated tests as reviewable artifacts, not automatically trusted source.
 
@@ -220,7 +230,7 @@ Use `veritas cleanup` after fixture, example, and dogfood runs unless the genera
 
 - `README.md`: user-facing overview and quick start
 - `docs/ai-agents.md`: copy-paste AI agent workflow
-- `docs/ai-verification-loops.md`: concrete Rust, Go, Python, and AI repair-loop examples
+- `docs/ai-verification-loops.md`: concrete Rust, Go, Python, TypeScript/JavaScript, and AI repair-loop examples
 - `docs/production.md`: large-repo and CI operating guide
 - `docs/architecture.md`: plugin contract and artifact model
 - `docs/confidence.md`: fixture tiers, seeded examples, and external canaries

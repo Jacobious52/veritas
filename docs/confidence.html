@@ -40,7 +40,7 @@
         <h2>Local Test Layers</h2>
         <div class="grid">
           <div class="card"><h3>Unit Tests</h3><p>Parser helpers, report rendering, changed-target selection, cleanup, package scoping, mutation candidates, and artifact rendering.</p></div>
-          <div class="card"><h3>Tiny Fixtures</h3><p>Fast CLI smoke projects for Rust, Go, and Python keep plugin contracts honest.</p></div>
+          <div class="card"><h3>Tiny Fixtures</h3><p>Fast CLI smoke projects for Rust, Go, Python, and TypeScript/JavaScript keep plugin contracts honest.</p></div>
           <div class="card"><h3>Medium Fixtures</h3><p>Rust workspaces and Go multimodule projects exercise package-local artifacts, reverse dependencies, fuzz discovery, and symbol graphs.</p></div>
           <div class="card"><h3>Seeded Examples</h3><p>Purpose-built projects with hidden assumptions validate mutation, fuzzing, replay, assertions, and evolution behavior.</p></div>
           <div class="card"><h3>Benchmark Suites</h3><p><code>veritas bench</code> copies cases, runs verification, and scores expected findings, commands, artifacts, and thresholds.</p></div>
@@ -69,7 +69,7 @@ VERITAS_RELEASE_ALLOW_DIRTY=1 ./scripts/publish-crates.sh --dry-run</code></pre>
 ./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode all</code></pre>
         </div>
         <div class="grid">
-          <div class="card"><h3>Scan</h3><p>Measures Tree-sitter/project discovery and target counts across pinned Rust, Go, and Python repositories.</p></div>
+          <div class="card"><h3>Scan</h3><p>Measures Tree-sitter/project discovery and target counts across pinned Rust, Go, Python, and future TypeScript/JavaScript repositories.</p></div>
           <div class="card"><h3>Mutation List</h3><p>Fast capped sample for the current target. This is the cheap smoke path.</p></div>
           <div class="card"><h3>Mutation Inventory</h3><p>Walks discovered source files, previews bounded candidates per file, dedupes mutant IDs, and reports cap-hit paths plus domain/operator distribution.</p></div>
         </div>

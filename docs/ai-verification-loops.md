@@ -94,6 +94,35 @@ Useful artifacts:
 
 Agent action: use the symbol graph and mutation manifest to choose precise tests before editing production code. Python currently runs pytest when the project prefers pytest and it is installed; otherwise it falls back to `python3 -m unittest discover`.
 
+## TypeScript/JavaScript: Symbols Plus Bun Tests
+
+Example target:
+
+```ts
+export class RefundPolicy {
+  authorizeRefund(role: "admin" | "support" | "viewer", cents: number): boolean {
+    return role === "admin" || (role === "support" && cents <= 5_000);
+  }
+}
+```
+
+Run:
+
+```bash
+veritas scan
+veritas verify --lang typescript --target src/invoice.ts
+```
+
+Useful artifacts:
+
+- `.veritas/symbols/typescript_*.json`: Tree-sitter TypeScript/TSX/JavaScript functions, class methods, signatures, params, line ranges, risks, and call hints
+- `.veritas/properties/typescript_*.test.ts`: executable Bun property checks for exported free functions
+- `.veritas/mutations/typescript_campaign.json`: killed/surviving TS/JS mutation records with byte spans, diffs, commands, and shared domain/operator taxonomy
+- `.veritas/differential/typescript_result.json`: batched replay observations for supported primitive exported free functions
+- `.veritas/report.json`: records `bun test` as passed/failed when Bun is installed, or skipped when Bun is unavailable
+
+Agent action: use surviving TS/JS mutants and replay observations to pick the riskiest auth, parsing, money, or serialization boundary, add an owned Bun test, then rerun `veritas verify --changed --profile ci`.
+
 ## Snapshot: Verification To Repair
 
 ```text

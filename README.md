@@ -2,7 +2,7 @@
 
 `veritas` is a Tree-sitter testing oracle for AI-written and AI-modified software.
 
-It is a CLI harness for mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and evolutionary analysis across Rust, Go, Python, and future Tree-sitter language plugins.
+It is a CLI harness for mutation testing, property testing, fuzzing, coverage feedback, corpus replay, differential behavior checks, and evolutionary analysis across Rust, Go, Python, TypeScript/JavaScript, and future Tree-sitter language plugins.
 
 It answers the question ordinary test runs often miss:
 
@@ -18,7 +18,7 @@ Project site: [Jacobious52.github.io/veritas](https://jacobious52.github.io/veri
 
 - It gives an AI agent a concrete next-test queue instead of a vague "add more tests" warning.
 - It keeps generated tests reviewable and removable through `.veritas/` artifacts and `veritas cleanup`.
-- It is built around a generic plugin contract: Rust, Go, and Python work today, and future languages can reuse the same reports through Tree-sitter symbols, line ranges, command budgets, mutation campaigns, replay, and scoring.
+- It is built around a generic plugin contract: Rust, Go, Python, and TypeScript/JavaScript work today, and future languages can reuse the same reports through Tree-sitter symbols, line ranges, command budgets, mutation campaigns, replay, and scoring.
 - It is designed for bigger repos: changed-target selection, package/workspace awareness, command budgets, optional Rust cgroup/systemd limits, phase timing telemetry, CI profiles, benchmark fixtures, and external canaries.
 
 ## Install
@@ -66,6 +66,9 @@ go version
 python3 --version
 python3 -m coverage --version
 
+# TypeScript/JavaScript verification
+bun --version
+
 # Rust coverage, only used when coverage_enabled = true
 cargo install cargo-llvm-cov
 ```
@@ -94,6 +97,7 @@ Verify a specific target:
 veritas verify --lang rust --target src/lib.rs
 veritas verify --lang go --target ./pkg/invoice
 veritas verify --lang python --target invoice.py
+veritas verify --lang typescript --target src/invoice.ts
 ```
 
 Explain and promote findings:
@@ -123,7 +127,7 @@ next agent step: promote assertion candidate, rerun, keep only if the mutant die
 
 - [AI Agent Guide](docs/ai-agents.md): copy-paste instructions and review loop for coding agents.
 - [Install Guide](docs/install.md): release binary, cargo, git, and GitHub Actions setup.
-- [AI Verification Loops](docs/ai-verification-loops.md): tangible Rust, Go, Python, and agent-loop examples.
+- [AI Verification Loops](docs/ai-verification-loops.md): tangible Rust, Go, Python, TypeScript/JavaScript, and agent-loop examples.
 - [Project Site](docs/index.html): GitHub Pages landing page and public overview.
 - [Evolution Demo](docs/evolution.md): real before/candidate/after loop from the Go evolution fixture.
 - [Production Guide](docs/production.md): large-repo Go/Rust operation, budgets, CI policy, and host safety.
@@ -144,6 +148,7 @@ veritas verify --changed --profile ci
 veritas verify --lang rust --target path/to/file.rs
 veritas verify --lang go --target ./pkg/foo
 veritas verify --lang python --target path/to/file.py
+veritas verify --lang typescript --target path/to/file.ts
 veritas generate --kind property --target path
 veritas generate --kind fuzz --target path
 veritas run
@@ -186,7 +191,7 @@ veritas cleanup --dry-run
 
 Language and plugin model:
 
-- Rust, Go, and Python plugins are available today
+- Rust, Go, Python, and TypeScript/JavaScript plugins are available today
 - Tree-sitter discovery provides symbols, methods, line ranges, and risk surfaces where grammars support them
 - each plugin owns language-specific discovery, generated artifacts, command execution, coverage, replay compilation, and mutation operators
 - the core owns shared scoring, policy, replay manifests/results, baselines, corpus entries, mutation campaign records, evolution suites, SARIF/JUnit/Markdown rendering, and AI repair prompts
@@ -195,7 +200,7 @@ Language and plugin model:
 Changed-target verification:
 
 - reads git diffs, staged changes, and untracked files
-- maps changed lines to discovered Rust/Go/Python symbols when line ranges are available
+- maps changed lines to discovered Rust/Go/Python/TypeScript/JavaScript symbols when line ranges are available
 - scopes package commands to changed packages and selected reverse dependencies where graph data exists
 - writes AI review artifacts with change digests and verification guidance
 
@@ -232,6 +237,16 @@ Python verification:
 - runs executable source-range mutation checks for supported comparisons, boolean connectors, default returns, database strings, async/testability seams, and brittleness probes
 - supports replay cases for primitive single-argument and multi-argument public functions
 
+TypeScript/JavaScript verification:
+
+- detects projects through `package.json`, `tsconfig.json`, `jsconfig.json`, or JS/TS source roots
+- discovers functions, class methods, and arrow/function-expression exports with Tree-sitter grammars for TypeScript, TSX, and JavaScript
+- emits symbol graph artifacts with signatures, line ranges, call hints, params, and risk labels
+- writes executable Bun property checks for supported exported free functions, with deterministic/no-throw markers for property quality scoring
+- runs source-range mutation checks for comparisons, strict equality, boolean guards, default returns, and string normalization
+- executes batched differential replay for supported primitive exported free functions
+- runs `bun test` when Bun is installed, otherwise records a skipped Bun command so scan and artifact generation still work on machines without a JS runtime
+
 Reports and artifacts:
 
 - renders Markdown, JSON, SARIF 2.1.0, and compact JUnit XML
@@ -259,8 +274,8 @@ Scale and performance posture:
 
 CI behavior:
 
-- `.github/workflows/ci.yml` runs format, workspace tests, clippy, and Rust/Go/Python fixture scan/verify smoke checks on pull requests and pushes to `main`
-- CI also runs `veritas conformance` across the Rust, Go, and Python fixtures
+- `.github/workflows/ci.yml` runs format, workspace tests, clippy, and Rust/Go/Python/TypeScript fixture scan/verify smoke checks on pull requests and pushes to `main`
+- CI also runs `veritas conformance` across the Rust, Go, Python, and TypeScript fixtures
 - `veritas verify --profile ci` implies `--changed`
 - CI profile disables full coverage, tightens package/fuzz/mutation/time caps, and enables policy-based failure on error severity by default
 - policy filters can select severity, language, artifact kind, and target risk
@@ -367,7 +382,7 @@ build_tags = []
 
 By default mutation runs select the narrowest package-level test commands the plugin can justify. Rust uses symbol/package ownership; Go uses the package graph plus reverse dependencies. Set `disable_test_selection = true` when a repo has global integration fixtures, hidden build tags, or cross-package side effects that make broad mutation commands safer than local selection.
 
-Mutation filters are evaluated as include filters first, then exclude filters. Patterns accept `exact:...`, `glob:...` or `*` wildcards, and `regex:...`; legacy unprefixed patterns keep substring matching. Use `include_target_ids` / `exclude_target_ids` for `lang:path:symbol` targets and `include_mutant_ids` / `exclude_mutant_ids` for stable per-mutant IDs. Add `veritas:skip-mutation` inside a Rust, Go, or Python function to suppress local mutants, and set `report_filtered = true` when filtered candidates should appear as skipped records.
+Mutation filters are evaluated as include filters first, then exclude filters. Patterns accept `exact:...`, `glob:...` or `*` wildcards, and `regex:...` where the active plugin supports regex matching; legacy unprefixed patterns keep substring matching. Use `include_target_ids` / `exclude_target_ids` for `lang:path:symbol` targets and `include_mutant_ids` / `exclude_mutant_ids` for stable per-mutant IDs. Add `veritas:skip-mutation` inside a Rust, Go, Python, or TypeScript/JavaScript function to suppress local mutants, and set `report_filtered = true` when filtered candidates should appear as skipped records.
 
 For shared machines, keep Rust coverage disabled unless needed and enable systemd scope limits:
 
@@ -458,4 +473,4 @@ Run large-repo benchmarks when you want scale/performance signal:
 ./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode changed-only
 ```
 
-This lane pins real Rust, Go, and Python repositories by SHA, measures Tree-sitter discovery, capped mutation preview, file-level mutation inventory, and changed-only AI-agent verification, then writes `target/large-repo-benchmarks/reports/large-repo-dashboard.md` plus JSON trend artifacts. Use `mutation-list` for a quick bounded sample; use `mutation-inventory` when you want the repo-level count of unique mutation opportunities, cap-hit paths, and domain/operator distribution.
+This lane pins real Rust, Go, Python, and TypeScript/JavaScript repositories by SHA, measures Tree-sitter discovery, capped mutation preview where supported, file-level mutation inventory, and changed-only AI-agent verification, then writes `target/large-repo-benchmarks/reports/large-repo-dashboard.md` plus JSON trend artifacts. The TypeScript lane currently includes `axios/axios` for scan and mutation-inventory scale. Use `mutation-list` for a quick bounded sample; use `mutation-inventory` when you want the repo-level count of unique mutation opportunities, cap-hit paths, and domain/operator distribution.

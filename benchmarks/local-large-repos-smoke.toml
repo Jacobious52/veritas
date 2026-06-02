@@ -29,3 +29,12 @@ local_path = "fixtures/sample-go"
 target = "."
 modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
 changed_path = "invoice.go"
+
+[[repo]]
+name = "fixture-sample-typescript"
+language = "typescript"
+profile = "local-smoke"
+local_path = "fixtures/sample-typescript"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+changed_path = "src/invoice.ts"

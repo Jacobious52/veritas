@@ -1,0 +1,5 @@
+[veritas]
+fail_on_findings = false
+
+[plugins.typescript]
+command_timeout_seconds = 30

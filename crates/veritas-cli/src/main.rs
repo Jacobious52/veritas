@@ -24,6 +24,7 @@ use veritas_plugin_api::{
 use veritas_python::PythonPlugin;
 use veritas_report::{render_junit, render_markdown, render_sarif};
 use veritas_rust::RustPlugin;
+use veritas_typescript::TypeScriptPlugin;
 
 #[derive(Debug, Parser)]
 #[command(name = "veritas")]
@@ -308,6 +309,10 @@ enum InitLanguage {
     Rust,
     Go,
     Python,
+    #[value(name = "typescript", alias = "ts")]
+    TypeScript,
+    #[value(name = "javascript", alias = "js")]
+    JavaScript,
     All,
 }
 
@@ -618,7 +623,7 @@ fn main() -> Result<()> {
                 findings: vec![],
                 quality: veritas_plugin_api::VerificationQuality::default(),
                 suggested_next_steps: vec![
-                    "Run `veritas verify --lang rust --target <path>`, `veritas verify --lang go --target <path>`, or `veritas verify --lang python --target <path>`.".to_string(),
+                    "Run `veritas verify --lang rust --target <path>`, `veritas verify --lang go --target <path>`, `veritas verify --lang python --target <path>`, or `veritas verify --lang typescript --target <path>`.".to_string(),
                 ],
             };
             print_report(&report, format)?;
@@ -871,6 +876,7 @@ fn apply_mutants_list_config(
                 &mut config.plugins.rust.mutation,
                 &mut config.plugins.go.mutation,
                 &mut config.plugins.python.mutation,
+                &mut config.plugins.typescript.mutation,
             ] {
                 mutation.dry_run = true;
                 if !domain.is_empty() {
@@ -911,6 +917,7 @@ fn apply_mutants_list_config(
                 &mut config.plugins.rust.mutation,
                 &mut config.plugins.go.mutation,
                 &mut config.plugins.python.mutation,
+                &mut config.plugins.typescript.mutation,
             ] {
                 mutation.include_mutant_ids = ids.clone();
             }
@@ -1818,7 +1825,8 @@ fn init_languages(root: &Path, language: InitLanguage) -> Vec<&'static str> {
         InitLanguage::Rust => vec!["rust"],
         InitLanguage::Go => vec!["go"],
         InitLanguage::Python => vec!["python"],
-        InitLanguage::All => vec!["rust", "go", "python"],
+        InitLanguage::TypeScript | InitLanguage::JavaScript => vec!["typescript"],
+        InitLanguage::All => vec!["rust", "go", "python", "typescript"],
         InitLanguage::Auto => {
             let mut languages = Vec::new();
             if root.join("Cargo.toml").exists() {
@@ -1833,8 +1841,15 @@ fn init_languages(root: &Path, language: InitLanguage) -> Vec<&'static str> {
             {
                 languages.push("python");
             }
+            if root.join("package.json").exists()
+                || root.join("tsconfig.json").exists()
+                || root.join("jsconfig.json").exists()
+                || contains_js_ts_file(root)
+            {
+                languages.push("typescript");
+            }
             if languages.is_empty() {
-                vec!["rust", "go", "python"]
+                vec!["rust", "go", "python", "typescript"]
             } else {
                 languages
             }
@@ -1920,6 +1935,12 @@ fn render_init_config(languages: &[&str]) -> String {
             "\n[plugins.python]\n\
              command_timeout_seconds = 120\n\
              coverage_enabled = false\n",
+        );
+    }
+    if languages.contains(&"typescript") {
+        out.push_str(
+            "\n[plugins.typescript]\n\
+             command_timeout_seconds = 120\n",
         );
     }
     out
@@ -2958,6 +2979,8 @@ fn apply_verify_profile(config: &mut VeritasConfig, profile: Option<VerifyProfil
     config.plugins.go.command_timeout_seconds = config.plugins.go.command_timeout_seconds.min(90);
     config.plugins.go.max_packages = config.plugins.go.max_packages.min(16);
     config.plugins.go.max_mutants = config.plugins.go.max_mutants.min(4);
+    config.plugins.typescript.command_timeout_seconds =
+        config.plugins.typescript.command_timeout_seconds.min(90);
 }
 
 fn engine(config: VeritasConfig) -> CoreEngine {
@@ -2965,6 +2988,7 @@ fn engine(config: VeritasConfig) -> CoreEngine {
         Arc::new(RustPlugin::new(config.plugins.rust.clone())),
         Arc::new(GoPlugin::new(config.plugins.go.clone())),
         Arc::new(PythonPlugin::new(config.plugins.python.clone())),
+        Arc::new(TypeScriptPlugin::new(config.plugins.typescript.clone())),
     ]);
     CoreEngine::new(registry, config)
 }
@@ -3630,6 +3654,12 @@ fn infer_language(
         if target.extension().and_then(|ext| ext.to_str()) == Some("py") {
             return Ok("python".to_string());
         }
+        if matches!(
+            target.extension().and_then(|ext| ext.to_str()),
+            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+        ) {
+            return Ok("typescript".to_string());
+        }
     }
     if matches!(strategy, VerificationStrategy::Fuzzing) && root.join("go.mod").exists() {
         return Ok("go".to_string());
@@ -3646,7 +3676,57 @@ fn infer_language(
     {
         return Ok("python".to_string());
     }
-    bail!("could not infer language; pass --lang rust, --lang go, or --lang python")
+    if root.join("package.json").exists()
+        || root.join("tsconfig.json").exists()
+        || root.join("jsconfig.json").exists()
+        || contains_js_ts_file(root)
+    {
+        return Ok("typescript".to_string());
+    }
+    bail!("could not infer language; pass --lang rust, --lang go, --lang python, or --lang typescript")
+}
+
+fn contains_js_ts_file(root: &Path) -> bool {
+    fn visit(path: &Path, depth: usize) -> bool {
+        if depth > 4 {
+            return false;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if matches!(
+                name.as_ref(),
+                ".git"
+                    | ".veritas"
+                    | "node_modules"
+                    | "dist"
+                    | "build"
+                    | "coverage"
+                    | ".next"
+                    | ".nuxt"
+                    | "target"
+            ) {
+                continue;
+            }
+            if path.is_dir() {
+                if visit(&path, depth + 1) {
+                    return true;
+                }
+            } else if matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    visit(root, 0)
 }
 
 fn with_current_dir<T>(root: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {

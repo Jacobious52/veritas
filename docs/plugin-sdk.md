@@ -35,7 +35,7 @@ A production plugin should make these fields stable before it is advertised as a
 - evolution candidates include proposed action, keep criteria, proof commands, and done-when criteria
 - cleanup leaves handwritten tests alone and removes only Veritas-owned generated artifacts
 
-The CLI integration suite verifies this contract across the Rust, Go, and Python fixtures by checking target IDs, symbol metadata, generated artifact shape, phase timings, and report quality fields.
+The CLI integration suite verifies this contract across the Rust, Go, Python, and TypeScript/JavaScript fixtures by checking target IDs, symbol metadata, generated artifact shape, phase timings, and report quality fields.
 
 Run the reusable contract check directly from any candidate plugin repository:
 
@@ -104,6 +104,21 @@ New language plugins should use Tree-sitter for symbol discovery when a grammar 
 Python currently proves the shared Tree-sitter/plugin contract and runs practical async/testability mutation probes when matching source constructs are present. The killed/surviving async fixture split used by the advanced Rust and Go examples is intentionally documented as unsupported for Python until the plugin grows deterministic async test-runner seams and fixture-owned event-loop controls.
 
 This gives future plugins a concrete path without requiring Rust/Go-specific assumptions in core.
+
+## TypeScript/JavaScript Plugin Path
+
+`veritas-typescript` is the first plugin that covers two closely-related language families under one stable language key, `typescript`. It currently supports:
+
+- project detection from `package.json`, `tsconfig.json`, `jsconfig.json`, or JS/TS source files
+- Tree-sitter discovery for `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, and `.cjs`
+- function, class-method, arrow-function, and function-expression targets with source-relative IDs
+- symbol graph artifacts with signatures, params, owners, call hints, line ranges, and risk labels
+- executable Bun property checks for supported exported free functions
+- source-range mutation checks for comparisons, strict equality, boolean guards, default returns, and string normalization
+- batched differential replay for supported primitive exported free functions
+- `bun test` execution with skipped command records when Bun is unavailable
+
+This path proves the plugin contract can scan mixed JS/TS repos, write AI-readable artifacts, participate in changed-target selection, run Bun-owned checks, and avoid hard failing on machines without the language runtime.
 
 ## Skeleton Plugin
 

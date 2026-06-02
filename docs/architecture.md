@@ -11,10 +11,14 @@ crates/
   veritas-plugin-api/   # shared traits and report/data model
   veritas-rust/         # Rust detection, Tree-sitter symbols, proptest, cargo, coverage, mutation
   veritas-go/           # Go detection, Tree-sitter symbols, fuzzing, go test, coverage, mutation
+  veritas-python/       # Python detection, Tree-sitter symbols, pytest/unittest, coverage, mutation
+  veritas-typescript/   # TypeScript/JavaScript detection, Tree-sitter symbols, Bun tests, mutation, replay
   veritas-report/       # Markdown, SARIF, and JUnit renderers
 fixtures/
   sample-rust/
   sample-go/
+  sample-python/
+  sample-typescript/
 examples/
   rust-invoice/
   go-invoice/
@@ -130,9 +134,19 @@ Python:
 - executes simple mutation checks and reports killed/surviving Python mutants
 - executes batched differential replay for supported primitive free-function arguments
 
-All language plugins write symbol graph artifacts for AI and tooling consumption. Rust and Go include the deepest generated-test paths today; Python proves the core contract can support additional Tree-sitter plugins without Rust/Go-specific assumptions.
+TypeScript/JavaScript:
 
-Observation artifacts include `.veritas/cache/*_targets.json` for reusable target graph discovery, `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/mutations/*_campaign.json` for per-mutant campaign records, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md`, `*_candidates.json`, `*_suite.json`, and `*_evaluation_*.md` for the next AI candidate-generation loop. Evolution suites are plugin-neutral ranked work queues: Rust, Go, and future Tree-sitter plugins feed the same candidate model with mutation survivors, uncovered mutants, assertion candidates, corpus seeds, replay opportunities, and budget risks. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
+- discovers production functions, class methods, arrow functions, and function-expression exports with Tree-sitter TypeScript, TSX, and JavaScript grammars
+- records owners, params, line ranges, signatures, call hints, and risk labels
+- detects projects through `package.json`, `tsconfig.json`, `jsconfig.json`, or source roots
+- runs `bun test` when Bun is installed and records a skipped command when Bun is unavailable
+- emits symbol graph artifacts and executable Bun property checks for supported exported free functions
+- runs source-range mutation checks for comparison, strict equality, boolean guard, default return, and string-normalization operators
+- executes batched differential replay for supported primitive exported free functions
+
+All language plugins write symbol graph artifacts for AI and tooling consumption. Rust and Go include the deepest generated-test paths today; Python and TypeScript/JavaScript prove the core contract can support additional Tree-sitter plugins without Rust/Go-specific assumptions.
+
+Observation artifacts include `.veritas/cache/*_targets.json` for reusable target graph discovery, `.veritas/assertions/*.json` for structured assertion candidates, `.veritas/corpus/*.json` and `.veritas/corpus/replay_result.json` for persistent repro seed metadata and replay results, `.veritas/differential/*_replay.json` and `*_result.json` for behavior replay planning/results, `.veritas/budgets/*.json` for command budget metadata, `.veritas/trends/*.json` for mutation attribution and quality baseline deltas, `.veritas/mutations/*_campaign.json` for per-mutant campaign records, `.veritas/regressions/*.md` for converting surviving mutants or minimized inputs into owned tests, and `.veritas/evolution/*.md`, `*_candidates.json`, `*_suite.json`, and `*_evaluation_*.md` for the next AI candidate-generation loop. Evolution suites are plugin-neutral ranked work queues: Rust, Go, Python, TypeScript/JavaScript, and future Tree-sitter plugins feed the same candidate model with mutation survivors, uncovered mutants, assertion candidates, corpus seeds, replay opportunities, and budget risks. `veritas promote-regression` asks the owning language plugin to turn a finding into a reviewable test scaffold.
 
 ## Reports
 
