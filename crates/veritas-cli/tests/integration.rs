@@ -931,6 +931,16 @@ fn review_ai_writes_changed_digest_and_agent_feedback() {
     )
     .expect("write changed auth");
 
+    let nested_veritas = fixture.path().join("crates/auth/.veritas/feedback");
+    fs::create_dir_all(&nested_veritas).expect("create nested veritas artifact dir");
+    fs::write(nested_veritas.join("rust_coverage.md"), "generated").expect("write nested artifact");
+
+    let nested_checkout = fixture.path().join(".tmp/veritas");
+    fs::create_dir_all(&nested_checkout).expect("create nested checkout dir");
+    run_git(&nested_checkout, &["init"]);
+    fs::write(nested_checkout.join("README.md"), "scratch checkout")
+        .expect("write nested checkout file");
+
     let mut cmd = veritas();
     cmd.current_dir(fixture.path()).arg("review-ai");
     cmd.assert()
@@ -944,6 +954,9 @@ fn review_ai_writes_changed_digest_and_agent_feedback() {
         .expect("read agent feedback");
     assert!(digest.contains("crates/auth/src/lib.rs"));
     assert!(digest.contains("validate_token"));
+    assert!(!digest.contains("crates/auth/.veritas"));
+    assert!(!digest.contains(".tmp/veritas"));
+    assert!(feedback.contains("Changed files: `1`"));
     assert!(feedback.contains("veritas verify --changed --profile ci"));
 }
 
