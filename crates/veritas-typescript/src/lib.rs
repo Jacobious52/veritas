@@ -2183,11 +2183,10 @@ fn finish_lcov_file(
     uncovered: &[usize],
 ) -> Option<CoverageFile> {
     let path = path?;
-    let line_coverage_percent = if found_lines == 0 {
-        None
-    } else {
-        Some(((hit_lines * 100) / found_lines).min(100) as u8)
-    };
+    let line_coverage_percent = hit_lines
+        .saturating_mul(100)
+        .checked_div(found_lines)
+        .map(|percent| percent.min(100) as u8);
     Some(CoverageFile {
         path,
         line_coverage_percent,
