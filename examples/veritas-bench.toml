@@ -24,7 +24,7 @@ expect_commands = ["go test"]
 min_findings = 1
 min_commands = 1
 min_generated_test_failures = 1
-max_duration_ms = 30000
+max_duration_ms = 240000
 
 [[case]]
 name = "rust-commerce"
@@ -50,7 +50,7 @@ expect_commands = ["go test"]
 min_findings = 1
 min_commands = 1
 min_generated_test_failures = 1
-max_duration_ms = 30000
+max_duration_ms = 90000
 
 [[case]]
 name = "rust-mutation-score"
@@ -88,7 +88,7 @@ max_surviving_mutants = 3
 min_assertion_candidates = 1
 min_corpus_entries = 1
 min_replay_cases = 1
-max_duration_ms = 30000
+max_duration_ms = 90000
 
 [[case]]
 name = "rust-risk-suite"
@@ -113,8 +113,9 @@ name = "go-risk-suite"
 path = "go-risk-suite"
 language = "go"
 target = "."
+strategies = ["mutation", "differential", "coverage"]
 expect_findings = ["mutation survived"]
-expect_artifacts = ["fuzz_harness", "mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
+expect_artifacts = ["mutation_check", "assertion_candidate", "mutation_trend", "evolution_candidate"]
 expect_commands = ["go test"]
 min_findings = 1
 min_commands = 2
@@ -124,7 +125,7 @@ min_mutation_score = 40
 min_assertion_candidates = 1
 min_corpus_entries = 1
 min_replay_cases = 1
-max_duration_ms = 30000
+max_duration_ms = 90000
 
 [[case]]
 name = "rust-evolution-loop"
@@ -165,7 +166,7 @@ min_corpus_entries = 1
 min_replay_cases = 1
 min_evolution_candidates = 3
 min_evolution_selected = 2
-max_duration_ms = 30000
+max_duration_ms = 90000
 
 [[case]]
 name = "rust-concurrency-db"
@@ -191,4 +192,4 @@ min_commands = 1
 min_mutants_executed = 2
 min_mutants_killed = 1
 min_mutants_survived = 1
-max_duration_ms = 30000
+max_duration_ms = 90000

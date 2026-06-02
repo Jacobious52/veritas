@@ -352,6 +352,8 @@ struct BenchCase {
     expect_artifacts: Vec<String>,
     #[serde(default)]
     expect_commands: Vec<String>,
+    #[serde(default)]
+    strategies: Vec<String>,
     min_findings: Option<usize>,
     min_commands: Option<usize>,
     min_mutation_findings: Option<usize>,
@@ -2114,8 +2116,18 @@ fn run_bench_case(
         let mut config = VeritasConfig::load(&temp_root)?;
         apply_verify_profile(&mut config, None);
         let engine = engine(config);
+        let strategies = case
+            .strategies
+            .iter()
+            .map(|strategy| parse_bench_strategy(strategy))
+            .collect::<Result<Vec<_>>>()?;
         let report = with_current_dir(&temp_root, || {
-            engine.verify(&temp_root, &case.language, case.target.as_deref(), vec![])
+            engine.verify(
+                &temp_root,
+                &case.language,
+                case.target.as_deref(),
+                strategies,
+            )
         })?;
         engine.save_report(&temp_root, &report)?;
 
@@ -2169,6 +2181,19 @@ fn run_bench_case(
     }
 
     result
+}
+
+fn parse_bench_strategy(value: &str) -> Result<VerificationStrategy> {
+    match value {
+        "existing" | "existing_tests" => Ok(VerificationStrategy::ExistingTests),
+        "unit" | "unit_tests" => Ok(VerificationStrategy::UnitTests),
+        "property" | "property_tests" => Ok(VerificationStrategy::PropertyTests),
+        "fuzz" | "fuzzing" => Ok(VerificationStrategy::Fuzzing),
+        "differential" | "differential_tests" => Ok(VerificationStrategy::DifferentialTests),
+        "mutation" | "mutation_checks" => Ok(VerificationStrategy::MutationChecks),
+        "coverage" | "coverage_feedback" => Ok(VerificationStrategy::CoverageFeedback),
+        other => bail!("unknown benchmark strategy `{other}`"),
+    }
 }
 
 fn unique_temp_dir(name: &str) -> Result<PathBuf> {
