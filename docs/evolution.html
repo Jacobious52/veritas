@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veritas | Evolution Demo</title>
+  <meta name="description" content="A concrete before, candidate, and after evolution loop for Veritas.">
+  <link rel="stylesheet" href="page.css">
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="mark"></span><span>Veritas</span></a>
+      <div class="links">
+        <a href="index.html">Home</a>
+        <a href="ai-agents.html">AI Agents</a>
+        <a href="confidence.html">Confidence</a>
+        <a class="active" href="evolution.html">Evolution</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/Jacobious52/veritas">GitHub</a>
+      </div>
+    </div>
+  </nav>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Evolution Demo</p>
+      <h1>From surviving mutants to owned assertions.</h1>
+      <p class="lede">This demo uses <code>examples/go-evolution-loop</code>, where handwritten tests pass but Veritas finds parser boundary assumptions and ranks the next assertion to add.</p>
+      <div class="stat-grid">
+        <div class="stat"><span>before score</span><b>55</b></div>
+        <div class="stat"><span>before mutation</span><b>58%</b></div>
+        <div class="stat"><span>after score</span><b>98</b></div>
+        <div class="stat"><span>after mutation</span><b>91%</b></div>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      <section>
+        <h2>Reproduce The Loop</h2>
+        <div class="panel">
+          <pre><code>cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score
+cargo run -p veritas-cli -- --root examples/go-evolution-loop evolve --dry-run</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Initial Signal</h2>
+        <div class="grid">
+          <div class="card"><h3>Mutation</h3><p>Generated <b>14</b>, executed <b>12</b>, killed <b>7</b>, survived <b>4</b>, score <b>58%</b>.</p></div>
+          <div class="card"><h3>Fuzzing</h3><p>Generated harnesses <b>1</b>, targets executed <b>3</b>, failures <b>0</b>, persisted repros <b>4</b>.</p></div>
+          <div class="card"><h3>Differential Replay</h3><p>Targets <b>3</b>, cases <b>16</b>, with replay artifacts available to turn behavior drift into assertions.</p></div>
+          <div class="card"><h3>Evolution</h3><p>Suites <b>1</b>, candidates <b>14</b>, selected <b>12</b>, average fitness <b>76%</b>.</p></div>
+          <div class="card"><h3>Confidence</h3><p>Score <b>55</b>, grade <b>Medium</b>. The report is useful, but not done.</p></div>
+          <div class="card"><h3>Top Candidate</h3><p>Add the smallest assertion that kills a surviving <code>ParseInvoiceTotal</code> mutant. Fitness <b>95%</b>.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>The Assertion</h2>
+        <div class="panel callout">
+          <pre><code>func TestParseInvoiceTotal(t *testing.T) {
+	value, ok := ParseInvoiceTotal(" 10_000 ")
+	if !ok || value != 10000 {
+		t.Fatalf("expected normalized total, got %d ok=%v", value, ok)
+	}
+	value, ok = ParseInvoiceTotal("1000000")
+	if !ok || value != 1000000 {
+		t.Fatalf("expected boundary invoice total, got %d ok=%v", value, ok)
+	}
+	value, ok = ParseInvoiceTotal("not-a-number")
+	if ok || value != 0 {
+		t.Fatalf("expected invalid invoice total to be rejected with zero value, got %d ok=%v", value, ok)
+	}
+	value, ok = ParseInvoiceTotal("1000001")
+	if ok || value != 0 {
+		t.Fatalf("expected huge invoice total to be rejected with zero value, got %d ok=%v", value, ok)
+	}
+}</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>After The Candidate Lands</h2>
+        <div class="two">
+          <div class="card">
+            <pre><code>cargo run -p veritas-cli -- --root examples/go-evolution-loop verify --lang go --target .
+cargo run -p veritas-cli -- --root examples/go-evolution-loop score</code></pre>
+          </div>
+          <div class="card">
+            <ul>
+              <li>Mutation score rises to <b>91%</b>.</li>
+              <li>Surviving mutants drop to <b>0</b>.</li>
+              <li>Differential replay retains <b>16</b> cases.</li>
+              <li>Evolution selected candidates drop to <b>0</b>.</li>
+              <li>Confidence score rises to <b>98</b>, grade <b>High</b>.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer>
+    <div class="wrap">
+      <a href="index.html">Home</a>
+      <a href="ai-agents.html">AI Agents</a>
+      <a href="confidence.html">Confidence</a>
+      <a href="architecture.html">Architecture</a>
+      <span>The loop is simple: find weak behavior coverage, rank a candidate, prove it improved.</span>
+    </div>
+  </footer>
+</body>
+</html>

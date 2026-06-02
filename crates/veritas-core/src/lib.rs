@@ -2642,7 +2642,7 @@ fn should_ignore_changed_path(path: &Utf8PathBuf) -> bool {
 fn path_matches_language(language: &str, path: &Utf8PathBuf) -> bool {
     matches!(
         (language, path.extension()),
-        ("rust", Some("rs")) | ("go", Some("go"))
+        ("rust", Some("rs")) | ("go", Some("go")) | ("python", Some("py"))
     )
 }
 
@@ -6294,6 +6294,40 @@ index 3333333..4444444 100644
         assert_eq!(selected[0].id, "rust:src/new.rs");
         assert_eq!(selected[0].kind, TargetKind::File);
         assert_eq!(selected[0].description, "changed file");
+    }
+
+    #[test]
+    fn changed_python_files_select_overlapping_function_targets() {
+        let targets = vec![VerificationTarget {
+            id: "python:src/click/core.py:Context.to_info_dict".to_string(),
+            language: "python".to_string(),
+            kind: TargetKind::Function,
+            path: Utf8PathBuf::from("src/click/core.py"),
+            symbol: Some("Context.to_info_dict".to_string()),
+            signature: Some("Context.to_info_dict(self)".to_string()),
+            line_range: Some(LineRange {
+                start: 494,
+                end: 513,
+            }),
+            description: "function".to_string(),
+            risk: RiskLevel::Medium,
+        }];
+        let changed_files = vec![ChangedFile {
+            path: Utf8PathBuf::from("src/click/core.py"),
+            ranges: vec![LineRange {
+                start: 506,
+                end: 506,
+            }],
+        }];
+
+        let selected = targets_for_changed_files("python", &targets, &changed_files);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].id,
+            "python:src/click/core.py:Context.to_info_dict"
+        );
+        assert_eq!(selected[0].description, "changed function");
     }
 
     #[test]

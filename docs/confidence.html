@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veritas | Confidence</title>
+  <meta name="description" content="Confidence checks, seeded benchmarks, large-repo mutation inventory, canaries, and scoring for Veritas.">
+  <link rel="stylesheet" href="page.css">
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="mark"></span><span>Veritas</span></a>
+      <div class="links">
+        <a href="index.html">Home</a>
+        <a href="ai-agents.html">AI Agents</a>
+        <a class="active" href="confidence.html">Confidence</a>
+        <a href="evolution.html">Evolution</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/Jacobious52/veritas">GitHub</a>
+      </div>
+    </div>
+  </nav>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Confidence Harness</p>
+      <h1>Small fixtures, seeded failures, real-repo scale.</h1>
+      <p class="lede">Veritas uses layered checks so changes can be tested quickly during development and measured against bigger real-world repositories when scale matters.</p>
+      <div class="stat-grid">
+        <div class="stat"><span>large scan</span><b>758</b></div>
+        <div class="stat"><span>inventory mutants</span><b>555</b></div>
+        <div class="stat"><span>source files</span><b>52</b></div>
+        <div class="stat"><span>languages</span><b>3</b></div>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      <section>
+        <h2>Local Test Layers</h2>
+        <div class="grid">
+          <div class="card"><h3>Unit Tests</h3><p>Parser helpers, report rendering, changed-target selection, cleanup, package scoping, mutation candidates, and artifact rendering.</p></div>
+          <div class="card"><h3>Tiny Fixtures</h3><p>Fast CLI smoke projects for Rust, Go, and Python keep plugin contracts honest.</p></div>
+          <div class="card"><h3>Medium Fixtures</h3><p>Rust workspaces and Go multimodule projects exercise package-local artifacts, reverse dependencies, fuzz discovery, and symbol graphs.</p></div>
+          <div class="card"><h3>Seeded Examples</h3><p>Purpose-built projects with hidden assumptions validate mutation, fuzzing, replay, assertions, and evolution behavior.</p></div>
+          <div class="card"><h3>Benchmark Suites</h3><p><code>veritas bench</code> copies cases, runs verification, and scores expected findings, commands, artifacts, and thresholds.</p></div>
+          <div class="card"><h3>External Canaries</h3><p>Pinned public repos check real-world discovery and verification drift on manual or scheduled workflows.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Required Checks</h2>
+        <div class="panel">
+          <pre><code>cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+VERITAS_RELEASE_ALLOW_DIRTY=1 ./scripts/publish-crates.sh --dry-run</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Large-Repo Benchmarks</h2>
+        <p>Use this lane when the question is scale rather than fixture correctness.</p>
+        <div class="panel callout">
+          <pre><code>./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode scan
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-list
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-inventory
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode changed-only
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode all</code></pre>
+        </div>
+        <div class="grid">
+          <div class="card"><h3>Scan</h3><p>Measures Tree-sitter/project discovery and target counts across pinned Rust, Go, and Python repositories.</p></div>
+          <div class="card"><h3>Mutation List</h3><p>Fast capped sample for the current target. This is the cheap smoke path.</p></div>
+          <div class="card"><h3>Mutation Inventory</h3><p>Walks discovered source files, previews bounded candidates per file, dedupes mutant IDs, and reports cap-hit paths plus domain/operator distribution.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Score And Anti-Gaming</h2>
+        <div class="two">
+          <div class="card">
+            <p><code>veritas score</code> rewards mutation score, property/fuzz/replay signal, assertion candidates, and budget health. It penalizes active findings, surviving correctness mutants, skipped commands, and timeouts.</p>
+          </div>
+          <div class="card">
+            <p><code>veritas score --mode all</code> includes strict and verified views so CI can reject confidence gained through ignored findings, skipped commands, or unpromoted generated proof.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer>
+    <div class="wrap">
+      <a href="index.html">Home</a>
+      <a href="ai-agents.html">AI Agents</a>
+      <a href="evolution.html">Evolution</a>
+      <a href="architecture.html">Architecture</a>
+      <span>Confidence comes from repeatable proof, not vibes.</span>
+    </div>
+  </footer>
+</body>
+</html>

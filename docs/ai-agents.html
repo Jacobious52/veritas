@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veritas | AI Agents</title>
+  <meta name="description" content="Copy-paste Veritas instructions and review loops for AI coding agents.">
+  <link rel="stylesheet" href="page.css">
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="mark"></span><span>Veritas</span></a>
+      <div class="links">
+        <a href="index.html">Home</a>
+        <a class="active" href="ai-agents.html">AI Agents</a>
+        <a href="confidence.html">Confidence</a>
+        <a href="evolution.html">Evolution</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="https://github.com/Jacobious52/veritas">GitHub</a>
+      </div>
+    </div>
+  </nav>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Agent Workflow</p>
+      <h1>Give your coding agent a verification loop.</h1>
+      <p class="lede">Veritas turns mutation survivors, replay drift, fuzz seeds, assertion candidates, and confidence scores into concrete instructions an AI agent can act on before it declares a change done.</p>
+      <div class="tag-row">
+        <span class="tag">review-ai</span>
+        <span class="tag">verify --changed</span>
+        <span class="tag">repair-prompt</span>
+        <span class="tag">evolve --dry-run</span>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      <section>
+        <h2>Paste This</h2>
+        <div class="panel callout">
+          <pre><code>Use veritas as the adversarial verification loop for this change.
+
+Install if needed:
+  curl -fsSL https://github.com/Jacobious52/veritas/releases/latest/download/install.sh | sh
+
+Before editing broadly:
+  veritas review-ai
+  Read .veritas/ai/change_digest.md and .veritas/ai/agent_feedback.md.
+
+After making code or test changes:
+  veritas verify --changed --profile ci
+  veritas score
+  veritas repair-prompt
+
+If veritas reports findings:
+  1. Run veritas explain &lt;finding-id&gt;.
+  2. Inspect .veritas/assertions/ and .veritas/corpus/.
+  3. Prefer focused regression tests or fuzz corpus entries before changing production code.
+  4. Rerun veritas verify --changed --profile ci.
+
+Do not ignore warning/error findings without explaining why.</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Review Loop</h2>
+        <div class="grid">
+          <div class="card"><h3>1. Scope</h3><p>Run <code>veritas review-ai</code>. The agent reads changed files, changed symbols, risk hints, and diff context.</p></div>
+          <div class="card"><h3>2. Verify</h3><p>Run <code>veritas verify --changed --profile ci</code> after code or test edits. Stay changed-scope unless the task needs broader proof.</p></div>
+          <div class="card"><h3>3. Score</h3><p>Run <code>veritas score</code> to summarize remaining risk from findings, mutation survivors, replay, corpus, properties, and budgets.</p></div>
+          <div class="card"><h3>4. Repair</h3><p>Run <code>veritas repair-prompt</code> to get a compact AI repair queue with proof commands and done-when criteria.</p></div>
+          <div class="card"><h3>5. Promote</h3><p>Turn useful repros and survivors into owned tests through <code>promote-repro</code> or <code>promote-regression</code>.</p></div>
+          <div class="card"><h3>6. Evolve</h3><p>Inspect <code>.veritas/evolution/*_suite.json</code> and apply selected candidates only when the follow-up report improves.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>AI-Facing Artifacts</h2>
+        <div class="two">
+          <div class="card">
+            <ul>
+              <li><b>.veritas/ai/change_digest.md</b>: changed files, symbols, risk, and diff excerpts.</li>
+              <li><b>.veritas/ai/agent_feedback.md</b>: concrete next-step instructions.</li>
+              <li><b>.veritas/symbol_graph/*.json</b>: Tree-sitter symbols, owners, line ranges, and risks.</li>
+              <li><b>.veritas/assertions/*.json</b>: structured assertion candidates.</li>
+              <li><b>.veritas/corpus/*.json</b>: persistent repro seed metadata.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <ul>
+              <li><b>.veritas/mutations/*_campaign.json</b>: mutant status records.</li>
+              <li><b>.veritas/differential/*.json</b>: behavior replay manifests and results.</li>
+              <li><b>.veritas/evolution/*_suite.json</b>: ranked next-generation work queue.</li>
+              <li><b>.veritas/regressions/*.md</b>: generated assertion guidance.</li>
+              <li><b>.veritas/budgets/*.json</b>: command budget metadata.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Rules For Agents</h2>
+        <div class="panel warning">
+          <ul>
+            <li>Keep verification changed-scope unless the user asks for a full workspace run.</li>
+            <li>Treat surviving mutants as missing behavior assertions, not automatic production defects.</li>
+            <li>Prefer a small regression test before editing production code when a repro exposes behavior.</li>
+            <li>Do not widen fuzz time, package caps, coverage scope, or reverse dependency depth without explaining the runtime tradeoff.</li>
+            <li>Generated tests are reviewable artifacts, not automatically trusted source.</li>
+          </ul>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer>
+    <div class="wrap">
+      <a href="index.html">Home</a>
+      <a href="confidence.html">Confidence</a>
+      <a href="evolution.html">Evolution</a>
+      <a href="architecture.html">Architecture</a>
+      <span>Built for developers who want AI to move fast without moving blindly.</span>
+    </div>
+  </footer>
+</body>
+</html>

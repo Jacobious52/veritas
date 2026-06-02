@@ -865,7 +865,10 @@ fn run_python_mutations(
     let mut status = RunStatus::Passed;
     let run_dir = start_mutation_run(root, "python")?;
 
-    for candidate in candidates.into_iter().take(8) {
+    for candidate in candidates
+        .into_iter()
+        .take(config.mutation.max_mutants.unwrap_or(8))
+    {
         let domain = python_mutation_domain(&candidate);
         let operator = python_mutation_operator(&candidate.label);
         record_mutation_generated(&mut quality.mutation.by_domain, &domain);

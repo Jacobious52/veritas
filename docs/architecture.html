@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veritas | Architecture</title>
+  <meta name="description" content="Veritas architecture, plugin contract, Tree-sitter use, reports, and artifact model.">
+  <link rel="stylesheet" href="page.css">
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="mark"></span><span>Veritas</span></a>
+      <div class="links">
+        <a href="index.html">Home</a>
+        <a href="ai-agents.html">AI Agents</a>
+        <a href="confidence.html">Confidence</a>
+        <a href="evolution.html">Evolution</a>
+        <a class="active" href="architecture.html">Architecture</a>
+        <a href="https://github.com/Jacobious52/veritas">GitHub</a>
+      </div>
+    </div>
+  </nav>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Architecture</p>
+      <h1>A plugin core for adversarial verification.</h1>
+      <p class="lede">Veritas is a Rust CLI, core orchestration layer, shared plugin API, language plugins, and report renderers. Tree-sitter plugins provide symbols; the core provides the verification loop.</p>
+      <div class="tag-row">
+        <span class="tag">veritas-cli</span>
+        <span class="tag">veritas-core</span>
+        <span class="tag">veritas-plugin-api</span>
+        <span class="tag">Rust</span>
+        <span class="tag">Go</span>
+        <span class="tag">Python</span>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      <section>
+        <h2>Core Flow</h2>
+        <div class="grid">
+          <div class="card"><h3>1. Detect</h3><p>Registered language plugins detect projects and manifests.</p></div>
+          <div class="card"><h3>2. Discover</h3><p>Tree-sitter-backed plugins produce verification targets with symbols, paths, line ranges, signatures, and risk.</p></div>
+          <div class="card"><h3>3. Plan</h3><p>The planner builds a bounded verification strategy for changed targets or explicit CLI targets.</p></div>
+          <div class="card"><h3>4. Generate</h3><p>Plugins generate reviewable artifacts: tests, fuzz harnesses, symbol graphs, mutation manifests, replay cases, and feedback.</p></div>
+          <div class="card"><h3>5. Execute</h3><p>Language tests, fuzzing, mutation checks, replay, and coverage run under budgets.</p></div>
+          <div class="card"><h3>6. Report</h3><p>The core writes reports, confidence scores, finding IDs, SARIF, JUnit, Markdown, and AI repair prompts.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Plugin Contract</h2>
+        <div class="panel">
+          <pre><code>capabilities() -&gt; Vec&lt;PluginCapability&gt;
+detect_project(root) -&gt; ProjectInfo
+discover_targets(root) -&gt; Vec&lt;VerificationTarget&gt;
+generate_tests(target, plan) -&gt; Vec&lt;GeneratedArtifact&gt;
+run_tests(root, artifacts, plan) -&gt; TestRunResult
+collect_coverage(root) -&gt; Option&lt;CoverageReport&gt;
+promote_regression(root, report, finding, index) -&gt; Vec&lt;GeneratedArtifact&gt;</code></pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Tree-Sitter Use</h2>
+        <div class="grid">
+          <div class="card"><h3>Rust</h3><p>Discovers public free functions and methods, symbol owners, line ranges, signatures, call hints, and AST spans for mutation probes.</p></div>
+          <div class="card"><h3>Go</h3><p>Discovers exported functions and methods, receivers, fuzz targets, package graphs, and AST mutation surfaces for comparisons, nil/error, literals, loops, goroutines, locks, and returns.</p></div>
+          <div class="card"><h3>Python</h3><p>Discovers production functions and methods, class owners, line ranges, signatures, pytest/unittest paths, coverage.py summaries, mutation checks, and primitive replay.</p></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Artifacts And Reports</h2>
+        <div class="two">
+          <div class="card">
+            <ul>
+              <li><code>.veritas/report.json</code></li>
+              <li><code>.veritas/cache/*_targets.json</code></li>
+              <li><code>.veritas/assertions/*.json</code></li>
+              <li><code>.veritas/corpus/*.json</code></li>
+              <li><code>.veritas/mutations/*_campaign.json</code></li>
+              <li><code>.veritas/evolution/*_suite.json</code></li>
+            </ul>
+          </div>
+          <div class="card">
+            <ul>
+              <li>Markdown reports for humans and agents.</li>
+              <li>SARIF 2.1.0 for code scanning.</li>
+              <li>JUnit XML for CI test report surfaces.</li>
+              <li>Confidence score and badges.</li>
+              <li>Repair prompts and review packets.</li>
+              <li>Quality baselines and trend deltas.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <footer>
+    <div class="wrap">
+      <a href="index.html">Home</a>
+      <a href="ai-agents.html">AI Agents</a>
+      <a href="confidence.html">Confidence</a>
+      <a href="evolution.html">Evolution</a>
+      <span>Language plugins own local truth; the core owns the shared verification loop.</span>
+    </div>
+  </footer>
+</body>
+</html>

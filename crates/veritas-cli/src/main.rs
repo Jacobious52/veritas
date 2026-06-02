@@ -218,6 +218,9 @@ enum MutantsCommand {
         diffs: bool,
 
         #[arg(long)]
+        max_mutants: Option<usize>,
+
+        #[arg(long)]
         domain: Vec<String>,
 
         #[arg(long)]
@@ -856,6 +859,7 @@ fn apply_mutants_list_config(
             exclude_path,
             include_symbol,
             exclude_symbol,
+            max_mutants,
             shard_index,
             shard_count,
             ..
@@ -885,8 +889,14 @@ fn apply_mutants_list_config(
                 if !exclude_symbol.is_empty() {
                     mutation.exclude_symbols = exclude_symbol.clone();
                 }
+                if let Some(max_mutants) = max_mutants {
+                    mutation.max_mutants = Some((*max_mutants).max(1));
+                }
                 mutation.shard_index = *shard_index;
                 mutation.shard_count = *shard_count;
+            }
+            if let Some(max_mutants) = max_mutants {
+                config.plugins.go.max_mutants = (*max_mutants).max(1);
             }
         }
         MutantsCommand::Run {

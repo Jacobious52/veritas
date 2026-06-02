@@ -68,6 +68,32 @@ For a broader confidence run, use the dedicated suite:
 
 It runs `examples/veritas-confidence-suite.toml`, writes `target/confidence-suite/confidence-report.json`, distills it into `confidence-summary.json`, and appends `confidence-history.jsonl` so performance, target count, mutation score, replay, and selected evolution candidates can be trended across runs. The GitHub Actions benchmark workflow exposes this as a manual `confidence-suite` job and uploads the trend artifacts.
 
+## Large-Repo Benchmarks
+
+Use the large-repo benchmark lane when the question is scale rather than fixture correctness:
+
+```bash
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode scan
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-list
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-inventory
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode changed-only
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode all
+```
+
+The manifest pins real Rust, Go, and Python repositories by SHA. `scan` measures Tree-sitter/project discovery and target counts. `mutation-list` previews a fast capped sample of generic mutation candidates without running native tests. `mutation-inventory` walks discovered source files, runs bounded mutation previews per file, dedupes candidates by mutant id, and reports unique mutants, source paths, cap-hit paths, and domain/operator distribution. `changed-only` applies a harmless marker to a configured source file and runs `veritas verify --changed --profile ci` to simulate an AI-agent edit on a large repository. Repos can set `root_path` for monorepos or workspace subcrates, `changed_line` when the marker should land inside a symbol range, and per-repo `budgets` for language-specific thresholds.
+
+Outputs land under:
+
+```text
+target/large-repo-benchmarks/reports/large-repo-dashboard.md
+target/large-repo-benchmarks/reports/large-repo-summary.json
+target/large-repo-benchmarks/reports/large-repo-history.jsonl
+```
+
+The dashboard tracks per-mode duration, target counts, mutation candidate counts, changed verification targets, findings, confidence, threshold failures, and links to per-repo artifacts. The benchmark workflow exposes this as a manual `large-repos` job and uploads all JSON/Markdown artifacts. The checked-in `benchmarks/local-large-repos-smoke.toml` manifest uses local fixtures and is intended for fast script validation.
+
+`mutation-list` and `mutation-inventory` intentionally answer different questions. `mutation-list` is a cheap spot check for the current target and default cap. `mutation-inventory` is the scale metric: on the pinned large repos it currently finds hundreds of unique mutation candidates across Rust, Go, and Python, and reports cap-hit paths when the per-file limit is still truncating the inventory.
+
 After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards correctness mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving correctness mutants, skipped commands, and timeouts. Brittleness probes are reported separately: surviving behavior-preserving probes are acceptable signal, while killed brittleness probes mean tests may be coupled to implementation ordering, logs, formatting, or other non-contract details. Use `veritas accept-quality-baseline` only after a reviewed good state; later `veritas score` runs will show baseline deltas.
 
 Use `veritas score --mode all` for anti-gaming views. `current` is the normal report confidence, `strict` keeps accepted findings and skipped commands as score debt, and `verified` additionally treats unpromoted assertion/regression candidates and surviving mutants as proof debt. CI should gate on strict or verified when a repository wants confidence to improve only through real owned tests and passing proof commands.

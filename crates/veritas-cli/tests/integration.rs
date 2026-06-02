@@ -1296,6 +1296,25 @@ fn mutants_list_json(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output).expect("mutants list json")
 }
 
+#[test]
+fn mutants_list_honors_max_mutants_flag() {
+    let fixture = copy_fixture("sample-go");
+
+    let mutants = mutants_list_json(
+        fixture.path(),
+        &["--lang", "go", "--target", ".", "--max-mutants", "1"],
+    );
+
+    assert_eq!(mutants["count"], 1);
+    assert_eq!(
+        mutants["records"]
+            .as_array()
+            .expect("mutation records")
+            .len(),
+        1
+    );
+}
+
 fn mutant_ids(value: &Value) -> BTreeSet<String> {
     value["records"]
         .as_array()

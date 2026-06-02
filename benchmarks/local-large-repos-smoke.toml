@@ -1,0 +1,31 @@
+version = 1
+default_modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+
+[budgets]
+scan_timeout_seconds = 60
+mutation_list_timeout_seconds = 60
+mutation_inventory_target_timeout_seconds = 60
+mutation_inventory_max_mutants_per_path = 16
+changed_verify_timeout_seconds = 90
+min_targets = 1
+min_mutants = 1
+min_inventory_mutants = 1
+min_changed_targets = 1
+
+[[repo]]
+name = "fixture-rust-workspace"
+language = "rust"
+profile = "local-smoke"
+local_path = "fixtures/rust-workspace"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+changed_path = "crates/auth/src/lib.rs"
+
+[[repo]]
+name = "fixture-sample-go"
+language = "go"
+profile = "local-smoke"
+local_path = "fixtures/sample-go"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+changed_path = "invoice.go"

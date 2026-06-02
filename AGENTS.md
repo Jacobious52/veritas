@@ -36,6 +36,7 @@ examples/
 docs/                   # durable docs plus GitHub Pages landing page
 scripts/run-canaries.sh # pinned external repo smoke/verify checks
 scripts/run-confidence-suite.sh # local large-repo confidence trend runner
+scripts/run-large-repo-benchmarks.py # pinned large-repo scale/performance runner
 ```
 
 ## Tooling
@@ -108,6 +109,7 @@ cargo run -p veritas-cli -- --root examples/go-concurrency-db mutants list --lan
 cargo run -p veritas-cli -- --root examples/rust-concurrency-db mutants run --lang rust --target src/lib.rs --from-campaign .veritas/mutations/rust_campaign.json --status lived
 cargo run -p veritas-cli -- --root examples bench
 ./scripts/run-confidence-suite.sh
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/local-large-repos-smoke.toml
 ```
 
 Dogfood `veritas` on itself safely:
@@ -164,8 +166,9 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Python supports Tree-sitter target discovery, symbol graphs, pytest detection with unittest fallback, Hypothesis property candidate execution when `hypothesis` and `pytest` are installed, coverage.py summaries, executable simple mutation checks, and batched primitive free-function replay.
 - Pinned external canaries run through `./scripts/run-canaries.sh smoke`, `./scripts/run-canaries.sh verify-fast`, or `./scripts/run-canaries.sh verify`.
 - The local confidence suite runs through `./scripts/run-confidence-suite.sh` and writes `target/confidence-suite/confidence-report.json`, `confidence-summary.json`, and `confidence-history.jsonl`.
+- Large-repo benchmarks run through `./scripts/run-large-repo-benchmarks.py`, with pinned real repos in `benchmarks/large-repos.toml` and fast local script coverage in `benchmarks/local-large-repos-smoke.toml`. The `mutation-inventory` mode walks discovered source files and reports unique mutation candidates, cap-hit paths, and domain/operator distribution. Outputs land under `target/large-repo-benchmarks/reports/`.
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
-- GitHub Actions includes a live installer smoke workflow for published releases and a manual confidence-suite benchmark job.
+- GitHub Actions includes a live installer smoke workflow for published releases plus manual confidence-suite and large-repo benchmark jobs.
 - Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python fixture smoke verification.
 - Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
 - GitHub Actions release workflow builds Linux/macOS binaries, publishes `install.sh`, checksums, a CycloneDX SBOM, and provenance attestations. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.

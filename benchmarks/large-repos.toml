@@ -1,0 +1,51 @@
+version = 1
+default_modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+
+[budgets]
+scan_timeout_seconds = 120
+mutation_list_timeout_seconds = 180
+mutation_inventory_target_timeout_seconds = 90
+mutation_inventory_max_mutants_per_path = 64
+changed_verify_timeout_seconds = 240
+min_targets = 25
+min_mutants = 10
+min_inventory_mutants = 25
+min_changed_targets = 1
+
+[[repo]]
+name = "rust-ripgrep"
+language = "rust"
+profile = "large-rust"
+repository = "https://github.com/BurntSushi/ripgrep.git"
+sha = "4857d6fa67db69a95cd4b6f2adda5d807d4d0119"
+root_path = "crates/searcher"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+changed_path = "src/searcher/core.rs"
+
+[repo.budgets]
+min_mutants = 8
+
+[[repo]]
+name = "go-cobra"
+language = "go"
+profile = "large-go"
+repository = "https://github.com/spf13/cobra.git"
+sha = "ad460ea8f249db69c943a365fb84f3a59042d54e"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory", "changed-only"]
+changed_path = "command.go"
+
+[repo.budgets]
+min_mutants = 8
+
+[[repo]]
+name = "python-click"
+language = "python"
+profile = "large-python"
+repository = "https://github.com/pallets/click.git"
+sha = "c48021040a50c659b74e24ac2b11c9c9c6620a21"
+target = "."
+modes = ["scan", "mutation-inventory", "changed-only"]
+changed_path = "src/click/core.py"
+changed_line = 505

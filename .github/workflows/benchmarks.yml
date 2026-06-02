@@ -7,9 +7,11 @@ on:
       - ".github/workflows/benchmarks.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "benchmarks/**"
       - "crates/**"
       - "examples/**"
       - "scripts/run-confidence-suite.sh"
+      - "scripts/run-large-repo-benchmarks.py"
       - "docs/confidence.md"
 
 permissions:
@@ -59,4 +61,45 @@ jobs:
             target/confidence-suite/confidence-report.json
             target/confidence-suite/confidence-summary.json
             target/confidence-suite/confidence-history.jsonl
+          if-no-files-found: error
+
+  large-repos:
+    name: Large repository benchmarks
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Check Go and Python
+        run: |
+          go version
+          python3 --version
+
+      - name: Build veritas
+        run: cargo build -p veritas-cli --locked
+
+      - name: Run large repository benchmark suite
+        env:
+          VERITAS_BIN: ${{ github.workspace }}/target/debug/veritas
+        run: ./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml
+
+      - name: Upload large repository benchmark artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veritas-large-repo-benchmarks
+          path: |
+            target/large-repo-benchmarks/reports/large-repo-dashboard.md
+            target/large-repo-benchmarks/reports/large-repo-summary.json
+            target/large-repo-benchmarks/reports/large-repo-history.jsonl
+            target/large-repo-benchmarks/reports/*-scan.json
+            target/large-repo-benchmarks/reports/*-mutants.json
+            target/large-repo-benchmarks/reports/*-mutation-inventory.json
+            target/large-repo-benchmarks/reports/*-changed-verify.md
+            target/large-repo-benchmarks/reports/*-changed-report.json
           if-no-files-found: error

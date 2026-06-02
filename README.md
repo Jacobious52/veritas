@@ -448,3 +448,14 @@ Run external canary smoke checks when you want confidence against real pinned re
 ```
 
 The same canaries run weekly in GitHub Actions and can be started manually from the `External Canaries` workflow. `large-smoke` adds pinned larger Rust, Go, and Python repositories from `canaries/pinned-repos.json` while keeping them scan-only by default. Each run writes `target/external-fixtures/reports/canary-dashboard.md` with scan/verify tiers and trend deltas. Set `VERITAS_CANARY_MIN_TIER`, `VERITAS_CANARY_MIN_CONFIDENCE`, or `VERITAS_CANARY_MAX_FINDINGS` when a canary dashboard should fail CI on a missed threshold.
+
+Run large-repo benchmarks when you want scale/performance signal:
+
+```bash
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode scan
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-list
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode mutation-inventory
+./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode changed-only
+```
+
+This lane pins real Rust, Go, and Python repositories by SHA, measures Tree-sitter discovery, capped mutation preview, file-level mutation inventory, and changed-only AI-agent verification, then writes `target/large-repo-benchmarks/reports/large-repo-dashboard.md` plus JSON trend artifacts. Use `mutation-list` for a quick bounded sample; use `mutation-inventory` when you want the repo-level count of unique mutation opportunities, cap-hit paths, and domain/operator distribution.
