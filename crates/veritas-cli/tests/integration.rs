@@ -21,6 +21,41 @@ fn scans_rust_fixture() {
 }
 
 #[test]
+fn scan_ignores_hidden_scratch_workdirs() {
+    let temp = TempDir::new().expect("tempdir");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("package.json"), "{\"type\":\"module\"}").expect("package");
+    fs::write(
+        temp.path().join("src/app.ts"),
+        "export function visibleTotal(cents: number) { return cents; }\n",
+    )
+    .expect("visible source");
+    fs::create_dir_all(temp.path().join(".tmp/veritas/fixtures")).expect("create scratch dir");
+    fs::write(
+        temp.path().join(".tmp/veritas/fixtures/hidden.ts"),
+        "export function hiddenScratchTotal(cents: number) { return cents; }\n",
+    )
+    .expect("hidden scratch source");
+
+    let mut cmd = veritas();
+    cmd.current_dir(temp.path())
+        .args(["scan", "--format", "json"]);
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let scan: Value = serde_json::from_slice(&output).expect("parse scan json");
+    let targets = scan["targets"]
+        .as_array()
+        .expect("targets array")
+        .iter()
+        .map(|target| target.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(targets.contains("visibleTotal"));
+    assert!(!targets.contains("hiddenScratchTotal"));
+    assert!(!targets.contains(".tmp/veritas"));
+}
+
+#[test]
 fn init_writes_config_ci_and_agent_instructions() {
     let temp = TempDir::new().expect("temp dir");
     fs::write(
@@ -931,6 +966,16 @@ fn review_ai_writes_changed_digest_and_agent_feedback() {
     )
     .expect("write changed auth");
 
+    let nested_veritas = fixture.path().join("crates/auth/.veritas/feedback");
+    fs::create_dir_all(&nested_veritas).expect("create nested veritas artifact dir");
+    fs::write(nested_veritas.join("rust_coverage.md"), "generated").expect("write nested artifact");
+
+    let nested_checkout = fixture.path().join(".tmp/veritas");
+    fs::create_dir_all(&nested_checkout).expect("create nested checkout dir");
+    run_git(&nested_checkout, &["init"]);
+    fs::write(nested_checkout.join("README.md"), "scratch checkout")
+        .expect("write nested checkout file");
+
     let mut cmd = veritas();
     cmd.current_dir(fixture.path()).arg("review-ai");
     cmd.assert()
@@ -944,6 +989,9 @@ fn review_ai_writes_changed_digest_and_agent_feedback() {
         .expect("read agent feedback");
     assert!(digest.contains("crates/auth/src/lib.rs"));
     assert!(digest.contains("validate_token"));
+    assert!(!digest.contains("crates/auth/.veritas"));
+    assert!(!digest.contains(".tmp/veritas"));
+    assert!(feedback.contains("Changed files: `1`"));
     assert!(feedback.contains("veritas verify --changed --profile ci"));
 }
 

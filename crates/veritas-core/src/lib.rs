@@ -135,6 +135,8 @@ struct TargetCacheSource {
     modified_unix_seconds: u64,
 }
 
+const TARGET_CACHE_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulerSummary {
     pub requested_jobs: usize,
@@ -839,7 +841,8 @@ impl CoreEngine {
             match plugin.detect_project(root) {
                 Ok(project) => {
                     debug!(language = plugin.id(), "detected project");
-                    let mut plugin_targets = plugin.discover_targets(root)?;
+                    let (mut plugin_targets, _) =
+                        self.discover_targets_cached(root, plugin.as_ref(), &project)?;
                     projects.push(project);
                     targets.append(&mut plugin_targets);
                 }
@@ -1397,7 +1400,7 @@ fn read_valid_target_cache(root: &Path, language: &str) -> Result<Option<TargetC
         .with_context(|| format!("failed to read target cache {}", path.display()))?;
     let cache: TargetCache = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse target cache {}", path.display()))?;
-    if cache.version != 1 || cache.language != language {
+    if cache.version != TARGET_CACHE_VERSION || cache.language != language {
         return Ok(None);
     }
     if cache.git_head != git_head(root) {
@@ -1439,7 +1442,7 @@ fn build_target_cache(
         }
     }
     Ok(TargetCache {
-        version: 1,
+        version: TARGET_CACHE_VERSION,
         language: language.to_string(),
         created_unix_seconds: unix_timestamp_seconds(),
         git_head: git_head(root),
@@ -1469,7 +1472,7 @@ fn target_cache_artifact(
     state: &str,
 ) -> Result<GeneratedArtifact> {
     let contents = serde_json::to_string_pretty(&serde_json::json!({
-        "version": 1,
+        "version": TARGET_CACHE_VERSION,
         "language": language,
         "state": state,
         "targets": cache.targets.len(),
@@ -2540,6 +2543,14 @@ fn changed_files(root: &Path) -> Result<Vec<ChangedFile>> {
             .map(str::trim)
             .filter(|line| !line.is_empty())
         {
+            // `git ls-files --others` reports nested untracked repositories as a
+            // single directory entry with a trailing slash. Changed-scope
+            // verification is file-oriented, and including that directory in AI
+            // digests makes large monorepo scratch checkouts look like source
+            // changes without producing an actionable verification target.
+            if is_untracked_directory_entry(line) {
+                continue;
+            }
             let path = Utf8PathBuf::from(line);
             if !should_ignore_changed_path(&path) {
                 files.entry(path).or_default();
@@ -2651,11 +2662,19 @@ fn parse_added_hunk_range(line: &str) -> Option<LineRange> {
     Some(LineRange { start, end })
 }
 
+fn is_untracked_directory_entry(path: &str) -> bool {
+    path.ends_with('/')
+}
+
 fn should_ignore_changed_path(path: &Utf8PathBuf) -> bool {
-    path.starts_with(".veritas")
+    path_has_component(path, ".veritas")
         || path.starts_with("target")
         || path.starts_with("tests/veritas_generated")
         || path.as_str().contains("/tests/veritas_generated/")
+}
+
+fn path_has_component(path: &Utf8PathBuf, component: &str) -> bool {
+    path.as_str().split('/').any(|part| part == component)
 }
 
 fn path_matches_language(language: &str, path: &Utf8PathBuf) -> bool {
@@ -6014,10 +6033,10 @@ mod tests {
         api_baseline_artifact, assertion_candidate_artifacts, classify_evolution_outcome,
         cleanup_generated_artifacts, confidence_score, corpus_entry_artifacts,
         differential_replay_artifact, evolution_artifacts, evolution_metrics_from_artifacts,
-        filtered_mutation_records, isolated_mutation_root_for_config, parse_unified_diff,
-        regression_artifacts, replay_cases_for_target, replay_result_artifacts, run_parallel_jobs,
-        targets_for_changed_files, ChangedFile, IsolationSetupError, TargetKind,
-        VerificationTarget,
+        filtered_mutation_records, is_untracked_directory_entry, isolated_mutation_root_for_config,
+        parse_unified_diff, regression_artifacts, replay_cases_for_target, replay_result_artifacts,
+        run_parallel_jobs, should_ignore_changed_path, targets_for_changed_files, ChangedFile,
+        IsolationSetupError, TargetKind, VerificationTarget,
     };
 
     #[test]
@@ -6284,6 +6303,31 @@ index 3333333..4444444 100644
             .find(|changed| changed.path.as_str() == "src/other.rs")
             .expect("src/other.rs diff should be parsed");
         assert_eq!(other.ranges, vec![LineRange { start: 5, end: 5 }]);
+    }
+
+    #[test]
+    fn ignores_veritas_artifacts_at_any_monorepo_depth() {
+        for path in [
+            ".veritas/report.json",
+            "services/billing/.veritas/report.json",
+            "control-plane-sdk/go/extensions/.veritas/feedback/go_coverage.md",
+        ] {
+            assert!(
+                should_ignore_changed_path(&Utf8PathBuf::from(path)),
+                "expected {path} to be ignored"
+            );
+        }
+
+        assert!(!should_ignore_changed_path(&Utf8PathBuf::from(
+            "services/billing/src/lib.rs"
+        )));
+    }
+
+    #[test]
+    fn untracked_directory_entries_are_not_actionable_changed_files() {
+        assert!(is_untracked_directory_entry(".tmp/veritas/"));
+        assert!(is_untracked_directory_entry("nested/repo/"));
+        assert!(!is_untracked_directory_entry("src/lib.rs"));
     }
 
     #[test]

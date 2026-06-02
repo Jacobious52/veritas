@@ -217,6 +217,85 @@ impl GoPlugin {
     }
 }
 
+fn discover_targets_lightweight(root: &Path) -> Result<Vec<VerificationTarget>> {
+    let modules = discover_go_modules(root)?;
+    let mut functions = Vec::new();
+    let mut packages = BTreeSet::new();
+
+    for module in &modules {
+        let module_root = root.join(&module.root);
+        for path in go_source_paths(&module_root, &module_root)? {
+            packages.insert(prefix_module_path(&module.root, &package_dir(&path)));
+        }
+        functions.extend(
+            discover_functions(&module_root)?
+                .into_iter()
+                .map(|mut function| {
+                    function.path = prefix_module_path(&module.root, &function.path);
+                    function
+                }),
+        );
+    }
+
+    Ok(targets_from_go_parts(&modules, functions, packages))
+}
+
+fn targets_from_go_parts(
+    modules: &[GoModule],
+    functions: Vec<GoFunction>,
+    mut packages: BTreeSet<Utf8PathBuf>,
+) -> Vec<VerificationTarget> {
+    let mut targets = vec![VerificationTarget {
+        id: "go:project".to_string(),
+        language: "go".to_string(),
+        kind: TargetKind::Project,
+        path: Utf8PathBuf::from("."),
+        symbol: None,
+        signature: None,
+        line_range: None,
+        description: match modules {
+            [module] => format!("Go module {}", module.module_path),
+            _ => format!("{} Go modules", modules.len()),
+        },
+        risk: RiskLevel::Medium,
+    }];
+
+    for function in functions {
+        packages.insert(package_dir(&function.path));
+        targets.push(VerificationTarget {
+            id: format!("go:{}:{}", function.path, function.symbol),
+            language: "go".to_string(),
+            kind: TargetKind::Function,
+            path: function.path.clone(),
+            symbol: Some(function.symbol.clone()),
+            signature: Some(function.signature.clone()),
+            line_range: Some(function.line_range.clone()),
+            description: if let Some(receiver) = &function.receiver {
+                format!("Go method {receiver}.{}", function.name)
+            } else {
+                format!("Go function {}", function.name)
+            },
+            risk: infer_risk(&function.symbol),
+        });
+    }
+
+    for package in packages {
+        targets.push(VerificationTarget {
+            id: format!("go:{package}"),
+            language: "go".to_string(),
+            kind: TargetKind::Package,
+            path: package.clone(),
+            symbol: None,
+            signature: None,
+            line_range: None,
+            description: format!("Go package {package}"),
+            risk: RiskLevel::Medium,
+        });
+    }
+
+    targets
+}
+
 impl GoVerificationContext {
     fn discover(root: &Path, config: &GoPluginConfig) -> Result<Self> {
         let modules = discover_go_modules(root)?;
@@ -322,61 +401,7 @@ impl LanguagePlugin for GoPlugin {
     }
 
     fn discover_targets(&self, root: &Path) -> Result<Vec<VerificationTarget>> {
-        let context = self.context(root)?;
-        let mut targets = vec![VerificationTarget {
-            id: "go:project".to_string(),
-            language: "go".to_string(),
-            kind: TargetKind::Project,
-            path: Utf8PathBuf::from("."),
-            symbol: None,
-            signature: None,
-            line_range: None,
-            description: if context.modules.len() == 1 {
-                format!("Go module {}", context.modules[0].module_path)
-            } else {
-                format!("{} Go modules", context.modules.len())
-            },
-            risk: RiskLevel::Medium,
-        }];
-
-        let mut packages = BTreeSet::new();
-        for package in &context.packages {
-            packages.insert(package.dir.clone());
-        }
-        for function in context.functions {
-            packages.insert(package_dir(&function.path));
-            targets.push(VerificationTarget {
-                id: format!("go:{}:{}", function.path, function.symbol),
-                language: "go".to_string(),
-                kind: TargetKind::Function,
-                path: function.path.clone(),
-                symbol: Some(function.symbol.clone()),
-                signature: Some(function.signature.clone()),
-                line_range: Some(function.line_range.clone()),
-                description: if let Some(receiver) = &function.receiver {
-                    format!("Go method {receiver}.{}", function.name)
-                } else {
-                    format!("Go function {}", function.name)
-                },
-                risk: infer_risk(&function.symbol),
-            });
-        }
-
-        for package in packages {
-            targets.push(VerificationTarget {
-                id: format!("go:{package}"),
-                language: "go".to_string(),
-                kind: TargetKind::Package,
-                path: package.clone(),
-                symbol: None,
-                signature: None,
-                line_range: None,
-                description: format!("Go package {package}"),
-                risk: RiskLevel::Medium,
-            });
-        }
-
-        Ok(targets)
+        discover_targets_lightweight(root)
     }
 
     fn generate_tests(
@@ -3503,6 +3528,9 @@ fn mutation_candidate_from_binary(
     source: &str,
     function: &GoFunction,
 ) -> Result<Option<MutationCandidate>> {
+    if is_inside_map_make_capacity(node, source) {
+        return Ok(None);
+    }
     let Some(operator) = binary_operator_node(node) else {
         return Ok(None);
     };
@@ -3708,6 +3736,9 @@ fn mutation_candidate_from_literal(
     source: &str,
     function: &GoFunction,
 ) -> Result<Option<MutationCandidate>> {
+    if is_inside_map_make_capacity(node, source) {
+        return Ok(None);
+    }
     let text = node_text(node, source)?.trim();
     let to = match text {
         "true" => "false",
@@ -3725,6 +3756,23 @@ fn mutation_candidate_from_literal(
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
     }))
+}
+
+fn is_inside_map_make_capacity(node: Node<'_>, source: &str) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "call_expression" {
+            if let Ok(text) = node_text(parent, source) {
+                let trimmed = text.trim_start();
+                if trimmed.starts_with("make(map[") {
+                    let relative_start = node.start_byte().saturating_sub(parent.start_byte());
+                    return text.find(',').is_some_and(|comma| relative_start > comma);
+                }
+            }
+        }
+        current = parent;
+    }
+    false
 }
 
 fn literal_mutation_label_for_function(function: &GoFunction) -> &'static str {
@@ -5337,6 +5385,40 @@ mod tests {
         assert!(!candidates
             .iter()
             .any(|candidate| candidate.from == "err != nil"));
+    }
+
+    #[test]
+    fn mutation_candidates_skip_map_make_capacity_hints() {
+        let root = TempRoot::new();
+        write_file(
+            root.path(),
+            "maps.go",
+            "package maps\n\nfunc CopyMap(in map[string]string) (map[string]string, []string) {\n\tout := make(map[string]string, len(in)+1)\n\titems := make([]string, len(in)+1)\n\treturn out, items\n}\n",
+        );
+        let functions = discover_functions(root.path()).expect("discover functions");
+        let artifact = GeneratedArtifact {
+            id: "go-mutation-maps".to_string(),
+            language: "go".to_string(),
+            kind: ArtifactKind::MutationCheck,
+            target_id: "go:maps.go:CopyMap".to_string(),
+            path: Utf8PathBuf::from(".veritas/mutations/go_maps.txt"),
+            contents: String::new(),
+            description: String::new(),
+            status: ArtifactStatus::Planned,
+        };
+
+        let candidates =
+            go_mutation_candidates(&functions, root.path(), &[artifact]).expect("mutations");
+
+        assert!(candidates.iter().any(|candidate| candidate.from == "+"));
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.from == "+" || candidate.from == "1")
+                .count(),
+            2,
+            "only the observable slice length expression should be mutated; candidates={candidates:?}"
+        );
     }
 
     #[test]

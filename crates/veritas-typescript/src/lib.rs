@@ -498,7 +498,7 @@ fn discover_functions(root: &Path) -> Result<Vec<TypeScriptFunction>> {
     let mut functions = Vec::new();
     for entry in WalkDir::new(root)
         .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path(), entry.file_name()))
     {
         let entry = entry?;
         if !entry.file_type().is_file() || !is_typescript_source(entry.path()) {
@@ -2605,7 +2605,7 @@ fn contains_typescript_file(root: &Path) -> bool {
     WalkDir::new(root)
         .max_depth(4)
         .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path(), entry.file_name()))
         .filter_map(Result::ok)
         .any(|entry| entry.file_type().is_file() && is_typescript_source(entry.path()))
 }
@@ -2633,6 +2633,9 @@ fn is_typescript_test_file(path: &Path) -> bool {
 
 fn is_ignored(path: &Path, name: &OsStr) -> bool {
     let name = name.to_string_lossy();
+    if name.starts_with('.') {
+        return true;
+    }
     if matches!(
         name.as_ref(),
         ".git"
