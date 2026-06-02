@@ -146,7 +146,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - Rust discovers public free functions and public methods with Tree-sitter, writes symbol graphs, and uses AST spans for mutation probes.
 - Rust property generation is intentionally limited to supported public free functions in packages whose manifest mentions `proptest`.
 - Rust command execution supports timeouts, `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`, and optional systemd scope limits.
-- Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, isolated parallel mutation workers, and AST-scoped mutation probes.
+- Go supports multiple `go.mod` roots, package graphs from `go list -json`, scoped package tests, reverse dependency selection, build tags, handwritten/generated fuzz discovery, bounded concurrent fuzz targets, isolated parallel mutation workers, AST-scoped mutation probes, explicit-target scoped discovery, and per-run context caching. Go coverage is disabled by default because it is expensive on large repos.
 - `veritas bench` runs seeded examples in temporary copies and scores expected finding, artifact, command, threshold, mutation attribution, mutation worker/isolation, property strength, corpus, replay, and budget metrics from `veritas-bench.toml`.
 - `veritas mutants list` previews candidate mutants without executing native tests. It supports Markdown/JSON output, diff previews, domain/operator/path/symbol filters, and validated shard selection. Integration coverage proves shard unions match the unsharded candidate set without duplicate mutant IDs. `veritas mutants run --from-campaign ... --status lived` focuses reruns on previous survivors by stable mutant ID, and `veritas mutants merge` combines shard campaign artifacts.
 - Reports include first-class quality metrics for mutation score/trends, property strength, generated-test failures, fuzz execution, corpus replay, and persisted repros.
@@ -179,7 +179,7 @@ Full-repo dogfood also traverses `examples/rust-invoice`, which intentionally ex
 - GitHub Actions runs weekly smoke canaries and supports manual smoke/verify-fast/verify canary runs.
 - GitHub Actions includes a live installer smoke workflow for published releases plus manual confidence-suite and large-repo benchmark jobs.
 - Main CI lives at `.github/workflows/ci.yml` and runs format, workspace tests, clippy, and Rust/Go/Python/TypeScript fixture smoke verification.
-- Coverage is best effort. Rust coverage requires `cargo-llvm-cov` and is disabled by default in the root config. Go coverage can be disabled by config or the CI profile.
+- Coverage is best effort. Rust coverage requires `cargo-llvm-cov`; Rust and Go coverage are disabled by default and should be enabled only for focused local investigations or dedicated CI lanes.
 - GitHub Actions release workflow builds Linux/macOS binaries, publishes `install.sh`, checksums, a CycloneDX SBOM, and provenance attestations. crates.io publishing uses `CARGO_REGISTRY_TOKEN` and `scripts/publish-crates.sh`.
 
 ## Generated Artifacts

@@ -275,7 +275,7 @@ impl Default for VeritasConfig {
                     fuzz_seconds: 10,
                     fuzz_existing: true,
                     fuzz_concurrency: 2,
-                    coverage_enabled: true,
+                    coverage_enabled: false,
                     reverse_dependency_depth: 1,
                     max_fuzz_targets: 20,
                     command_timeout_seconds: 120,

@@ -865,9 +865,17 @@ impl CoreEngine {
         let plugin = self.registry.get(language)?;
         let discovery_start = Instant::now();
         let project = plugin.detect_project(root)?;
-        let (all_targets, cache_artifact) =
-            self.discover_targets_cached(root, plugin.as_ref(), &project)?;
-        let target = self.resolve_target_from_targets(language, target_path, &all_targets, root)?;
+        let skip_target_discovery = should_skip_target_discovery(root, language, target_path)?;
+        let (all_targets, cache_artifact, target) = if skip_target_discovery {
+            let target = self.resolve_target_from_targets(language, target_path, &[], root)?;
+            (Vec::new(), None, target)
+        } else {
+            let (all_targets, cache_artifact) =
+                self.discover_targets_cached(root, plugin.as_ref(), &project)?;
+            let target =
+                self.resolve_target_from_targets(language, target_path, &all_targets, root)?;
+            (all_targets, cache_artifact, target)
+        };
         let report_targets = expand_report_targets(&target, &all_targets);
         performance.discovery_ms = discovery_start.elapsed().as_millis();
 
@@ -1082,9 +1090,20 @@ impl CoreEngine {
     ) -> Result<VerificationReport> {
         let plugin = self.registry.get(language)?;
         let project = plugin.detect_project(root)?;
-        let (targets, cache_artifact) =
-            self.discover_targets_cached(root, plugin.as_ref(), &project)?;
-        let target = self.resolve_target_from_targets(language, target_path, &targets, root)?;
+        let skip_target_discovery = should_skip_target_discovery(root, language, target_path)?;
+        let (cache_artifact, target) = if skip_target_discovery {
+            (
+                None,
+                self.resolve_target_from_targets(language, target_path, &[], root)?,
+            )
+        } else {
+            let (targets, cache_artifact) =
+                self.discover_targets_cached(root, plugin.as_ref(), &project)?;
+            (
+                cache_artifact,
+                self.resolve_target_from_targets(language, target_path, &targets, root)?,
+            )
+        };
         let mut plan = self.planner.plan(&project, &target)?;
         if !strategies.is_empty() {
             plan.strategies = strategies;
@@ -5233,6 +5252,21 @@ fn normalize_target_path(root: &Path, path: &Path) -> Result<Utf8PathBuf> {
             path.display()
         )
     })
+}
+
+fn should_skip_target_discovery(
+    root: &Path,
+    language: &str,
+    target_path: Option<&Path>,
+) -> Result<bool> {
+    if language != "go" {
+        return Ok(false);
+    }
+
+    target_path
+        .map(|path| normalize_target_path(root, path).map(|relative| relative.as_str() != "."))
+        .transpose()
+        .map(|value| value.unwrap_or(false))
 }
 
 fn skipped_run(language: &str) -> veritas_plugin_api::TestRunResult {
