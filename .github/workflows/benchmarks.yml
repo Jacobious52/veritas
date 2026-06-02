@@ -32,6 +32,9 @@ jobs:
       - name: Check Go
         run: go version
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Run seeded benchmark suite
         run: cargo run -p veritas-cli --locked -- --root examples bench --format json
 
@@ -49,6 +52,9 @@ jobs:
 
       - name: Check Go
         run: go version
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Run confidence suite
         run: ./scripts/run-confidence-suite.sh
@@ -79,6 +85,9 @@ jobs:
         run: |
           go version
           python3 --version
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Build veritas
         run: cargo build -p veritas-cli --locked

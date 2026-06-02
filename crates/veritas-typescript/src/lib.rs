@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     fs,
     hash::{Hash, Hasher},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Node, Parser};
 use veritas_core::{
     config::{MutationConfig, TypeScriptPluginConfig},
@@ -19,8 +19,8 @@ use veritas_core::{
 };
 use veritas_plugin_api::{
     finalize_mutation_metrics, mutation_taxonomy, ArtifactKind, ArtifactStatus, BehaviorReplayCase,
-    BehaviorReplayObservation, BehaviorReplayStatus, CommandRecord, CoverageReport, Failure,
-    FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
+    BehaviorReplayObservation, BehaviorReplayStatus, CommandRecord, CoverageFile, CoverageReport,
+    Failure, FailureSeverity, GeneratedArtifact, LanguagePlugin, LineRange, MutationAttribution,
     MutationRecord, MutationStatus, PluginCapability, ProjectInfo, ReproCase, RiskLevel, RunStatus,
     SourceSpan, TargetKind, TestRunResult, VerificationPlan, VerificationQuality,
     VerificationStrategy, VerificationTarget,
@@ -40,6 +40,7 @@ struct TypeScriptFunction {
     owner: Option<String>,
     params: Vec<String>,
     signature: String,
+    is_async: bool,
     line_range: LineRange,
     start_byte: usize,
     end_byte: usize,
@@ -56,6 +57,38 @@ struct TypeScriptMutationCandidate {
     start_byte: usize,
     end_byte: usize,
     line_range: LineRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeScriptPackageManager {
+    Bun,
+    Npm,
+    Pnpm,
+    Yarn,
+}
+
+#[derive(Debug, Clone)]
+struct TypeScriptCommand {
+    cwd: PathBuf,
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PackageJson {
+    #[serde(default)]
+    scripts: BTreeMap<String, String>,
+    #[serde(default, rename = "packageManager")]
+    package_manager: Option<String>,
+    #[serde(default)]
+    workspaces: Option<PackageJsonWorkspaces>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum PackageJsonWorkspaces {
+    Array(Vec<String>),
+    Object { packages: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,26 +248,32 @@ impl LanguagePlugin for TypeScriptPlugin {
         _plan: &VerificationPlan,
     ) -> Result<TestRunResult> {
         let start = Instant::now();
-        if !bun_available(root) {
+        let selected_source = selected_source_path(artifacts);
+        let Some(test_command) = typescript_test_command(root, selected_source.as_ref())? else {
             return Ok(TestRunResult {
                 language: "typescript".to_string(),
                 status: RunStatus::Skipped,
-                commands: vec![skipped_bun_command(
+                commands: vec![skipped_typescript_command(
                     root,
-                    "bun not found; install Bun to run TypeScript/JavaScript tests",
+                    "no available TypeScript/JavaScript test command found; install Bun/npm/pnpm/yarn or add a package.json test script",
                 )?],
                 failures: Vec::new(),
                 duration_ms: start.elapsed().as_millis(),
                 quality: VerificationQuality::default(),
             });
-        }
+        };
 
-        let command = run_command(root, "bun", ["test"], self.config.command_timeout_seconds)?;
+        let command = run_command_in(
+            &test_command.cwd,
+            &test_command.program,
+            test_command.args.iter().map(String::as_str),
+            self.config.command_timeout_seconds,
+        )?;
         let status = command.status.clone();
         let failures = if status == RunStatus::Failed {
             vec![Failure {
                 id: None,
-                message: "bun test failed".to_string(),
+                message: "TypeScript/JavaScript test command failed".to_string(),
                 severity: FailureSeverity::Error,
                 target_id: artifacts.first().map(|artifact| artifact.target_id.clone()),
                 artifact_id: artifacts.first().map(|artifact| artifact.id.clone()),
@@ -287,12 +326,77 @@ impl LanguagePlugin for TypeScriptPlugin {
         })
     }
 
-    fn collect_coverage(&self, _root: &Path) -> Result<Option<CoverageReport>> {
+    fn collect_coverage(&self, root: &Path) -> Result<Option<CoverageReport>> {
+        if !self.config.coverage_enabled {
+            return Ok(Some(CoverageReport {
+                tool: "bun test --coverage".to_string(),
+                summary: "not collected: TypeScript/JavaScript coverage is disabled; set plugins.typescript.coverage_enabled = true".to_string(),
+                files: Vec::new(),
+            }));
+        }
+        if !bun_available(root) {
+            return Ok(Some(CoverageReport {
+                tool: "bun test --coverage".to_string(),
+                summary: "not collected: bun not found; install Bun to collect TypeScript/JavaScript coverage".to_string(),
+                files: Vec::new(),
+            }));
+        }
+        let coverage_dir = root.join(".veritas").join("coverage").join("typescript");
+        if coverage_dir.exists() {
+            fs::remove_dir_all(&coverage_dir)
+                .with_context(|| format!("failed to clean {}", coverage_dir.display()))?;
+        }
+        fs::create_dir_all(&coverage_dir)
+            .with_context(|| format!("failed to create {}", coverage_dir.display()))?;
+        let command = run_command_in(
+            root,
+            "bun",
+            [
+                "test",
+                "--coverage",
+                "--coverage-reporter=lcov",
+                "--coverage-dir=.veritas/coverage/typescript",
+            ],
+            self.config.command_timeout_seconds.min(90),
+        )?;
+        if command.status != RunStatus::Passed {
+            return Ok(Some(CoverageReport {
+                tool: "bun test --coverage --coverage-reporter=lcov".to_string(),
+                summary: format!("coverage command failed: {}", excerpt(&command.stderr)),
+                files: Vec::new(),
+            }));
+        }
+        let lcov = coverage_dir.join("lcov.info");
+        let files = if lcov.exists() {
+            parse_lcov(
+                root,
+                &fs::read_to_string(&lcov).with_context(|| {
+                    format!(
+                        "failed to read TypeScript/JavaScript lcov {}",
+                        lcov.display()
+                    )
+                })?,
+            )?
+        } else {
+            Vec::new()
+        };
+        let summary = if files.is_empty() {
+            "coverage collected, but no file-level lcov entries were emitted".to_string()
+        } else {
+            let uncovered = files
+                .iter()
+                .filter(|file| !file.uncovered_ranges.is_empty())
+                .count();
+            format!(
+                "coverage collected for {} files; {} files have uncovered ranges",
+                files.len(),
+                uncovered
+            )
+        };
         Ok(Some(CoverageReport {
-            tool: "bun coverage".to_string(),
-            summary: "not collected: TypeScript/JavaScript coverage is not implemented yet"
-                .to_string(),
-            files: Vec::new(),
+            tool: "bun test --coverage --coverage-reporter=lcov".to_string(),
+            summary,
+            files,
         }))
     }
 
@@ -326,6 +430,67 @@ impl LanguagePlugin for TypeScriptPlugin {
             return Ok(BTreeMap::new());
         };
         replay_typescript_function_batch(root, function, cases, &self.config)
+    }
+
+    fn promote_regression(
+        &self,
+        _root: &Path,
+        _report: &veritas_plugin_api::VerificationReport,
+        finding: &Failure,
+        index: usize,
+    ) -> Result<Vec<GeneratedArtifact>> {
+        let target_id = finding
+            .target_id
+            .clone()
+            .unwrap_or_else(|| "typescript:unknown".to_string());
+        let import_hint = typescript_regression_import_hint(finding);
+        let mut contents = String::from("import { expect, test } from \"bun:test\";\n");
+        if let Some(import_hint) = import_hint {
+            contents.push_str(&import_hint);
+        }
+        contents.push('\n');
+        contents.push_str(&format!(
+            "test.skip(\"veritas regression {index}: {}\", () => {{\n",
+            js_string_literal_fragment(&finding.message)
+        ));
+        contents.push_str(
+            "  // Reproduce the observed survivor or behavior drift here, then remove .skip.\n",
+        );
+        contents.push_str(&format!(
+            "  // Target: {}\n",
+            js_comment_fragment(&target_id)
+        ));
+        if !finding.command.is_empty() {
+            contents.push_str(&format!(
+                "  // Original command: {}\n",
+                js_comment_fragment(&finding.command)
+            ));
+        }
+        if let Some(repro) = &finding.repro {
+            contents.push_str(&format!(
+                "  // Repro: {}\n",
+                js_comment_fragment(&repro.command)
+            ));
+            if let Some(input) = &repro.input {
+                contents.push_str(&format!(
+                    "  // Input: {}\n",
+                    js_comment_fragment(input.trim())
+                ));
+            }
+        }
+        contents.push_str("  expect(true).toBe(false);\n");
+        contents.push_str("});\n");
+
+        Ok(vec![GeneratedArtifact {
+            id: format!("typescript-promoted-regression-{index}"),
+            language: "typescript".to_string(),
+            kind: ArtifactKind::RegressionTest,
+            target_id,
+            path: Utf8PathBuf::from(format!("tests/veritas_regression_{index}.test.ts")),
+            contents,
+            description: "Focused skipped Bun regression scaffold for a Veritas TypeScript/JavaScript finding".to_string(),
+            status: ArtifactStatus::Planned,
+        }])
     }
 }
 
@@ -427,6 +592,7 @@ fn parse_named_function(
         owner,
         params: function_params(node, source)?,
         signature: signature_text(node, source)?.trim().to_string(),
+        is_async: function_is_async(node, source)?,
         line_range: node_line_range(node),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
@@ -462,6 +628,7 @@ fn parse_variable_function(
         name,
         params: function_params(value, source)?,
         signature: signature_text(node, source)?.trim().to_string(),
+        is_async: function_is_async(value, source)?,
         line_range: node_line_range(node),
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
@@ -516,9 +683,12 @@ fn function_params(node: Node<'_>, source: &str) -> Result<Vec<String>> {
             _ => {}
         }
     }
-    params.sort();
     params.dedup();
     Ok(params)
+}
+
+fn function_is_async(node: Node<'_>, source: &str) -> Result<bool> {
+    Ok(node_text(node, source)?.trim_start().starts_with("async"))
 }
 
 fn calls_in_function(node: Node<'_>, source: &str) -> Result<Vec<String>> {
@@ -616,7 +786,10 @@ fn property_candidate_artifact(
             }
         })
         .filter(|function| {
-            function.owner.is_none() && !function.params.is_empty() && function.params.len() <= 4
+            function.owner.is_none()
+                && !function.is_async
+                && !function.params.is_empty()
+                && function.params.len() <= 4
         })
         .take(8)
         .collect::<Vec<_>>();
@@ -762,9 +935,17 @@ fn typescript_mutation_manifest_artifact(
                 "line_range": &function.line_range,
                 "risk": infer_risk(&function.symbol),
                 "operators": [
+                    "ast_binary_operator",
+                    "ast_boolean_negation",
                     "comparison_boundary",
                     "boolean_guard",
                     "strict_equality",
+                    "optional_chaining",
+                    "nullish_coalescing",
+                    "async_await",
+                    "object_spread",
+                    "env_config",
+                    "http_request",
                     "default_return",
                     "string_normalization"
                 ],
@@ -778,7 +959,7 @@ fn typescript_mutation_manifest_artifact(
         "target_id": target.id,
         "status": "planned",
         "targets": selected,
-        "next_step": "TypeScript/JavaScript mutation execution uses Bun test and the shared mutation record taxonomy.",
+        "next_step": "TypeScript/JavaScript mutation execution uses the selected package-manager test command and the shared mutation record taxonomy.",
     }))?;
     Ok(GeneratedArtifact {
         id: format!("typescript-mutation-{}", safe_ident(&target.id)),
@@ -940,6 +1121,21 @@ fn run_typescript_mutations(
         record_mutation_executed(&mut quality.mutation.by_operator, &operator);
 
         let path = root.join(&candidate.path);
+        let Some(test_command) = typescript_test_command(root, Some(&candidate.path))? else {
+            let mut record = typescript_mutation_record(
+                &candidate,
+                &domain,
+                &operator,
+                MutationStatus::Skipped,
+                None,
+                0,
+            );
+            record.skip_reason =
+                Some("no available TypeScript/JavaScript test command found".to_string());
+            persist_mutation_record_artifacts(root, &run_dir, &mut record, None)?;
+            quality.mutation.records.push(record);
+            continue;
+        };
         let original = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let mut mutated = original.clone();
@@ -951,10 +1147,10 @@ fn run_typescript_mutations(
                 path.display()
             )
         })?;
-        let command = run_command(
-            root,
-            "bun",
-            ["test"],
+        let command = run_command_in(
+            &test_command.cwd,
+            &test_command.program,
+            test_command.args.iter().map(String::as_str),
             config.command_timeout_seconds.min(60),
         );
         fs::write(&path, original)
@@ -1027,6 +1223,7 @@ fn typescript_mutation_candidates(
         {
             continue;
         }
+        collect_ast_mutation_candidates(&path, &contents, function, &mut candidates)?;
         for (from, to, label) in [
             ("<=", "<", "boundary comparison mutation"),
             (">=", ">", "boundary comparison mutation"),
@@ -1040,6 +1237,24 @@ fn typescript_mutation_candidates(
             (".trim()", "", "string normalization mutation"),
             (".toLowerCase()", "", "string normalization mutation"),
             (".toUpperCase()", "", "string normalization mutation"),
+            ("??", "||", "nullish coalescing mutation"),
+            ("?.", ".", "optional chaining mutation"),
+            ("await ", "", "async await mutation"),
+            ("...", "", "object spread mutation"),
+            (
+                "process.env.",
+                "process.env.VERITAS_MUTATED_",
+                "env config mutation",
+            ),
+            (
+                "process.env",
+                "{} as Record<string, string | undefined>",
+                "env config mutation",
+            ),
+            ("\"GET\"", "\"POST\"", "http request method mutation"),
+            ("\"POST\"", "\"GET\"", "http request method mutation"),
+            ("'GET'", "'POST'", "http request method mutation"),
+            ("'POST'", "'GET'", "http request method mutation"),
         ] {
             push_typescript_mutation(&contents, function, from, to, label, &mut candidates);
         }
@@ -1070,10 +1285,247 @@ fn push_typescript_mutation(
     let Some(source) = contents.get(function.start_byte..function.end_byte) else {
         return;
     };
+    let mut cursor = 0;
+    while let Some(offset) = source[cursor..].find(from) {
+        let start_byte = function.start_byte + cursor + offset;
+        push_typescript_mutation_at(
+            contents,
+            function,
+            start_byte,
+            start_byte + from.len(),
+            to,
+            label,
+            candidates,
+        );
+        cursor += offset + from.len().max(1);
+    }
+}
+
+fn collect_ast_mutation_candidates(
+    path: &Path,
+    contents: &str,
+    function: &TypeScriptFunction,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) -> Result<()> {
+    let mut parser = parser_for_path(path)?;
+    let Some(tree) = parser.parse(contents, None) else {
+        return Ok(());
+    };
+    collect_ast_mutation_candidates_from_node(tree.root_node(), contents, function, candidates)
+}
+
+fn collect_ast_mutation_candidates_from_node(
+    node: Node<'_>,
+    contents: &str,
+    function: &TypeScriptFunction,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) -> Result<()> {
+    if node.end_byte() < function.start_byte || node.start_byte() > function.end_byte {
+        return Ok(());
+    }
+    match node.kind() {
+        "binary_expression" => {
+            collect_binary_operator_mutations(node, contents, function, candidates)?
+        }
+        "unary_expression" => {
+            collect_unary_operator_mutations(node, contents, function, candidates)?
+        }
+        "await_expression" => push_node_text_mutation(
+            contents,
+            function,
+            node,
+            "await ",
+            "",
+            "ast async await mutation",
+            candidates,
+        ),
+        "subscript_expression" | "member_expression" => {
+            push_node_text_mutation(
+                contents,
+                function,
+                node,
+                "[0]",
+                "[1]",
+                "ast array bounds mutation",
+                candidates,
+            );
+            push_node_text_mutation(
+                contents,
+                function,
+                node,
+                "[1]",
+                "[0]",
+                "ast array bounds mutation",
+                candidates,
+            );
+        }
+        "throw_statement" => {
+            push_typescript_mutation_at(
+                contents,
+                function,
+                node.start_byte(),
+                node.end_byte(),
+                "return undefined",
+                "ast error handling mutation",
+                candidates,
+            );
+        }
+        "pair" | "spread_element" => {
+            push_node_text_mutation(
+                contents,
+                function,
+                node,
+                "...",
+                "",
+                "ast object spread mutation",
+                candidates,
+            );
+        }
+        "call_expression" | "optional_call_expression" => {
+            let call = node_text(node, contents).unwrap_or_default();
+            if call.contains("fetch(") || call.contains("axios") || call.contains(".request(") {
+                for (from, to) in [
+                    ("\"GET\"", "\"POST\""),
+                    ("\"POST\"", "\"GET\""),
+                    ("'GET'", "'POST'"),
+                    ("'POST'", "'GET'"),
+                ] {
+                    push_node_text_mutation(
+                        contents,
+                        function,
+                        node,
+                        from,
+                        to,
+                        "ast http request method mutation",
+                        candidates,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_ast_mutation_candidates_from_node(child, contents, function, candidates)?;
+    }
+    Ok(())
+}
+
+fn collect_binary_operator_mutations(
+    node: Node<'_>,
+    contents: &str,
+    function: &TypeScriptFunction,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) -> Result<()> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let operator = node_text(child, contents)?.trim();
+        let Some((to, label)) = ast_binary_operator_mutation(operator) else {
+            continue;
+        };
+        push_typescript_mutation_at(
+            contents,
+            function,
+            child.start_byte(),
+            child.end_byte(),
+            to,
+            label,
+            candidates,
+        );
+    }
+    Ok(())
+}
+
+fn ast_binary_operator_mutation(operator: &str) -> Option<(&'static str, &'static str)> {
+    match operator {
+        "<=" => Some(("<", "ast boundary comparison mutation")),
+        ">=" => Some((">", "ast boundary comparison mutation")),
+        "<" => Some(("<=", "ast boundary comparison mutation")),
+        ">" => Some((">=", "ast boundary comparison mutation")),
+        "===" => Some(("!==", "ast strict equality mutation")),
+        "!==" => Some(("===", "ast strict equality mutation")),
+        "==" => Some(("!=", "ast equality mutation")),
+        "!=" => Some(("==", "ast equality mutation")),
+        "&&" => Some(("||", "ast boolean guard mutation")),
+        "||" => Some(("&&", "ast boolean guard mutation")),
+        "??" => Some(("||", "ast nullish coalescing mutation")),
+        "+" => Some(("-", "ast arithmetic mutation")),
+        "-" => Some(("+", "ast arithmetic mutation")),
+        "*" => Some(("/", "ast arithmetic mutation")),
+        "/" => Some(("*", "ast arithmetic mutation")),
+        _ => None,
+    }
+}
+
+fn collect_unary_operator_mutations(
+    node: Node<'_>,
+    contents: &str,
+    function: &TypeScriptFunction,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) -> Result<()> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if node_text(child, contents)?.trim() == "!" {
+            push_typescript_mutation_at(
+                contents,
+                function,
+                child.start_byte(),
+                child.end_byte(),
+                "",
+                "ast boolean negation mutation",
+                candidates,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn push_node_text_mutation(
+    contents: &str,
+    function: &TypeScriptFunction,
+    node: Node<'_>,
+    from: &str,
+    to: &str,
+    label: &str,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) {
+    let Some(source) = contents.get(node.start_byte()..node.end_byte()) else {
+        return;
+    };
     let Some(offset) = source.find(from) else {
         return;
     };
-    let start_byte = function.start_byte + offset;
+    let start_byte = node.start_byte() + offset;
+    push_typescript_mutation_at(
+        contents,
+        function,
+        start_byte,
+        start_byte + from.len(),
+        to,
+        label,
+        candidates,
+    );
+}
+
+fn push_typescript_mutation_at(
+    contents: &str,
+    function: &TypeScriptFunction,
+    start_byte: usize,
+    end_byte: usize,
+    to: &str,
+    label: &str,
+    candidates: &mut Vec<TypeScriptMutationCandidate>,
+) {
+    if start_byte < function.start_byte || end_byte > function.end_byte || start_byte >= end_byte {
+        return;
+    }
+    let Some(from) = contents.get(start_byte..end_byte) else {
+        return;
+    };
+    if from == to {
+        return;
+    }
     candidates.push(TypeScriptMutationCandidate {
         path: function.path.clone(),
         function: function.symbol.clone(),
@@ -1081,9 +1533,21 @@ fn push_typescript_mutation(
         from: from.to_string(),
         to: to.to_string(),
         start_byte,
-        end_byte: start_byte + from.len(),
-        line_range: function.line_range.clone(),
+        end_byte,
+        line_range: mutation_line_range(contents, start_byte),
     });
+}
+
+fn mutation_line_range(contents: &str, start_byte: usize) -> LineRange {
+    let line = contents[..start_byte]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    LineRange {
+        start: line,
+        end: line,
+    }
 }
 
 fn function_has_mutation_skip_annotation(source: &str, start_byte: usize, end_byte: usize) -> bool {
@@ -1648,12 +2112,331 @@ fn replay_observation_from_command(
     }
 }
 
+fn parse_lcov(root: &Path, contents: &str) -> Result<Vec<CoverageFile>> {
+    let mut files = Vec::new();
+    let mut path: Option<Utf8PathBuf> = None;
+    let mut found_lines = 0usize;
+    let mut hit_lines = 0usize;
+    let mut uncovered = Vec::<usize>::new();
+
+    for line in contents.lines() {
+        if let Some(source) = line.strip_prefix("SF:") {
+            if let Some(file) = finish_lcov_file(path.take(), found_lines, hit_lines, &uncovered) {
+                files.push(file);
+            }
+            path = Some(lcov_path(root, source)?);
+            found_lines = 0;
+            hit_lines = 0;
+            uncovered.clear();
+        } else if let Some(data) = line.strip_prefix("DA:") {
+            let mut parts = data.split(',');
+            let Some(line_number) = parts.next().and_then(|value| value.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            let Some(hits) = parts.next().and_then(|value| value.parse::<usize>().ok()) else {
+                continue;
+            };
+            found_lines += 1;
+            if hits > 0 {
+                hit_lines += 1;
+            } else {
+                uncovered.push(line_number);
+            }
+        } else if let Some(value) = line.strip_prefix("LF:") {
+            if let Ok(value) = value.parse::<usize>() {
+                found_lines = value;
+            }
+        } else if let Some(value) = line.strip_prefix("LH:") {
+            if let Ok(value) = value.parse::<usize>() {
+                hit_lines = value;
+            }
+        } else if line == "end_of_record" {
+            if let Some(file) = finish_lcov_file(path.take(), found_lines, hit_lines, &uncovered) {
+                files.push(file);
+            }
+            found_lines = 0;
+            hit_lines = 0;
+            uncovered.clear();
+        }
+    }
+    if let Some(file) = finish_lcov_file(path.take(), found_lines, hit_lines, &uncovered) {
+        files.push(file);
+    }
+    Ok(files)
+}
+
+fn lcov_path(root: &Path, source: &str) -> Result<Utf8PathBuf> {
+    let source_path = Path::new(source);
+    if source_path.is_absolute() {
+        if let Ok(relative) = source_path.strip_prefix(root) {
+            return utf8_path(relative);
+        }
+    }
+    Ok(Utf8PathBuf::from(source))
+}
+
+fn finish_lcov_file(
+    path: Option<Utf8PathBuf>,
+    found_lines: usize,
+    hit_lines: usize,
+    uncovered: &[usize],
+) -> Option<CoverageFile> {
+    let path = path?;
+    let line_coverage_percent = if found_lines == 0 {
+        None
+    } else {
+        Some(((hit_lines * 100) / found_lines).min(100) as u8)
+    };
+    Some(CoverageFile {
+        path,
+        line_coverage_percent,
+        uncovered_ranges: compact_line_ranges(uncovered),
+    })
+}
+
+fn compact_line_ranges(lines: &[usize]) -> Vec<String> {
+    let mut ranges = Vec::new();
+    let mut iter = lines.iter().copied().peekable();
+    while let Some(start) = iter.next() {
+        let mut end = start;
+        while iter.peek().is_some_and(|next| *next == end + 1) {
+            end = iter.next().unwrap_or(end);
+        }
+        if start == end {
+            ranges.push(start.to_string());
+        } else {
+            ranges.push(format!("{start}-{end}"));
+        }
+    }
+    ranges
+}
+
+fn typescript_regression_import_hint(finding: &Failure) -> Option<String> {
+    let target_id = finding.target_id.as_deref()?;
+    let target = target_id.strip_prefix("typescript:")?;
+    let mut parts = target.splitn(2, ':');
+    let path = parts.next()?.trim();
+    let symbol = parts.next()?.trim();
+    if path.is_empty() || path == "." || symbol.is_empty() || symbol.contains('.') {
+        return None;
+    }
+    let import_path = format!("../{}", path);
+    Some(format!(
+        "import {{ {symbol} }} from {import_path:?};\n",
+        symbol = safe_js_identifier(symbol)?,
+        import_path = import_path
+    ))
+}
+
+fn safe_js_identifier(symbol: &str) -> Option<&str> {
+    let mut chars = symbol.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first == '$' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.all(|ch| ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()) {
+        Some(symbol)
+    } else {
+        None
+    }
+}
+
+fn js_string_literal_fragment(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ")
+}
+
+fn js_comment_fragment(value: &str) -> String {
+    value.replace(['\n', '\r'], " ")
+}
+
 fn typescript_target_matches_function(target_id: &str, function: &TypeScriptFunction) -> bool {
     target_id == format!("typescript:{}:{}", function.path, function.symbol)
 }
 
+fn typescript_test_command(
+    root: &Path,
+    source_path: Option<&Utf8PathBuf>,
+) -> Result<Option<TypeScriptCommand>> {
+    let cwd = typescript_package_root(root, source_path)?;
+    let package = read_package_json(&cwd)?.unwrap_or_default();
+    let has_test_script = package.scripts.contains_key("test");
+    let manager = detect_package_manager(&cwd, &package);
+    let program = manager.program();
+    if !program_available(program, &cwd) {
+        return Ok(None);
+    }
+    let args = manager.test_args(has_test_script);
+    if args.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(TypeScriptCommand {
+        cwd,
+        program: program.to_string(),
+        args,
+    }))
+}
+
+fn selected_source_path(artifacts: &[GeneratedArtifact]) -> Option<Utf8PathBuf> {
+    artifacts
+        .iter()
+        .find_map(|artifact| target_id_source_path(&artifact.target_id))
+}
+
+fn target_id_source_path(target_id: &str) -> Option<Utf8PathBuf> {
+    let target = target_id.strip_prefix("typescript:")?;
+    if target == "project" || target.is_empty() {
+        return None;
+    }
+    let path = target.split(':').next().unwrap_or(target);
+    if path == "." || path.is_empty() {
+        None
+    } else {
+        Some(Utf8PathBuf::from(path))
+    }
+}
+
+fn typescript_package_root(root: &Path, source_path: Option<&Utf8PathBuf>) -> Result<PathBuf> {
+    let Some(source_path) = source_path.filter(|path| path.as_str() != ".") else {
+        return Ok(root.to_path_buf());
+    };
+    let full_path = root.join(source_path);
+    let mut current = if full_path.is_dir() {
+        full_path.as_path()
+    } else {
+        full_path.parent().unwrap_or(root)
+    };
+    loop {
+        if current.join("package.json").exists() {
+            return Ok(current.to_path_buf());
+        }
+        if current == root {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent;
+    }
+
+    if let Some(package) = read_package_json(root)? {
+        for pattern in workspace_patterns(&package) {
+            let Some(prefix) = simple_workspace_prefix(&pattern) else {
+                continue;
+            };
+            if source_path.as_str().starts_with(prefix) {
+                let candidate = root.join(prefix.trim_end_matches('/'));
+                if candidate.join("package.json").exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+    Ok(root.to_path_buf())
+}
+
+fn read_package_json(root: &Path) -> Result<Option<PackageJson>> {
+    let path = root.join("package.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(Some(serde_json::from_str(&contents).with_context(
+        || format!("failed to parse {}", path.display()),
+    )?))
+}
+
+fn workspace_patterns(package: &PackageJson) -> Vec<String> {
+    match &package.workspaces {
+        Some(PackageJsonWorkspaces::Array(patterns)) => patterns.clone(),
+        Some(PackageJsonWorkspaces::Object { packages }) => packages.clone(),
+        None => Vec::new(),
+    }
+}
+
+fn simple_workspace_prefix(pattern: &str) -> Option<&str> {
+    pattern
+        .strip_suffix('*')
+        .or_else(|| pattern.strip_suffix("**"))
+}
+
+fn detect_package_manager(root: &Path, package: &PackageJson) -> TypeScriptPackageManager {
+    if let Some(manager) = package.package_manager.as_deref() {
+        if manager.starts_with("bun@") || manager == "bun" {
+            return TypeScriptPackageManager::Bun;
+        }
+        if manager.starts_with("pnpm@") || manager == "pnpm" {
+            return TypeScriptPackageManager::Pnpm;
+        }
+        if manager.starts_with("yarn@") || manager == "yarn" {
+            return TypeScriptPackageManager::Yarn;
+        }
+        if manager.starts_with("npm@") || manager == "npm" {
+            return TypeScriptPackageManager::Npm;
+        }
+    }
+    if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
+        return TypeScriptPackageManager::Bun;
+    }
+    if root.join("pnpm-lock.yaml").exists() {
+        return TypeScriptPackageManager::Pnpm;
+    }
+    if root.join("yarn.lock").exists() {
+        return TypeScriptPackageManager::Yarn;
+    }
+    if root.join("package-lock.json").exists() {
+        return TypeScriptPackageManager::Npm;
+    }
+    if package
+        .scripts
+        .get("test")
+        .is_some_and(|script| script.contains("bun test"))
+    {
+        return TypeScriptPackageManager::Bun;
+    }
+    if program_available("bun", root) {
+        TypeScriptPackageManager::Bun
+    } else if program_available("pnpm", root) {
+        TypeScriptPackageManager::Pnpm
+    } else if program_available("yarn", root) {
+        TypeScriptPackageManager::Yarn
+    } else {
+        TypeScriptPackageManager::Npm
+    }
+}
+
+impl TypeScriptPackageManager {
+    fn program(self) -> &'static str {
+        match self {
+            TypeScriptPackageManager::Bun => "bun",
+            TypeScriptPackageManager::Npm => "npm",
+            TypeScriptPackageManager::Pnpm => "pnpm",
+            TypeScriptPackageManager::Yarn => "yarn",
+        }
+    }
+
+    fn test_args(self, has_test_script: bool) -> Vec<String> {
+        match (self, has_test_script) {
+            (TypeScriptPackageManager::Bun, true) => vec!["run".to_string(), "test".to_string()],
+            (TypeScriptPackageManager::Bun, false) => vec!["test".to_string()],
+            (TypeScriptPackageManager::Npm, true) => vec!["test".to_string()],
+            (TypeScriptPackageManager::Pnpm, true) => vec!["test".to_string()],
+            (TypeScriptPackageManager::Yarn, true) => vec!["test".to_string()],
+            (_, false) => Vec::new(),
+        }
+    }
+}
+
 fn bun_available(root: &Path) -> bool {
-    Command::new("bun")
+    program_available("bun", root)
+}
+
+fn program_available(program: &str, root: &Path) -> bool {
+    Command::new(program)
         .arg("--version")
         .current_dir(root)
         .stdout(Stdio::null())
@@ -1662,10 +2445,10 @@ fn bun_available(root: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn skipped_bun_command(root: &Path, stderr: &str) -> Result<CommandRecord> {
+fn skipped_typescript_command(root: &Path, stderr: &str) -> Result<CommandRecord> {
     Ok(CommandRecord {
-        program: "bun".to_string(),
-        args: vec!["test".to_string()],
+        program: "typescript-test".to_string(),
+        args: Vec::new(),
         cwd: utf8_path(root)?,
         exit_code: None,
         status: RunStatus::Skipped,
@@ -1673,6 +2456,19 @@ fn skipped_bun_command(root: &Path, stderr: &str) -> Result<CommandRecord> {
         stderr: stderr.to_string(),
         duration_ms: 0,
     })
+}
+
+fn run_command_in<I, S>(
+    cwd: &Path,
+    program: &str,
+    args: I,
+    timeout_seconds: u64,
+) -> Result<CommandRecord>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    run_command(cwd, program, args, timeout_seconds)
 }
 
 fn run_command<I, S>(
@@ -1924,4 +2720,155 @@ fn excerpt(value: &str) -> String {
         lines.push_str("\n...");
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn preserves_parameter_order_and_skips_async_property_candidates() {
+        let root = tempdir().expect("tempdir");
+        fs::write(
+            root.path().join("invoice.ts"),
+            r#"
+export function requestRefund(endpoint: string, cents: number) {
+  return `${endpoint}:${cents}`;
+}
+
+export async function asyncRefund(endpoint: string, cents: number) {
+  return `${endpoint}:${cents}`;
+}
+"#,
+        )
+        .expect("write source");
+
+        let functions = discover_functions(root.path()).expect("discover functions");
+        let sync = functions
+            .iter()
+            .find(|function| function.symbol == "requestRefund")
+            .expect("sync function");
+        assert_eq!(sync.params, vec!["endpoint", "cents"]);
+        let async_function = functions
+            .iter()
+            .find(|function| function.symbol == "asyncRefund")
+            .expect("async function");
+        assert!(async_function.is_async);
+
+        let target = VerificationTarget {
+            id: "typescript:project".to_string(),
+            language: "typescript".to_string(),
+            kind: TargetKind::Project,
+            path: Utf8PathBuf::from("."),
+            symbol: None,
+            signature: None,
+            line_range: None,
+            description: "project".to_string(),
+            risk: RiskLevel::Medium,
+        };
+        let artifact = property_candidate_artifact(&target, None, &functions)
+            .expect("property artifact")
+            .expect("artifact");
+        assert!(artifact.contents.contains("requestRefund"));
+        assert!(!artifact.contents.contains("asyncRefund"));
+    }
+
+    #[test]
+    fn package_manager_detection_uses_package_json_and_workspace_package_roots() {
+        let root = tempdir().expect("tempdir");
+        fs::create_dir_all(root.path().join("packages/api/src")).expect("workspace dirs");
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"workspaces":["packages/*"],"scripts":{"test":"npm test"}}"#,
+        )
+        .expect("write root package");
+        fs::write(
+            root.path().join("packages/api/package.json"),
+            r#"{"packageManager":"bun@1.3.14","scripts":{"test":"bun test"}}"#,
+        )
+        .expect("write package");
+
+        let package_root = typescript_package_root(
+            root.path(),
+            Some(&Utf8PathBuf::from("packages/api/src/a.ts")),
+        )
+        .expect("package root");
+        assert_eq!(package_root, root.path().join("packages/api"));
+        let package = read_package_json(&package_root)
+            .expect("read package")
+            .expect("package");
+        assert_eq!(
+            detect_package_manager(&package_root, &package),
+            TypeScriptPackageManager::Bun
+        );
+        assert_eq!(
+            TypeScriptPackageManager::Bun.test_args(true),
+            vec!["run".to_string(), "test".to_string()]
+        );
+    }
+
+    #[test]
+    fn lcov_parser_compacts_uncovered_ranges() {
+        let root = tempdir().expect("tempdir");
+        let source = root.path().join("src/invoice.ts");
+        fs::create_dir_all(source.parent().unwrap()).expect("source dir");
+        fs::write(&source, "").expect("source");
+        let lcov = format!(
+            "SF:{}\nDA:1,1\nDA:2,0\nDA:3,0\nDA:5,0\nLF:4\nLH:1\nend_of_record\n",
+            source.display()
+        );
+
+        let files = parse_lcov(root.path(), &lcov).expect("parse lcov");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, Utf8PathBuf::from("src/invoice.ts"));
+        assert_eq!(files[0].line_coverage_percent, Some(25));
+        assert_eq!(files[0].uncovered_ranges, vec!["2-3", "5"]);
+    }
+
+    #[test]
+    fn mutation_candidates_include_typescript_specific_operators() {
+        let root = tempdir().expect("tempdir");
+        fs::write(
+            root.path().join("invoice.ts"),
+            r#"
+export async function requestRefund(config?: { roles?: string[] }) {
+  const role = config?.roles?.[0] ?? "viewer";
+  const payload = await Promise.resolve({ role });
+  const env = process.env;
+  return new Request("https://example.test", { method: "POST", body: JSON.stringify({ ...payload, env }) });
+}
+"#,
+        )
+        .expect("write source");
+        let functions = discover_functions(root.path()).expect("discover functions");
+        let artifacts = vec![mutation_artifact_for_test()];
+        let candidates =
+            typescript_mutation_candidates(root.path(), &functions, &artifacts).expect("mutations");
+        let mutations = candidates
+            .iter()
+            .map(|candidate| (candidate.from.as_str(), candidate.to.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(mutations.contains(&("?.", ".")));
+        assert!(mutations.contains(&("[0]", "[1]")));
+        assert!(mutations.contains(&("??", "||")));
+        assert!(mutations.contains(&("await ", "")));
+        assert!(mutations.contains(&("process.env", "{} as Record<string, string | undefined>")));
+        assert!(mutations.contains(&("\"POST\"", "\"GET\"")));
+        assert!(mutations.contains(&("...", "")));
+    }
+
+    fn mutation_artifact_for_test() -> GeneratedArtifact {
+        GeneratedArtifact {
+            id: "typescript-mutation-test".to_string(),
+            language: "typescript".to_string(),
+            kind: ArtifactKind::MutationCheck,
+            target_id: "typescript:project".to_string(),
+            path: Utf8PathBuf::from(".veritas/mutations/test.json"),
+            contents: String::new(),
+            description: "test mutation artifact".to_string(),
+            status: ArtifactStatus::Planned,
+        }
+    }
 }

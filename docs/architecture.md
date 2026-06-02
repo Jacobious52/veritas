@@ -139,7 +139,7 @@ TypeScript/JavaScript:
 - discovers production functions, class methods, arrow functions, and function-expression exports with Tree-sitter TypeScript, TSX, and JavaScript grammars
 - records owners, params, line ranges, signatures, call hints, and risk labels
 - detects projects through `package.json`, `tsconfig.json`, `jsconfig.json`, or source roots
-- runs `bun test` when Bun is installed and records a skipped command when Bun is unavailable
+- runs Bun, npm, pnpm, or Yarn test scripts for baseline and mutation checks, uses Bun for generated probes and coverage, and records skipped commands when runtime support is unavailable
 - emits symbol graph artifacts and executable Bun property checks for supported exported free functions
 - runs source-range mutation checks for comparison, strict equality, boolean guard, default return, and string-normalization operators
 - executes batched differential replay for supported primitive exported free functions

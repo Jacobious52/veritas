@@ -114,9 +114,12 @@ This gives future plugins a concrete path without requiring Rust/Go-specific ass
 - function, class-method, arrow-function, and function-expression targets with source-relative IDs
 - symbol graph artifacts with signatures, params, owners, call hints, line ranges, and risk labels
 - executable Bun property checks for supported exported free functions
-- source-range mutation checks for comparisons, strict equality, boolean guards, default returns, and string normalization
+- package-manager-aware baseline and mutation commands for Bun, npm, pnpm, and Yarn
+- Tree-sitter-backed mutation checks for comparisons, equality, boolean guards, optional chaining, nullish coalescing, async/await, object spread, env/config reads, array bounds, HTTP methods, default returns, and string normalization
+- optional Bun lcov coverage with file-level uncovered ranges for assertion generation
+- skipped Bun regression scaffolds via `promote-regression`
 - batched differential replay for supported primitive exported free functions
-- `bun test` execution with skipped command records when Bun is unavailable
+- skipped command records when the selected JS runtime or package-manager command is unavailable
 
 This path proves the plugin contract can scan mixed JS/TS repos, write AI-readable artifacts, participate in changed-target selection, run Bun-owned checks, and avoid hard failing on machines without the language runtime.
 

@@ -64,3 +64,18 @@ changed_path = "lib/core/Axios.js"
 min_targets = 25
 min_mutants = 8
 min_inventory_mutants = 25
+
+[[repo]]
+name = "typescript-ky"
+language = "typescript"
+profile = "large-typescript"
+repository = "https://github.com/sindresorhus/ky.git"
+sha = "61d6d66d27911001b9b4d57ab93139f9ad61384b"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory"]
+changed_path = "source/core/Ky.ts"
+
+[repo.budgets]
+min_targets = 20
+min_mutants = 8
+min_inventory_mutants = 20

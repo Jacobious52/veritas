@@ -17,6 +17,22 @@ export function normalizeToken(token?: string): string {
   return (token ?? "").trim().toLowerCase();
 }
 
+export function firstAuthorizedRole(config?: { roles?: Role[] }): Role {
+  return config?.roles?.[0] ?? "viewer";
+}
+
+export function readRefundLimit(env: Record<string, string | undefined> = process.env): number {
+  return Number.parseInt(env.REFUND_LIMIT_CENTS ?? "50000", 10);
+}
+
+export async function requestRefund(endpoint: string, cents: number): Promise<Request> {
+  const payload = await Promise.resolve({ cents, requestedAt: "now" });
+  return new Request(endpoint, {
+    method: "POST",
+    body: JSON.stringify({ ...payload }),
+  });
+}
+
 export class RefundPolicy {
   authorizeRefund(role: Role, cents: number): boolean {
     if (cents <= 0 || cents > 50_000) {
