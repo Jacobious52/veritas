@@ -135,6 +135,8 @@ struct TargetCacheSource {
     modified_unix_seconds: u64,
 }
 
+const TARGET_CACHE_VERSION: u8 = 2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulerSummary {
     pub requested_jobs: usize,
@@ -839,7 +841,8 @@ impl CoreEngine {
             match plugin.detect_project(root) {
                 Ok(project) => {
                     debug!(language = plugin.id(), "detected project");
-                    let mut plugin_targets = plugin.discover_targets(root)?;
+                    let (mut plugin_targets, _) =
+                        self.discover_targets_cached(root, plugin.as_ref(), &project)?;
                     projects.push(project);
                     targets.append(&mut plugin_targets);
                 }
@@ -1397,7 +1400,7 @@ fn read_valid_target_cache(root: &Path, language: &str) -> Result<Option<TargetC
         .with_context(|| format!("failed to read target cache {}", path.display()))?;
     let cache: TargetCache = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse target cache {}", path.display()))?;
-    if cache.version != 1 || cache.language != language {
+    if cache.version != TARGET_CACHE_VERSION || cache.language != language {
         return Ok(None);
     }
     if cache.git_head != git_head(root) {
@@ -1439,7 +1442,7 @@ fn build_target_cache(
         }
     }
     Ok(TargetCache {
-        version: 1,
+        version: TARGET_CACHE_VERSION,
         language: language.to_string(),
         created_unix_seconds: unix_timestamp_seconds(),
         git_head: git_head(root),
@@ -1469,7 +1472,7 @@ fn target_cache_artifact(
     state: &str,
 ) -> Result<GeneratedArtifact> {
     let contents = serde_json::to_string_pretty(&serde_json::json!({
-        "version": 1,
+        "version": TARGET_CACHE_VERSION,
         "language": language,
         "state": state,
         "targets": cache.targets.len(),

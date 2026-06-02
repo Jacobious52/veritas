@@ -21,6 +21,41 @@ fn scans_rust_fixture() {
 }
 
 #[test]
+fn scan_ignores_hidden_scratch_workdirs() {
+    let temp = TempDir::new().expect("tempdir");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(temp.path().join("package.json"), "{\"type\":\"module\"}").expect("package");
+    fs::write(
+        temp.path().join("src/app.ts"),
+        "export function visibleTotal(cents: number) { return cents; }\n",
+    )
+    .expect("visible source");
+    fs::create_dir_all(temp.path().join(".tmp/veritas/fixtures")).expect("create scratch dir");
+    fs::write(
+        temp.path().join(".tmp/veritas/fixtures/hidden.ts"),
+        "export function hiddenScratchTotal(cents: number) { return cents; }\n",
+    )
+    .expect("hidden scratch source");
+
+    let mut cmd = veritas();
+    cmd.current_dir(temp.path())
+        .args(["scan", "--format", "json"]);
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let scan: Value = serde_json::from_slice(&output).expect("parse scan json");
+    let targets = scan["targets"]
+        .as_array()
+        .expect("targets array")
+        .iter()
+        .map(|target| target.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(targets.contains("visibleTotal"));
+    assert!(!targets.contains("hiddenScratchTotal"));
+    assert!(!targets.contains(".tmp/veritas"));
+}
+
+#[test]
 fn init_writes_config_ci_and_agent_instructions() {
     let temp = TempDir::new().expect("temp dir");
     fs::write(

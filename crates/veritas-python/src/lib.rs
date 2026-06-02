@@ -384,7 +384,7 @@ fn discover_functions(root: &Path) -> Result<Vec<PythonFunction>> {
     let mut functions = Vec::new();
     for entry in WalkDir::new(root)
         .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path(), entry.file_name()))
     {
         let entry = entry?;
         if !entry.file_type().is_file()
@@ -1794,7 +1794,7 @@ fn contains_python_file(root: &Path) -> bool {
     WalkDir::new(root)
         .max_depth(4)
         .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path(), entry.file_name()))
         .filter_map(Result::ok)
         .any(|entry| {
             entry.file_type().is_file() && entry.path().extension() == Some(OsStr::new("py"))
@@ -1803,6 +1803,9 @@ fn contains_python_file(root: &Path) -> bool {
 
 fn is_ignored(path: &Path, name: &OsStr) -> bool {
     let name = name.to_string_lossy();
+    if name.starts_with('.') {
+        return true;
+    }
     if matches!(
         name.as_ref(),
         ".git"
@@ -1872,7 +1875,7 @@ fn tests_import_pytest(root: &Path) -> bool {
     WalkDir::new(root)
         .max_depth(4)
         .into_iter()
-        .filter_entry(|entry| !is_ignored(entry.path(), entry.file_name()))
+        .filter_entry(|entry| entry.depth() == 0 || !is_ignored(entry.path(), entry.file_name()))
         .filter_map(Result::ok)
         .filter(|entry| {
             entry.file_type().is_file()
@@ -2162,6 +2165,33 @@ mod tests {
             skipped_start,
             source.len()
         ));
+    }
+
+    #[test]
+    fn python_discovery_ignores_hidden_scratch_directories() {
+        let root = unique_test_root("hidden-scratch");
+        fs::create_dir_all(root.join("src")).expect("create src");
+        fs::write(
+            root.join("src/app.py"),
+            "def visible_total(cents):\n    return cents\n",
+        )
+        .expect("write visible source");
+        fs::create_dir_all(root.join(".tmp/veritas/fixtures")).expect("create scratch dir");
+        fs::write(
+            root.join(".tmp/veritas/fixtures/hidden.py"),
+            "def hidden_scratch_total(cents):\n    return cents\n",
+        )
+        .expect("write hidden source");
+
+        let functions = discover_functions(&root).expect("discover functions");
+
+        fs::remove_dir_all(&root).ok();
+        let symbols = functions
+            .iter()
+            .map(|function| function.symbol.as_str())
+            .collect::<Vec<_>>();
+        assert!(symbols.contains(&"visible_total"));
+        assert!(!symbols.contains(&"hidden_scratch_total"));
     }
 
     fn unique_test_root(name: &str) -> PathBuf {
