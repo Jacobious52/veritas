@@ -1940,7 +1940,8 @@ fn render_init_config(languages: &[&str]) -> String {
     if languages.contains(&"typescript") {
         out.push_str(
             "\n[plugins.typescript]\n\
-             command_timeout_seconds = 120\n",
+             command_timeout_seconds = 120\n\
+             coverage_enabled = false\n",
         );
     }
     out
@@ -2981,6 +2982,7 @@ fn apply_verify_profile(config: &mut VeritasConfig, profile: Option<VerifyProfil
     config.plugins.go.max_mutants = config.plugins.go.max_mutants.min(4);
     config.plugins.typescript.command_timeout_seconds =
         config.plugins.typescript.command_timeout_seconds.min(90);
+    config.plugins.typescript.coverage_enabled = false;
 }
 
 fn engine(config: VeritasConfig) -> CoreEngine {

@@ -76,6 +76,7 @@ pub struct PythonPluginConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeScriptPluginConfig {
     pub command_timeout_seconds: u64,
+    pub coverage_enabled: bool,
     pub mutation: MutationConfig,
 }
 
@@ -202,6 +203,7 @@ struct PythonPluginConfigPartial {
 #[derive(Debug, Clone, Deserialize)]
 struct TypeScriptPluginConfigPartial {
     command_timeout_seconds: Option<u64>,
+    coverage_enabled: Option<bool>,
     mutation: Option<MutationConfigPartial>,
 }
 
@@ -289,6 +291,7 @@ impl Default for VeritasConfig {
                 },
                 typescript: TypeScriptPluginConfig {
                     command_timeout_seconds: 120,
+                    coverage_enabled: false,
                     mutation: MutationConfig::default(),
                 },
             },
@@ -448,6 +451,9 @@ impl VeritasConfig {
             if let Some(typescript) = plugins.typescript {
                 if let Some(value) = typescript.command_timeout_seconds {
                     config.plugins.typescript.command_timeout_seconds = value;
+                }
+                if let Some(value) = typescript.coverage_enabled {
+                    config.plugins.typescript.coverage_enabled = value;
                 }
                 if let Some(value) = typescript.mutation {
                     apply_mutation_config(&mut config.plugins.typescript.mutation, &value);
@@ -645,6 +651,7 @@ cpu_quota = "150%"
 
 [plugins.typescript]
 command_timeout_seconds = 11
+coverage_enabled = true
 
 [plugins.typescript.mutation]
 enabled_operators = ["boolean"]
@@ -713,6 +720,7 @@ enabled_operators = ["boolean"]
         assert_eq!(config.plugins.rust.memory_max.as_deref(), Some("4G"));
         assert_eq!(config.plugins.rust.cpu_quota.as_deref(), Some("150%"));
         assert_eq!(config.plugins.typescript.command_timeout_seconds, 11);
+        assert!(config.plugins.typescript.coverage_enabled);
         assert_eq!(
             config.plugins.typescript.mutation.enabled_operators,
             vec!["boolean"]

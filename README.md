@@ -245,7 +245,9 @@ TypeScript/JavaScript verification:
 - writes executable Bun property checks for supported exported free functions, with deterministic/no-throw markers for property quality scoring
 - runs source-range mutation checks for comparisons, strict equality, boolean guards, default returns, and string normalization
 - executes batched differential replay for supported primitive exported free functions
-- runs `bun test` when Bun is installed, otherwise records a skipped Bun command so scan and artifact generation still work on machines without a JS runtime
+- runs the project test command through Bun, npm, pnpm, or Yarn; Veritas-generated TS/JS probes use Bun when available and record skipped commands when the runtime is missing
+- collects optional Bun lcov coverage and turns uncovered TS/JS ranges into AI-readable assertion focus
+- mutates Tree-sitter-backed TS/JS constructs including comparisons, equality, boolean guards, optional chaining, nullish coalescing, async/await, object spread, env/config reads, array bounds, HTTP methods, defaults, and string normalization
 
 Reports and artifacts:
 

@@ -117,9 +117,10 @@ Useful artifacts:
 
 - `.veritas/symbols/typescript_*.json`: Tree-sitter TypeScript/TSX/JavaScript functions, class methods, signatures, params, line ranges, risks, and call hints
 - `.veritas/properties/typescript_*.test.ts`: executable Bun property checks for exported free functions
-- `.veritas/mutations/typescript_campaign.json`: killed/surviving TS/JS mutation records with byte spans, diffs, commands, and shared domain/operator taxonomy
+- `.veritas/mutations/typescript_campaign.json`: killed/surviving TS/JS mutation records with byte spans, diffs, commands, package-manager-aware test selection, and shared domain/operator taxonomy
 - `.veritas/differential/typescript_result.json`: batched replay observations for supported primitive exported free functions
-- `.veritas/report.json`: records `bun test` as passed/failed when Bun is installed, or skipped when Bun is unavailable
+- `.veritas/report.json`: records Bun/npm/pnpm/yarn test commands, optional Bun lcov coverage gaps, and skipped command records when runtime support is unavailable
+- `tests/veritas_regression_*.test.ts`: skipped Bun regression scaffolds from `promote-regression`
 
 Agent action: use surviving TS/JS mutants and replay observations to pick the riskiest auth, parsing, money, or serialization boundary, add an owned Bun test, then rerun `veritas verify --changed --profile ci`.
 
