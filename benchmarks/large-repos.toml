@@ -49,3 +49,18 @@ target = "."
 modes = ["scan", "mutation-inventory", "changed-only"]
 changed_path = "src/click/core.py"
 changed_line = 505
+
+[[repo]]
+name = "typescript-axios"
+language = "typescript"
+profile = "large-typescript"
+repository = "https://github.com/axios/axios.git"
+sha = "4306df21e84332fc576e98c2de549347c06bfb76"
+target = "."
+modes = ["scan", "mutation-list", "mutation-inventory"]
+changed_path = "lib/core/Axios.js"
+
+[repo.budgets]
+min_targets = 25
+min_mutants = 8
+min_inventory_mutants = 25

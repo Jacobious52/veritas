@@ -28,6 +28,7 @@ veritas-plugin-api = { version = "0.1.1", path = "../veritas-plugin-api" }
 veritas-python = { version = "0.1.1", path = "../veritas-python" }
 veritas-report = { version = "0.1.1", path = "../veritas-report" }
 veritas-rust = { version = "0.1.1", path = "../veritas-rust" }
+veritas-typescript = { version = "0.1.1", path = "../veritas-typescript" }
 
 [dev-dependencies]
 assert_cmd = "2.0"

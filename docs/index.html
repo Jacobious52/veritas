@@ -684,11 +684,12 @@
           <span>Tree-sitter powered</span>
         </div>
         <h1>Tree-sitter testing oracle for AI code.</h1>
-        <p class="lede">A CLI harness for mutation testing, property testing, fuzzing, coverage feedback, behavior replay, and evolutionary analysis across Rust, Go, Python, and future Tree-sitter language plugins.</p>
+        <p class="lede">A CLI harness for mutation testing, property testing, fuzzing, coverage feedback, behavior replay, and evolutionary analysis across Rust, Go, Python, TypeScript/JavaScript, and future Tree-sitter language plugins.</p>
         <div class="language-strip" aria-label="Language and plugin support">
           <span class="ready">Rust today</span>
           <span class="ready">Go today</span>
           <span class="ready">Python today</span>
+          <span class="ready">TypeScript + JavaScript today</span>
           <span class="plugin">Tree-sitter symbols</span>
           <span class="plugin">Language plugin API</span>
           <span>Budgets, timeouts, CI policy</span>
@@ -765,9 +766,9 @@ veritas repair-prompt</code></pre>
           <div class="card"><strong>Rust</strong><br>Workspace detection, public symbol discovery, proptest generation, cargo test, optional llvm-cov, AST-scoped mutation checks, replay, and generated regression artifacts.</div>
           <div class="card"><strong>Go</strong><br>Module and package graph discovery, scoped package tests, fuzz harnesses, coverage, mutation campaigns, reverse dependency selection, corpus persistence, and replay.</div>
           <div class="card"><strong>Python</strong><br>Tree-sitter symbol discovery, unittest execution, coverage.py integration when enabled, simple executable mutation checks, multi-argument replay, and the same artifact contract.</div>
+          <div class="card"><strong>TypeScript/JavaScript</strong><br>Package/config/source detection, Tree-sitter TypeScript/TSX/JavaScript symbols, class methods, arrow functions, executable Bun properties, replay, and mutation checks.</div>
           <div class="card"><strong>Plugin contract</strong><br>Language plugins own discovery, generated artifacts, command budgets, and mutation operators while the core owns scoring, baselines, replay manifests, and AI repair prompts.</div>
           <div class="card"><strong>Shared artifacts</strong><br><code>.veritas/report.json</code>, SARIF, JUnit, Markdown, assertion candidates, replay results, mutation campaigns, corpus entries, evolution suites, and repair prompts.</div>
-          <div class="card"><strong>Next languages</strong><br>Any Tree-sitter grammar can join the model by mapping symbols, line ranges, generated artifacts, command execution, and mutation/replay capabilities into the plugin API.</div>
         </div>
       </div>
     </section>
@@ -775,7 +776,7 @@ veritas repair-prompt</code></pre>
     <section id="example">
       <div class="wrap">
         <h2>Examples that scale with the risk</h2>
-        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust, Go, and Python use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
+        <p class="subhead">Start with one boundary. Keep going until the report has a mutation campaign, fuzz corpus, replay manifest, and selected evolution suite your AI agent can act on. Rust, Go, Python, and TypeScript/JavaScript use plugins today; the core model is built around tree-sitter-backed language plugins so additional languages can share the same reports and AI loop.</p>
         <div class="panel">
           <div class="copy-row">
             <span class="kicker">Real Evolution Demo</span>
@@ -948,7 +949,7 @@ Next: add assertions for:
     <section id="testing">
       <div class="wrap">
         <h2>The testing hub for AI development</h2>
-        <p class="subhead">Rust and Go are the deepest production paths today, with Python now on the same plugin path. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
+        <p class="subhead">Rust and Go are the deepest production paths today, with Python and TypeScript/JavaScript now on the same plugin path. Veritas discovers symbols with tree-sitter and runs each language through a plugin, so new languages can share the same mutation campaign, replay, corpus, evolution, and confidence model without rewriting the core.</p>
         <div class="grid">
           <div class="card"><strong>Mutation testing</strong><br>Domain-aware mutants for auth, money, parsing, serialization, permissions, booleans, comparisons, returns, and error paths.</div>
           <div class="card"><strong>Property testing</strong><br>Generated and discovered properties are scored for assertion strength, determinism, and no-panic coverage.</div>
@@ -983,7 +984,7 @@ Next: add assertions for:
               <li><b>Spend budget where risk is highest:</b> adaptive mutation sampling from changed code, semantic domains, and historical survivor data.</li>
               <li><b>Cache what is stable:</b> reusable symbol graphs, package graphs, baselines, corpus entries, and coverage summaries.</li>
               <li><b>Make agents accountable:</b> repair prompts should name the next test, the proof command, and the artifact that improved.</li>
-              <li><b>Stay generic:</b> every scale feature should land in the plugin contract so Rust, Go, Python, and future Tree-sitter languages benefit together.</li>
+              <li><b>Stay generic:</b> every scale feature should land in the plugin contract so Rust, Go, Python, TypeScript/JavaScript, and future Tree-sitter languages benefit together.</li>
             </ul>
           </div>
         </div>

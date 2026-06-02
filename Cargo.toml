@@ -6,6 +6,7 @@ members = [
     "crates/veritas-rust",
     "crates/veritas-go",
     "crates/veritas-python",
+    "crates/veritas-typescript",
     "crates/veritas-report",
 ]
 resolver = "2"

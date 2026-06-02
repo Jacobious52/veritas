@@ -2642,7 +2642,13 @@ fn should_ignore_changed_path(path: &Utf8PathBuf) -> bool {
 fn path_matches_language(language: &str, path: &Utf8PathBuf) -> bool {
     matches!(
         (language, path.extension()),
-        ("rust", Some("rs")) | ("go", Some("go")) | ("python", Some("py"))
+        ("rust", Some("rs"))
+            | ("go", Some("go"))
+            | ("python", Some("py"))
+            | (
+                "typescript",
+                Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs")
+            )
     )
 }
 
@@ -6326,6 +6332,34 @@ index 3333333..4444444 100644
         assert_eq!(
             selected[0].id,
             "python:src/click/core.py:Context.to_info_dict"
+        );
+        assert_eq!(selected[0].description, "changed function");
+    }
+
+    #[test]
+    fn changed_typescript_files_select_overlapping_function_targets() {
+        let targets = vec![VerificationTarget {
+            id: "typescript:src/invoice.ts:RefundPolicy.authorizeRefund".to_string(),
+            language: "typescript".to_string(),
+            kind: TargetKind::Function,
+            path: Utf8PathBuf::from("src/invoice.ts"),
+            symbol: Some("RefundPolicy.authorizeRefund".to_string()),
+            signature: Some("authorizeRefund(role: Role, cents: number): boolean".to_string()),
+            line_range: Some(LineRange { start: 19, end: 25 }),
+            description: "function".to_string(),
+            risk: RiskLevel::High,
+        }];
+        let changed_files = vec![ChangedFile {
+            path: Utf8PathBuf::from("src/invoice.ts"),
+            ranges: vec![LineRange { start: 21, end: 21 }],
+        }];
+
+        let selected = targets_for_changed_files("typescript", &targets, &changed_files);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].id,
+            "typescript:src/invoice.ts:RefundPolicy.authorizeRefund"
         );
         assert_eq!(selected[0].description, "changed function");
     }

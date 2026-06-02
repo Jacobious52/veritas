@@ -14,6 +14,7 @@ packages=(
   veritas-rust
   veritas-go
   veritas-python
+  veritas-typescript
   veritas-cli
 )
 
@@ -108,7 +109,7 @@ if [[ "$mode" == "--dry-run" ]]; then
       veritas-core | veritas-report)
         args+=(--config 'patch.crates-io.veritas-plugin-api.path="crates/veritas-plugin-api"')
         ;;
-      veritas-rust | veritas-go | veritas-python)
+      veritas-rust | veritas-go | veritas-python | veritas-typescript)
         args+=(--config 'patch.crates-io.veritas-plugin-api.path="crates/veritas-plugin-api"')
         args+=(--config 'patch.crates-io.veritas-core.path="crates/veritas-core"')
         ;;
@@ -119,6 +120,7 @@ if [[ "$mode" == "--dry-run" ]]; then
         args+=(--config 'patch.crates-io.veritas-rust.path="crates/veritas-rust"')
         args+=(--config 'patch.crates-io.veritas-go.path="crates/veritas-go"')
         args+=(--config 'patch.crates-io.veritas-python.path="crates/veritas-python"')
+        args+=(--config 'patch.crates-io.veritas-typescript.path="crates/veritas-typescript"')
         ;;
     esac
     cargo "${args[@]}"

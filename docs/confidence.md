@@ -5,7 +5,7 @@
 ## Local Test Layers
 
 1. Unit tests in each crate cover parser helpers, report rendering, changed-target selection, cleanup, package scoping, mutation candidates, and artifact rendering.
-2. Tiny fixtures in `fixtures/sample-rust`, `fixtures/sample-go`, and `fixtures/sample-python` keep the CLI smoke path fast across the plugin contract.
+2. Tiny fixtures in `fixtures/sample-rust`, `fixtures/sample-go`, `fixtures/sample-python`, and `fixtures/sample-typescript` keep the CLI smoke path fast across the plugin contract.
 3. Medium fixtures exercise production shapes:
    - `fixtures/rust-workspace`: virtual Cargo workspace, multiple packages, public free functions, public methods, package-local generated proptests, and mutation feedback.
    - `fixtures/go-multimodule`: two Go modules, cross-module imports, reverse dependency scoping, handwritten fuzz discovery, generated fuzz suppression for duplicate names, package graph artifacts, and symbol graphs.
@@ -80,7 +80,7 @@ Use the large-repo benchmark lane when the question is scale rather than fixture
 ./scripts/run-large-repo-benchmarks.py --manifest benchmarks/large-repos.toml --mode all
 ```
 
-The manifest pins real Rust, Go, and Python repositories by SHA. `scan` measures Tree-sitter/project discovery and target counts. `mutation-list` previews a fast capped sample of generic mutation candidates without running native tests. `mutation-inventory` walks discovered source files, runs bounded mutation previews per file, dedupes candidates by mutant id, and reports unique mutants, source paths, cap-hit paths, and domain/operator distribution. `changed-only` applies a harmless marker to a configured source file and runs `veritas verify --changed --profile ci` to simulate an AI-agent edit on a large repository. Repos can set `root_path` for monorepos or workspace subcrates, `changed_line` when the marker should land inside a symbol range, and per-repo `budgets` for language-specific thresholds.
+The manifest pins real Rust, Go, Python, and TypeScript/JavaScript repositories by SHA. `scan` measures Tree-sitter/project discovery and target counts. `mutation-list` previews a fast capped sample of generic mutation candidates without running native tests where mutation is supported. `mutation-inventory` walks discovered source files, runs bounded mutation previews per file, dedupes candidates by mutant id, and reports unique mutants, source paths, cap-hit paths, and domain/operator distribution. `changed-only` applies a harmless marker to a configured source file and runs `veritas verify --changed --profile ci` to simulate an AI-agent edit on a large repository. Repos can set `root_path` for monorepos or workspace subcrates, `changed_line` when the marker should land inside a symbol range, and per-repo `budgets` for language-specific thresholds.
 
 Outputs land under:
 
@@ -92,7 +92,7 @@ target/large-repo-benchmarks/reports/large-repo-history.jsonl
 
 The dashboard tracks per-mode duration, target counts, mutation candidate counts, changed verification targets, findings, confidence, threshold failures, and links to per-repo artifacts. The benchmark workflow exposes this as a manual `large-repos` job and uploads all JSON/Markdown artifacts. The checked-in `benchmarks/local-large-repos-smoke.toml` manifest uses local fixtures and is intended for fast script validation.
 
-`mutation-list` and `mutation-inventory` intentionally answer different questions. `mutation-list` is a cheap spot check for the current target and default cap. `mutation-inventory` is the scale metric: on the pinned large repos it currently finds hundreds of unique mutation candidates across Rust, Go, and Python, and reports cap-hit paths when the per-file limit is still truncating the inventory.
+`mutation-list` and `mutation-inventory` intentionally answer different questions. `mutation-list` is a cheap spot check for the current target and default cap. `mutation-inventory` is the scale metric: on the pinned large repos it currently finds hundreds of unique mutation candidates across Rust, Go, Python, and TypeScript/JavaScript, and reports cap-hit paths when the per-file limit is still truncating the inventory.
 
 After a verification run, use `veritas score` as the compact confidence view for AI-driven changes. It rewards correctness mutation score, property/fuzz/replay signal, and assertion candidates, and it penalizes active findings, surviving correctness mutants, skipped commands, and timeouts. Brittleness probes are reported separately: surviving behavior-preserving probes are acceptable signal, while killed brittleness probes mean tests may be coupled to implementation ordering, logs, formatting, or other non-contract details. Use `veritas accept-quality-baseline` only after a reviewed good state; later `veritas score` runs will show baseline deltas.
 
@@ -115,7 +115,7 @@ External canaries clone pinned public repositories into `target/external-fixture
 ./scripts/run-canaries.sh verify
 ```
 
-Smoke mode scans each baseline repository and writes JSON scan summaries. Large-smoke mode adds larger pinned Rust, Go, and Python repositories (`rust-clap`, `go-gin`, and `python-click`) and keeps them scan-only by default so target discovery and dashboard rollups exercise scale without exhausting shared runners. Verify-fast mode scans every baseline canary and verifies the fast subset (`rust-itoa` and `go-uuid`). Verify mode runs `veritas verify --target .` for every baseline canary, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
+Smoke mode scans each baseline repository and writes JSON scan summaries. Large-smoke mode adds larger pinned Rust, Go, and Python repositories (`rust-clap`, `go-gin`, and `python-click`) and keeps them scan-only by default so target discovery and dashboard rollups exercise scale without exhausting shared runners. TypeScript/JavaScript canaries can use the same scan path once pinned. Verify-fast mode scans every baseline canary and verifies the fast subset (`rust-itoa` and `go-uuid`). Verify mode runs `veritas verify --target .` for every baseline canary, copies each `.veritas/report.json` into `target/external-fixtures/reports`, and then cleans generated artifacts.
 
 Both modes write a dashboard:
 

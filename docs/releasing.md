@@ -13,6 +13,7 @@ veritas-report
 veritas-rust
 veritas-go
 veritas-python
+veritas-typescript
 veritas-cli
 ```
 

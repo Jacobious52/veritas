@@ -84,6 +84,7 @@ fn init_dry_run_and_no_overwrite_existing_config() {
     assert!(config.contains("[plugins.rust]"));
     assert!(config.contains("[plugins.go]"));
     assert!(config.contains("[plugins.python]"));
+    assert!(config.contains("[plugins.typescript]"));
 }
 
 #[test]
@@ -244,6 +245,34 @@ fn plugin_sdk_scan_contract_is_stable_across_language_fixtures() {
         .any(|target| target["id"]
             .as_str()
             .is_some_and(|id| id.contains("test_invoice") || id.contains("PricingTests"))));
+
+    let typescript = scan_fixture_json("sample-typescript");
+    assert_eq!(typescript["project"]["language"], "typescript");
+    assert_target_contract(
+        &typescript,
+        "typescript:src/invoice.ts:parseInvoiceTotal",
+        "src/invoice.ts",
+        "parseInvoiceTotal",
+    );
+    assert_target_contract(
+        &typescript,
+        "typescript:src/invoice.ts:RefundPolicy.authorizeRefund",
+        "src/invoice.ts",
+        "RefundPolicy.authorizeRefund",
+    );
+    assert_target_contract(
+        &typescript,
+        "typescript:src/discount.js:normalizeDiscountCode",
+        "src/discount.js",
+        "normalizeDiscountCode",
+    );
+    assert!(!typescript["targets"]
+        .as_array()
+        .expect("targets array")
+        .iter()
+        .any(|target| target["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("invoice.test"))));
 }
 
 #[test]
@@ -269,6 +298,17 @@ fn conformance_command_validates_fixture_plugin_contracts() {
         .success()
         .stdout(predicate::str::contains("\"passed\": true"))
         .stdout(predicate::str::contains("\"language\": \"python\""));
+
+    let typescript = copy_fixture("sample-typescript");
+    let mut typescript_cmd = veritas();
+    typescript_cmd
+        .current_dir(typescript.path())
+        .args(["conformance", "--format", "json"]);
+    typescript_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"passed\": true"))
+        .stdout(predicate::str::contains("\"language\": \"typescript\""));
 }
 
 #[test]
@@ -386,6 +426,106 @@ fn verifies_python_fixture_and_writes_sdk_artifacts() {
                 && comparison["case"]["argument_tuple"] == true
                 && comparison["current"]["status"] == "observed"
         ));
+}
+
+#[test]
+fn verifies_typescript_fixture_and_writes_sdk_artifacts() {
+    let fixture = copy_fixture("sample-typescript");
+    let mut cmd = veritas();
+    cmd.current_dir(fixture.path()).args([
+        "verify",
+        "--lang",
+        "typescript",
+        "--target",
+        "src/invoice.ts",
+    ]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Generated Artifacts"))
+        .stdout(predicate::str::contains("SymbolGraph"))
+        .stdout(predicate::str::contains("MutationCheck"))
+        .stdout(predicate::str::contains("PropertyTest"));
+
+    let report = read_report(fixture.path());
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| artifact["kind"] == "symbol_graph"
+            && artifact["language"] == "typescript"
+            && artifact["contents"]
+                .as_str()
+                .is_some_and(|contents| contents.contains("parseInvoiceTotal"))));
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(|artifact| artifact["kind"] == "property_test"
+            && artifact["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(".test.ts"))
+            && artifact["contents"]
+                .as_str()
+                .is_some_and(|contents| contents.contains("is_deterministic"))));
+    assert!(report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .any(
+            |artifact| artifact["kind"] == "mutation_check" && artifact["language"] == "typescript"
+        ));
+    assert!(report["runs"]
+        .as_array()
+        .expect("runs array")
+        .iter()
+        .flat_map(|run| run["commands"].as_array().into_iter().flatten())
+        .any(|command| command["program"] == "bun"
+            && command["args"]
+                .as_array()
+                .expect("bun args")
+                .iter()
+                .any(|arg| arg == "test")));
+    if report["runs"]
+        .as_array()
+        .expect("runs array")
+        .iter()
+        .flat_map(|run| run["commands"].as_array().into_iter().flatten())
+        .any(|command| command["program"] == "bun" && command["status"] != "skipped")
+    {
+        let mutation = &report["quality"]["mutation"];
+        assert!(mutation["generated"]
+            .as_u64()
+            .is_some_and(|count| count > 0));
+        assert!(mutation["executed"].as_u64().is_some_and(|count| count > 0));
+        assert!(mutation["records"]
+            .as_array()
+            .expect("mutation records")
+            .iter()
+            .any(|record| record["language"] == "typescript"));
+    }
+    assert!(report["quality"]["property"]["generated_artifacts"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    let replay_result = report["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .find(|artifact| artifact["kind"] == "replay_result")
+        .and_then(|artifact| artifact["contents"].as_str())
+        .and_then(|contents| serde_json::from_str::<Value>(contents).ok())
+        .expect("typescript replay result artifact");
+    assert!(replay_result["comparisons"]
+        .as_array()
+        .expect("comparisons array")
+        .iter()
+        .any(|comparison| comparison["target_id"]
+            == "typescript:src/invoice.ts:parseInvoiceTotal"
+            && (comparison["current"]["status"] == "observed"
+                || comparison["current"]["status"] == "unsupported")));
+    assert!(fixture
+        .path()
+        .join(".veritas/symbols/typescript_typescript_src_invoice_ts.json")
+        .exists());
 }
 
 #[test]
@@ -1338,9 +1478,10 @@ fn assert_target_contract(scan: &Value, id: &str, path: &str, symbol: &str) {
         .unwrap_or_else(|| panic!("missing target {id}"));
     assert_eq!(target["path"], path);
     assert_eq!(target["symbol"], symbol);
+    let callable_name = symbol.rsplit('.').next().unwrap_or(symbol);
     assert!(target["signature"]
         .as_str()
-        .is_some_and(|signature| signature.contains(symbol)));
+        .is_some_and(|signature| signature.contains(callable_name)));
     let line_range = &target["line_range"];
     assert!(line_range["start"].as_u64().unwrap_or_default() > 0);
     assert!(
